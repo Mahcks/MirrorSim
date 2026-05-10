@@ -11,12 +11,17 @@ use serde_json::json;
 use std::{
     fs,
     io::{BufRead, BufReader, Write},
-    path::PathBuf,
+    path::{Path, PathBuf},
     process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
 };
+#[cfg(windows)]
+use std::os::windows::process::CommandExt;
 use tauri::{AppHandle, Emitter, Manager, State};
+
+#[cfg(windows)]
+const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 const SESSION_STATUS_EVENT: &str = "session-status";
 const PREVIEW_TELEMETRY_EVENT: &str = "preview-telemetry";
@@ -516,24 +521,62 @@ fn preview_activity(size_bytes: usize) -> f32 {
     ((size_bytes as f32 / 16_000.0).clamp(0.15, 1.0) * 10.0).round() / 10.0
 }
 
-fn resolve_sidecar_path(relative_path: &str) -> CommandResult<PathBuf> {
-    let current_dir = std::env::current_dir().map_err(|error| error.to_string())?;
-    let mut candidates = vec![current_dir.join(relative_path), current_dir.join("src-tauri").join(relative_path)];
+fn push_sidecar_candidates(candidates: &mut Vec<PathBuf>, base: &Path, relative: &Path) {
+    candidates.push(base.join(relative));
 
-    if let Some(parent) = current_dir.parent() {
-        candidates.push(parent.join(relative_path));
+    if let Ok(stripped) = relative.strip_prefix("receivers") {
+        candidates.push(base.join(stripped));
     }
 
-    for candidate in candidates {
-        if candidate.exists() {
-            return Ok(candidate);
+    let up_dir = base.join("_up_");
+    candidates.push(up_dir.join(relative));
+
+    if let Ok(stripped) = relative.strip_prefix("receivers") {
+        candidates.push(up_dir.join(stripped));
+    }
+}
+
+fn resolve_sidecar_path(app: &AppHandle, relative_path: &str) -> CommandResult<PathBuf> {
+    let current_dir = std::env::current_dir().map_err(|error| error.to_string())?;
+    let relative = Path::new(relative_path);
+    let mut candidates = Vec::new();
+
+    push_sidecar_candidates(&mut candidates, &current_dir, relative);
+    push_sidecar_candidates(&mut candidates, &current_dir.join("src-tauri"), relative);
+
+    if let Some(parent) = current_dir.parent() {
+        push_sidecar_candidates(&mut candidates, parent, relative);
+    }
+
+    if let Ok(resource_dir) = app.path().resource_dir() {
+        push_sidecar_candidates(&mut candidates, &resource_dir, relative);
+    }
+
+    if let Ok(executable_path) = std::env::current_exe() {
+        if let Some(executable_dir) = executable_path.parent() {
+            push_sidecar_candidates(&mut candidates, executable_dir, relative);
         }
     }
 
+    candidates.sort();
+    candidates.dedup();
+
+    for candidate in &candidates {
+        if candidate.exists() {
+            return Ok(candidate.clone());
+        }
+    }
+
+    let searched_paths = candidates
+        .iter()
+        .map(|candidate| candidate.display().to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+
     Err(format!(
-        "unable to resolve receiver sidecar path '{}' from {}",
+        "unable to resolve receiver sidecar path '{}'. Place the receiver runtime under receivers/AirPlayServer for development and bundle it for release. Searched: {}",
         relative_path,
-        current_dir.display()
+        searched_paths
     ))
 }
 
@@ -849,15 +892,21 @@ fn ensure_sidecar_runtime(app: &AppHandle, state: &AppState) -> CommandResult<bo
     }
 
     let spec = ReceiverSidecarSpec::direct_receiver_boundary();
-    let executable = resolve_sidecar_path(&spec.launch.executable)?;
-    let working_directory = resolve_sidecar_path(&spec.launch.working_directory)?;
+    let executable = resolve_sidecar_path(app, &spec.launch.executable)?;
+    let working_directory = resolve_sidecar_path(app, &spec.launch.working_directory)?;
 
-    let mut child = Command::new(&executable)
+    let mut command = Command::new(&executable);
+    command
         .args(&spec.launch.args)
         .current_dir(working_directory)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+
+    #[cfg(windows)]
+    command.creation_flags(CREATE_NO_WINDOW);
+
+    let mut child = command
         .spawn()
         .map_err(|error| format!("failed to launch receiver sidecar '{}': {}", executable.display(), error))?;
 

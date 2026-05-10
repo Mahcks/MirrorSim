@@ -59,9 +59,9 @@ impl ReceiverSidecarSpec {
         Self {
             protocol_version: String::from("0.1.0"),
             launch: SidecarLaunchSpec {
-                executable: String::from("../../AirPlayServer/AirPlayServer/bin/x64/MirrorSimAdapter.exe"),
+                executable: String::from("receivers/AirPlayServer/MirrorSimAdapter.exe"),
                 args: vec![],
-                working_directory: String::from("../../AirPlayServer"),
+                working_directory: String::from("receivers/AirPlayServer"),
                 transport: SidecarProcessTransport::StdioJsonLines,
                 restart_on_crash: true,
             },

@@ -1340,9 +1340,9 @@ export default function App() {
     const fallback = MINIMAL_WINDOW_SIZE[nextOrientation];
     const shell = minimalShellRef.current;
 
-    if (!shell || nextOrientation !== orientation) {
+    if (!shell) {
       console.log("[MirrorSim] fitMinimalWindow: using fallback size", {
-        reason: !shell ? "missing-shell-ref" : "orientation-mismatch",
+        reason: "missing-shell-ref",
         nextOrientation,
         currentOrientation: orientation,
         fallback,
@@ -1414,6 +1414,30 @@ export default function App() {
     setZoom(1);
     await fitMinimalWindow(orientation);
   }
+
+  useEffect(() => {
+    if (appMode !== "minimal") {
+      return;
+    }
+
+    let cancelled = false;
+    const frameA = window.requestAnimationFrame(() => {
+      const frameB = window.requestAnimationFrame(() => {
+        if (!cancelled) {
+          void fitMinimalWindow(orientation);
+        }
+      });
+
+      if (cancelled) {
+        window.cancelAnimationFrame(frameB);
+      }
+    });
+
+    return () => {
+      cancelled = true;
+      window.cancelAnimationFrame(frameA);
+    };
+  }, [appMode, orientation]);
 
   async function goConsole() {
     setAppMode("console");

@@ -25,3 +25,11 @@ dist-ssr
 
 # Generated Rust receiver builds
 receivers/**/target/
+
+# Local AirPlay receiver runtime drop-ins
+receivers/AirPlayServer/*.exe
+receivers/AirPlayServer/*.dll
+receivers/AirPlayServer/*.pdb
+
+# Local release artifacts
+release/

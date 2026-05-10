@@ -1,35 +1,39 @@
-# Receiver Sidecars
+# Receiver Runtime Notes
 
-`mirror-receiver` is the first executable sidecar skeleton for MirrorSim's direct receiver protocol.
+This folder contains receiver-related pieces used by MirrorSim during development and packaging.
 
-Current scope:
+For most end users, this folder does not matter. Public releases already bundle the runtime they need.
 
-- boots over stdio JSON lines
-- supports `--backend stub` and `--backend airplayserver`
-- emits `receiver_ready`
-- accepts `start_session`, `stop_session`, `request_keyframe`, and `shutdown`
-- emits `session_started`, `stream_discontinuity`, and `receiver_error`
-- can launch an external native receiver process for the AirPlayServer adapter mode
+## What is here
 
-This is not a working AirPlay receiver yet. It now owns the real process boundary for an AirPlayServer-style native receiver wrapper, but it does not yet translate native receiver media output into `video_access_unit` events.
+- `mirror-receiver/`: development-side receiver integration work
+- `AirPlayServer/`: the packaged native receiver runtime used by MirrorSim releases
 
-## Run
+## Public Release Behavior
 
-```powershell
-Push-Location receivers/mirror-receiver
-cargo run
-Pop-Location
+MirrorSim expects the bundled native receiver runtime at:
+
+```text
+receivers/AirPlayServer/MirrorSimAdapter.exe
 ```
 
-Run the AirPlayServer adapter mode:
+That folder is included in both installer and portable outputs. End users should not need to install a separate AirPlay receiver package as long as the required runtime files are present before packaging.
+
+## Maintainer Workflow
+
+Before building a release, sync the runtime into `receivers/AirPlayServer`:
 
 ```powershell
-Push-Location receivers/mirror-receiver
-cargo run -- --backend airplayserver --airplayserver-exe C:\path\to\AirPlayServer.exe
-Pop-Location
+bun run fetch:airplay-runtime
+bun run sync:airplay-runtime
 ```
 
-## Near-Term Direction
+- `fetch:airplay-runtime` downloads the versioned runtime bundle declared in `receivers/runtime-manifest.json`
+- `sync:airplay-runtime` copies files from a local sibling AirPlayServer build if you have one
 
-The likely production path is still a native receiver core such as AirPlayServer or another native implementation behind this sidecar contract. The next integration step is mapping the native receiver output to real `video_access_unit` messages and feeding those into the existing Rust remux boundary.
+Then build the app with one of the release commands from the main project README.
+
+## Developer Notes
+
+The development-side receiver pieces here are still implementation detail. MirrorSim's shipping experience relies on the bundled native adapter runtime and the Tauri app's packaged resources rather than a separately installed external receiver.
 
