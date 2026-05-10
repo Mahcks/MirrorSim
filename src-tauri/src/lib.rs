@@ -1039,6 +1039,87 @@ fn start_session(app: AppHandle, state: State<'_, AppState>) -> CommandResult<Se
 }
 
 #[tauri::command]
+fn reconnect_session(app: AppHandle, state: State<'_, AppState>) -> CommandResult<SessionSnapshot> {
+    let active_session_id = {
+        let guard = state.inner.lock().map_err(|error| error.to_string())?;
+        guard.active_session_id.clone()
+    };
+
+    if let Some(session_id) = active_session_id {
+        let _ = send_sidecar_command(&state.sidecar, json!({
+            "name": "stop_session",
+            "session_id": session_id,
+        }));
+    }
+
+    let sidecar_was_running = state
+        .sidecar
+        .lock()
+        .map_err(|error| error.to_string())?
+        .is_some();
+
+    let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics, session_id, stream_id) = {
+        let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
+
+        guard.sequence += 1;
+
+        let session_id = format!("session-{:04}", guard.sequence);
+        let stream_id = format!("airplay-stream-{:04}", guard.sequence);
+
+        guard.active_session_id = Some(session_id.clone());
+        reset_preview(&mut guard);
+        prepare_live_transport(&mut guard, stream_id.clone());
+
+        if sidecar_was_running {
+            guard.snapshot.status = SessionStatus::Connecting;
+            set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Ready);
+        } else {
+            guard.snapshot.status = SessionStatus::Discovering;
+            set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Priming);
+        }
+
+        (
+            guard.snapshot.clone(),
+            guard.preview.clone(),
+            guard.preview_stream.clone(),
+            guard.receiver_runtime.clone(),
+            guard.preview_diagnostics.clone(),
+            session_id,
+            stream_id,
+        )
+    };
+
+    emit_state_updates(
+        &app,
+        Some(snapshot.clone()),
+        Some(preview),
+        Some(preview_stream),
+        Some(receiver_runtime),
+        Some(preview_diagnostics),
+    )?;
+
+    if let Err(error) = ensure_sidecar_runtime(&app, &state) {
+        emit_runtime_error(&app, &state.inner, error.clone(), false)?;
+        return Err(error);
+    }
+
+    if let Err(error) = send_sidecar_command(
+        &state.sidecar,
+        json!({
+            "name": "start_session",
+            "session_id": session_id,
+            "expected_stream_id": stream_id,
+            "device_hint": snapshot.device_name,
+        }),
+    ) {
+        emit_runtime_error(&app, &state.inner, error.clone(), false)?;
+        return Err(error);
+    }
+
+    Ok(snapshot)
+}
+
+#[tauri::command]
 fn stop_session(app: AppHandle, state: State<'_, AppState>) -> CommandResult<SessionSnapshot> {
     let active_session_id = {
         let guard = state.inner.lock().map_err(|error| error.to_string())?;
@@ -1190,6 +1271,7 @@ pub fn run() {
             get_receiver_runtime,
             get_preview_diagnostics,
             start_session,
+            reconnect_session,
             stop_session,
             take_screenshot,
             save_screenshot,

@@ -45,6 +45,7 @@ type SessionCommand =
   | "get_preview_diagnostics"
   | "get_receiver_runtime"
   | "start_session"
+  | "reconnect_session"
   | "stop_session"
   | "take_screenshot"
   | "start_recording"
@@ -99,6 +100,7 @@ type AppPreferences = {
   autoRevealSavedCaptures: boolean;
   screenshotFlashEnabled: boolean;
   autoStartDiscovery: boolean;
+  autoReconnectOnDrop: boolean;
   openDiagnosticsOnError: boolean;
   lastMode: AppMode;
   lastOrientation: Orientation;
@@ -170,6 +172,7 @@ const defaultAppPreferences: AppPreferences = {
   autoRevealSavedCaptures: false,
   screenshotFlashEnabled: true,
   autoStartDiscovery: false,
+  autoReconnectOnDrop: true,
   openDiagnosticsOnError: true,
   lastMode: "console",
   lastOrientation: "portrait",
@@ -441,10 +444,16 @@ export default function App() {
   const [screenshotFlashActive, setScreenshotFlashActive] = useState(false);
   const [recElapsed, setRecElapsed] = useState(0);
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
+  const [reconnectUiState, setReconnectUiState] = useState<{ attempt: number; phase: "scheduled" | "retrying" } | null>(null);
+  const [reconnectNextRetryAt, setReconnectNextRetryAt] = useState<number | null>(null);
   const recStartRef = useRef<number | null>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
   const recordingChunksRef = useRef<Blob[]>([]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const shouldMaintainConnectionRef = useRef(false);
+  const reconnectAttemptRef = useRef(0);
+  const reconnectTimerRef = useRef<number | null>(null);
+  const autoReconnectInFlightRef = useRef(false);
   const startupPreferencesAppliedRef = useRef(false);
   const autoDiscoveryAttemptedRef = useRef(false);
   const minimalShellRef = useRef<HTMLDivElement | null>(null);
@@ -463,6 +472,7 @@ export default function App() {
         ? "live"
         : "inactive";
   const bufferedAhead = Math.max(0, videoDiag.bufferedEnd - videoDiag.currentTime);
+  const reconnectCountdownSeconds = reconnectNextRetryAt === null ? null : Math.max(0, Math.ceil((reconnectNextRetryAt - Date.now()) / 1000));
   const zoomIndex = ZOOM_LEVELS.indexOf(zoom);
   const controlButtonClass =
     "inline-flex h-8 w-8 items-center justify-center rounded-[5px] text-white/55 transition hover:bg-[#1a1b1e] hover:text-white disabled:cursor-default disabled:opacity-30";
@@ -475,8 +485,8 @@ export default function App() {
   const previewDimClass =
     tone === "warning" ? "opacity-[0.08]" : tone === "inactive" ? "opacity-45" : "opacity-100";
   const screenFrameClass = cn(
-    "relative overflow-hidden bg-[#080909]",
-    orientation === "portrait" ? "aspect-[393/852] rounded-[34px]" : "aspect-[852/393] rounded-[24px]",
+    "relative overflow-hidden bg-[#050506] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
+    orientation === "portrait" ? "aspect-[393/852] rounded-[46px]" : "aspect-[852/393] rounded-[34px]",
     isRec && "shadow-[0_0_0_1.5px_rgba(239,68,68,0.48),0_0_40px_rgba(239,68,68,0.10)]",
   );
   const deviceFrameWidth = DEVICE_RENDER_WIDTH[orientation];
@@ -492,6 +502,27 @@ export default function App() {
             : "border-white/7 bg-[#1a1b1e] text-white/55",
         )}
       >
+        {content}
+      </span>
+    );
+  }
+
+  function renderReconnectBadge(compact = false) {
+    if (!reconnectUiState) return null;
+
+    const content =
+      reconnectUiState.phase === "retrying"
+        ? `Reconnecting${reconnectUiState.attempt > 1 ? ` #${reconnectUiState.attempt}` : ""}`
+        : `Reconnect${reconnectCountdownSeconds !== null ? ` in ${reconnectCountdownSeconds}s` : " queued"}`;
+
+    return (
+      <span
+        className={cn(
+          "inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-amber-400/20 bg-amber-400/10 text-amber-200",
+          compact ? "px-1.5 py-0.5 text-[10px] font-medium tracking-[-0.01em]" : "px-2 py-0.5 text-[11px] font-medium tracking-[-0.01em]",
+        )}
+      >
+        <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
         {content}
       </span>
     );
@@ -620,8 +651,47 @@ export default function App() {
     }
 
     autoDiscoveryAttemptedRef.current = true;
-    doPrimary();
+    void startSessionFlow("start_session", "manual");
   }, [appPreferences.autoStartDiscovery, ss]);
+
+  useEffect(() => {
+    if (ss !== "idle") {
+      shouldMaintainConnectionRef.current = true;
+    }
+
+    if (ss === "mirroring" || ss === "recording") {
+      reconnectAttemptRef.current = 0;
+      setReconnectUiState(null);
+      setReconnectNextRetryAt(null);
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current);
+        reconnectTimerRef.current = null;
+      }
+    }
+  }, [ss]);
+
+  useEffect(() => {
+    if (reconnectNextRetryAt === null) {
+      return;
+    }
+
+    const intervalId = window.setInterval(() => {
+      if (reconnectNextRetryAt <= Date.now()) {
+        setReconnectNextRetryAt(null);
+        window.clearInterval(intervalId);
+      }
+    }, 250);
+
+    return () => window.clearInterval(intervalId);
+  }, [reconnectNextRetryAt]);
+
+  useEffect(() => {
+    return () => {
+      if (reconnectTimerRef.current !== null) {
+        window.clearTimeout(reconnectTimerRef.current);
+      }
+    };
+  }, []);
 
   // event listeners + initial snapshot load
   useEffect(() => {
@@ -810,6 +880,56 @@ export default function App() {
     } finally {
       setCommandPending(false);
     }
+  }
+
+  function clearAutoReconnectTimer() {
+    if (reconnectTimerRef.current !== null) {
+      window.clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    setReconnectNextRetryAt(null);
+  }
+
+  async function runSessionCommand(command: Extract<SessionCommand, "start_session" | "reconnect_session" | "stop_session">, silent = false) {
+    setCommandPending(true);
+    if (!silent) {
+      setCommandError(null);
+    }
+
+    try {
+      setSession(await invoke<SessionSnapshot>(command));
+      return true;
+    } catch (error) {
+      if (!silent) {
+        setCommandError(fmtError(error));
+      }
+      return false;
+    } finally {
+      setCommandPending(false);
+    }
+  }
+
+  async function startSessionFlow(command: "start_session" | "reconnect_session", source: "manual" | "auto") {
+    shouldMaintainConnectionRef.current = true;
+    if (source === "manual") {
+      setReconnectUiState(null);
+      clearAutoReconnectTimer();
+      reconnectAttemptRef.current = 0;
+    }
+    const ok = await runSessionCommand(command, source === "auto");
+    if (ok && source === "auto") {
+      setCommandError(null);
+    }
+    return ok;
+  }
+
+  async function stopSessionFlow() {
+    shouldMaintainConnectionRef.current = false;
+    reconnectAttemptRef.current = 0;
+    autoReconnectInFlightRef.current = false;
+    setReconnectUiState(null);
+    clearAutoReconnectTimer();
+    await runSessionCommand("stop_session");
   }
 
   function setScreenshotSetting<K extends keyof ScreenshotSettings>(key: K, value: ScreenshotSettings[K]) {
@@ -1169,10 +1289,45 @@ export default function App() {
   }
 
   function doPrimary() {
-    if (ss === "idle") void runCmd("start_session");
+    if (ss === "idle") void startSessionFlow("start_session", "manual");
     else if (isRec) void runCmd("stop_recording");
-    else void runCmd("stop_session");
+    else void stopSessionFlow();
   }
+
+  useEffect(() => {
+    if (!appPreferences.autoReconnectOnDrop || !shouldMaintainConnectionRef.current || isRec) {
+      return;
+    }
+
+    const lostConnection = ss === "idle" && Boolean(receiverRuntime.lastError);
+    if (!lostConnection) {
+      return;
+    }
+
+    if (commandPending || autoReconnectInFlightRef.current || reconnectTimerRef.current !== null) {
+      return;
+    }
+
+    const attempt = reconnectAttemptRef.current + 1;
+    const delayMs = Math.min(8000, 1000 * 2 ** Math.min(attempt - 1, 3));
+    const nextRetryAt = Date.now() + delayMs;
+
+    setCommandError(`Connection dropped. Reconnecting${attempt > 1 ? ` (attempt ${attempt})` : ""} in ${Math.round(delayMs / 1000)}s.`);
+    setReconnectUiState({ attempt, phase: "scheduled" });
+    setReconnectNextRetryAt(nextRetryAt);
+
+    reconnectTimerRef.current = window.setTimeout(() => {
+      reconnectTimerRef.current = null;
+      setReconnectUiState({ attempt, phase: "retrying" });
+      setReconnectNextRetryAt(null);
+      reconnectAttemptRef.current = attempt;
+      autoReconnectInFlightRef.current = true;
+
+      void startSessionFlow("reconnect_session", "auto").finally(() => {
+        autoReconnectInFlightRef.current = false;
+      });
+    }, delayMs);
+  }, [appPreferences.autoReconnectOnDrop, commandPending, isRec, receiverRuntime.lastError, ss]);
 
   function adjustZoom(delta: 1 | -1) {
     setZoom((prev) => {
@@ -1516,6 +1671,16 @@ export default function App() {
               />
             </label>
             <p className="mt-2 text-xs text-white/35">When enabled, MirrorSim immediately begins discovery if it launches idle.</p>
+            <label className="mt-3 flex items-center justify-between gap-4 text-sm text-white/80">
+              <span>Auto-reconnect after connection drops</span>
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-white/15 bg-transparent"
+                checked={appPreferences.autoReconnectOnDrop}
+                onChange={(event) => setAppPreference("autoReconnectOnDrop", event.target.checked)}
+              />
+            </label>
+            <p className="mt-2 text-xs text-white/35">Retries reconnect automatically with short backoff after unexpected receiver disconnects or sidecar exits.</p>
           </div>
 
           <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
@@ -1545,24 +1710,35 @@ export default function App() {
     return (
       <div
         className={cn(
-          "relative bg-[#111214] p-2.5",
+          "relative isolate overflow-hidden border border-white/8 bg-[linear-gradient(180deg,#24262b_0%,#111214_16%,#0a0b0d_100%)] p-[1.5px]",
           appMode === "minimal"
-            ? "shadow-[0_0_0_1px_rgba(255,255,255,0.09)]"
-            : "shadow-[0_0_0_1px_rgba(255,255,255,0.09),0_28px_72px_rgba(0,0,0,0.72)]",
+            ? "shadow-[0_18px_36px_rgba(0,0,0,0.28),0_0_0_1px_rgba(255,255,255,0.06)]"
+            : "shadow-[0_0_0_1px_rgba(255,255,255,0.08),0_34px_80px_rgba(0,0,0,0.76)]",
           deviceWidthClass,
         )}
         style={{ width: deviceFrameWidth }}
         onContextMenu={opts.onContextMenu}
         onWheel={opts.onWheel}
       >
+        <div className="pointer-events-none absolute inset-x-[10%] top-[1px] h-5 rounded-full bg-white/[0.07] blur-xl" />
+        <div className="pointer-events-none absolute inset-y-[16%] left-[2px] w-[1px] bg-white/[0.07]" />
+        <div className="pointer-events-none absolute inset-y-[20%] right-[2px] w-[1px] bg-black/35" />
         <div
           className={cn(
-            "relative bg-[#080909] p-2.5 transition-transform duration-150",
+            "relative bg-[linear-gradient(180deg,#0f1013_0%,#080909_22%,#060607_100%)] p-[5px] transition-transform duration-150",
             screenshotFlashActive && "scale-[0.992]",
-            orientation === "portrait" ? "rounded-[44px]" : "rounded-[32px]",
+            orientation === "portrait" ? "rounded-[49px]" : "rounded-[36px]",
           )}
         >
-          <div className="absolute left-1/2 top-3.5 z-10 h-[34px] w-[118px] -translate-x-1/2 rounded-full bg-black" />
+          <div className="pointer-events-none absolute inset-x-3 top-2 h-10 rounded-full bg-white/[0.025] blur-2xl" />
+          <div className="pointer-events-none absolute inset-x-3 bottom-2 h-10 rounded-full bg-black/18 blur-2xl" />
+          <div
+            className={cn(
+              "pointer-events-none absolute inset-[5px] rounded-[inherit] border border-white/[0.035]",
+              orientation === "portrait" ? "rounded-[45px]" : "rounded-[33px]",
+            )}
+          />
+          <div className="absolute left-1/2 top-[12px] z-10 h-[33px] w-[118px] -translate-x-1/2 rounded-full bg-black shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_1px_6px_rgba(0,0,0,0.4)]" />
           <div className={screenFrameClass}>
             <div
               className={cn(
@@ -1635,7 +1811,10 @@ export default function App() {
             className="flex h-full items-center justify-center"
             onMouseDown={(event) => void startWindowDrag(event)}
           >
-            <span className="select-none text-[13px] font-semibold tracking-[-0.015em] text-white/90">MirrorSim</span>
+            <div className="flex items-center gap-2">
+              <span className="select-none text-[13px] font-semibold tracking-[-0.015em] text-white/90">MirrorSim</span>
+              {renderReconnectBadge()}
+            </div>
           </div>
           <div className="flex items-center justify-end gap-1.5">
             {isRec && renderStatusBadge(`● REC ${fmtDuration(recElapsed)}`, true)}
@@ -1733,7 +1912,8 @@ export default function App() {
                   <button
                     type="button"
                     className="inline-flex items-center gap-1.5 self-start rounded-[5px] border border-white/7 bg-[#1a1b1e] px-2.5 py-1 text-[11px] font-medium text-white/55 transition hover:border-white/12 hover:text-white"
-                    onClick={() => void runCmd("stop_session")}
+                    onClick={() => void startSessionFlow("reconnect_session", "manual")}
+                    disabled={commandPending || isRec}
                   >
                     <Icon name="reconnect" size={12} />
                     Reconnect
@@ -1942,8 +2122,9 @@ export default function App() {
         >
           <div className="flex items-center gap-2">
             <TrafficLights />
-            <div className="flex items-center leading-none">
+            <div className="flex items-center gap-1.5 leading-none">
               <span className="select-none text-[11px] font-semibold tracking-[-0.015em] text-white/90">{session.deviceName}</span>
+              {renderReconnectBadge(true)}
             </div>
           </div>
           <div className="flex items-center gap-0.5" onMouseDown={(event) => event.stopPropagation()}>
