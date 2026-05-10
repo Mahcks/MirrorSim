@@ -13,15 +13,14 @@
     "windows": [
       {
         "title": "MirrorSim",
-        "width": 520,
-        "height": 900,
-        "minWidth": 430,
-        "minHeight": 780,
+        "width": 860,
+        "height": 720,
         "center": true,
-        "decorations": true,
+        "decorations": false,
         "maximizable": true,
-        "transparent": false,
-        "shadow": false
+        "resizable": true,
+        "transparent": true,
+        "shadow": true
       }
     ],
     "security": {

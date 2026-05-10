@@ -9,13 +9,14 @@ use base64::prelude::{Engine as _, BASE64_STANDARD};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
+    fs,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
     process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
 };
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 const SESSION_STATUS_EVENT: &str = "session-status";
 const PREVIEW_TELEMETRY_EVENT: &str = "preview-telemetry";
@@ -262,6 +263,73 @@ enum SidecarEvent {
 }
 
 type CommandResult<T> = Result<T, String>;
+
+#[derive(Clone, Copy, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+enum ScreenshotSaveLocation {
+    Pictures,
+    Documents,
+    Downloads,
+    Custom,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveScreenshotRequest {
+    file_name: String,
+    png_base64: String,
+    location: ScreenshotSaveLocation,
+    custom_directory: Option<String>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SaveRecordingRequest {
+    file_name: String,
+    media_base64: String,
+    location: ScreenshotSaveLocation,
+    custom_directory: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedScreenshot {
+    file_name: String,
+    file_path: String,
+}
+
+fn resolve_capture_directory(
+    app: &AppHandle,
+    location: ScreenshotSaveLocation,
+    custom_directory: Option<&str>,
+) -> CommandResult<PathBuf> {
+    let resolver = app.path();
+    let directory = match location {
+        ScreenshotSaveLocation::Pictures => resolver
+            .picture_dir()
+            .or_else(|_| resolver.document_dir())
+            .or_else(|_| resolver.download_dir()),
+        ScreenshotSaveLocation::Documents => resolver
+            .document_dir()
+            .or_else(|_| resolver.picture_dir())
+            .or_else(|_| resolver.download_dir()),
+        ScreenshotSaveLocation::Downloads => resolver
+            .download_dir()
+            .or_else(|_| resolver.document_dir())
+            .or_else(|_| resolver.picture_dir()),
+        ScreenshotSaveLocation::Custom => {
+            let directory = custom_directory
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| String::from("custom capture directory is empty"))?;
+
+            return Ok(PathBuf::from(directory));
+        }
+    }
+    .map_err(|error| error.to_string())?;
+
+    Ok(directory.join("MirrorSim"))
+}
 
 fn preview_stream_from_blueprint(
     blueprint: &RemuxBlueprint,
@@ -1030,6 +1098,42 @@ fn take_screenshot(app: AppHandle, state: State<'_, AppState>) -> CommandResult<
 }
 
 #[tauri::command]
+fn save_screenshot(app: AppHandle, request: SaveScreenshotRequest) -> CommandResult<SavedScreenshot> {
+    let png_bytes = BASE64_STANDARD
+        .decode(request.png_base64.as_bytes())
+        .map_err(|error| error.to_string())?;
+
+    let directory = resolve_capture_directory(&app, request.location, request.custom_directory.as_deref())?;
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+
+    let file_path = directory.join(&request.file_name);
+    fs::write(&file_path, png_bytes).map_err(|error| error.to_string())?;
+
+    Ok(SavedScreenshot {
+        file_name: request.file_name,
+        file_path: file_path.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+fn save_recording(app: AppHandle, request: SaveRecordingRequest) -> CommandResult<SavedScreenshot> {
+    let media_bytes = BASE64_STANDARD
+        .decode(request.media_base64.as_bytes())
+        .map_err(|error| error.to_string())?;
+
+    let directory = resolve_capture_directory(&app, request.location, request.custom_directory.as_deref())?;
+    fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+
+    let file_path = directory.join(&request.file_name);
+    fs::write(&file_path, media_bytes).map_err(|error| error.to_string())?;
+
+    Ok(SavedScreenshot {
+        file_name: request.file_name,
+        file_path: file_path.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
 fn start_recording(app: AppHandle, state: State<'_, AppState>) -> CommandResult<SessionSnapshot> {
     let snapshot = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
@@ -1088,9 +1192,12 @@ pub fn run() {
             start_session,
             stop_session,
             take_screenshot,
+            save_screenshot,
+            save_recording,
             start_recording,
             stop_recording
         ])
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
