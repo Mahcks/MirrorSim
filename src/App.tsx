@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { open } from "@tauri-apps/plugin-dialog";
-import { revealItemInDir } from "@tauri-apps/plugin-opener";
+import { openUrl, revealItemInDir } from "@tauri-apps/plugin-opener";
 import { cn } from "@/lib/utils";
 import {
   attachMockPreviewStream,
@@ -13,11 +13,13 @@ import {
   type PreviewStreamClientDiagnostics,
 } from "./mockPreviewStream";
 import {
+  initialBonjourStatus,
   initialPreviewDiagnostics,
   initialReceiverRuntime,
   PREVIEW_DIAGNOSTICS_EVENT,
   PREVIEW_STREAM_EVENT,
   RECEIVER_RUNTIME_EVENT,
+  type BonjourStatusSnapshot,
   type PreviewDiagnosticsSnapshot,
   type PreviewStreamDescriptor,
   type ReceiverRuntimeSnapshot,
@@ -44,9 +46,12 @@ type SessionCommand =
   | "take_preview_media_segment"
   | "get_preview_diagnostics"
   | "get_receiver_runtime"
+  | "get_bonjour_status"
+  | "refresh_receiver_readiness"
   | "start_session"
   | "reconnect_session"
   | "stop_session"
+  | "open_windows_services"
   | "take_screenshot"
   | "start_recording"
   | "stop_recording";
@@ -418,6 +423,7 @@ export default function App() {
   });
   const [previewStream, setPreviewStream] = useState<PreviewStreamDescriptor | null>(null);
   const [receiverRuntime, setReceiverRuntime] = useState<ReceiverRuntimeSnapshot>(initialReceiverRuntime);
+  const [bonjourStatus, setBonjourStatus] = useState<BonjourStatusSnapshot>(initialBonjourStatus);
   const [previewDiag, setPreviewDiag] = useState<PreviewDiagnosticsSnapshot>(initialPreviewDiagnostics);
   const [previewClientDiag, setPreviewClientDiag] = useState<PreviewStreamClientDiagnostics>(
     initialPreviewStreamClientDiagnostics,
@@ -729,12 +735,13 @@ export default function App() {
           }),
         );
 
-        const [snap, tel, runtime, diag, stream] = await Promise.all([
+        const [snap, tel, runtime, diag, stream, bonjour] = await Promise.all([
           invoke<SessionSnapshot>("get_session_snapshot"),
           invoke<PreviewTelemetry>("get_preview_telemetry"),
-          invoke<ReceiverRuntimeSnapshot>("get_receiver_runtime"),
+          invoke<ReceiverRuntimeSnapshot>("refresh_receiver_readiness"),
           invoke<PreviewDiagnosticsSnapshot>("get_preview_diagnostics"),
           invoke<PreviewStreamDescriptor>("get_preview_stream_descriptor"),
+          invoke<BonjourStatusSnapshot>("get_bonjour_status"),
         ]);
 
         if (alive) {
@@ -743,6 +750,7 @@ export default function App() {
           setReceiverRuntime(runtime);
           setPreviewDiag(diag);
           setPreviewStream(stream);
+          setBonjourStatus(bonjour);
         }
       } catch (e) {
         if (alive) setCommandError(fmtError(e));
@@ -909,6 +917,17 @@ export default function App() {
     }
   }
 
+  async function refreshBonjourStatus() {
+    const [status, runtime] = await Promise.all([
+      invoke<BonjourStatusSnapshot>("get_bonjour_status"),
+      invoke<ReceiverRuntimeSnapshot>("refresh_receiver_readiness"),
+    ]);
+
+    setBonjourStatus(status);
+    setReceiverRuntime(runtime);
+    return status;
+  }
+
   async function startSessionFlow(command: "start_session" | "reconnect_session", source: "manual" | "auto") {
     shouldMaintainConnectionRef.current = true;
     if (source === "manual") {
@@ -917,6 +936,13 @@ export default function App() {
       reconnectAttemptRef.current = 0;
     }
     const ok = await runSessionCommand(command, source === "auto");
+    if (!ok) {
+      try {
+        await refreshBonjourStatus();
+      } catch {
+        // preserve the command error if the readiness refresh also fails
+      }
+    }
     if (ok && source === "auto") {
       setCommandError(null);
     }
@@ -1293,6 +1319,14 @@ export default function App() {
     else if (isRec) void runCmd("stop_recording");
     else void stopSessionFlow();
   }
+
+  const bonjourNeedsAttention = bonjourStatus.status === "missing" || bonjourStatus.status === "stopped";
+  const bonjourToneClass =
+    bonjourStatus.status === "missing"
+      ? "border-amber-400/20 bg-amber-500/10 text-amber-100"
+      : bonjourStatus.status === "stopped"
+        ? "border-orange-400/20 bg-orange-500/10 text-orange-100"
+        : "border-white/7 bg-[#15161a] text-white/75";
 
   useEffect(() => {
     if (!appPreferences.autoReconnectOnDrop || !shouldMaintainConnectionRef.current || isRec) {
@@ -1920,6 +1954,40 @@ export default function App() {
           <aside className={cn("flex min-h-0 flex-col overflow-hidden border-l", panelSurfaceClass)}>
             <div className="flex flex-col gap-2 border-b border-white/7 p-3.5">
               <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/25">Session</div>
+              {bonjourNeedsAttention && (
+                <div className={cn("rounded-[8px] border p-2.5", bonjourToneClass)}>
+                  <div className="text-[11px] font-medium">
+                    {bonjourStatus.status === "missing" ? "Bonjour is required for discovery" : "Bonjour service is not running"}
+                  </div>
+                  <p className="mt-1 text-[11px] leading-4 text-inherit/80">{bonjourStatus.detail}</p>
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {bonjourStatus.status === "missing" ? (
+                      <button
+                        type="button"
+                        className="inline-flex items-center rounded-[5px] border border-white/10 bg-black/20 px-2.5 py-1 text-[11px] font-medium text-inherit transition hover:border-white/20"
+                        onClick={() => void openUrl("https://support.apple.com/kb/DL999").catch((error) => setCommandError(fmtError(error)))}
+                      >
+                        Install Bonjour
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="inline-flex items-center rounded-[5px] border border-white/10 bg-black/20 px-2.5 py-1 text-[11px] font-medium text-inherit transition hover:border-white/20"
+                        onClick={() => void invoke("open_windows_services").catch((error) => setCommandError(fmtError(error)))}
+                      >
+                        Open Services
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      className="inline-flex items-center rounded-[5px] border border-white/10 bg-black/20 px-2.5 py-1 text-[11px] font-medium text-inherit transition hover:border-white/20"
+                      onClick={() => void refreshBonjourStatus().catch((error) => setCommandError(fmtError(error)))}
+                    >
+                      Recheck
+                    </button>
+                  </div>
+                </div>
+              )}
               <div className="text-[10px] font-medium uppercase tracking-[0.05em] text-white/25">Connected Device</div>
               {isConnected ? (
                 <>
@@ -1950,6 +2018,7 @@ export default function App() {
                     type="button"
                     className="inline-flex items-center rounded-[5px] border border-white/7 bg-[#1a1b1e] px-2.5 py-1 text-[11px] font-medium text-white/55 transition hover:border-white/12 hover:text-white"
                     onClick={doPrimary}
+                    disabled={bonjourNeedsAttention}
                   >
                     Discover
                   </button>
@@ -2019,6 +2088,7 @@ export default function App() {
                       ["Init", previewDiag.initSegmentReady ? "ready" : "waiting"],
                       ["Appended", String(previewClientDiag.mediaAppendCount)],
                       ["Errors", String(previewClientDiag.appendErrorCount)],
+                      ["Bonjour", bonjourStatus.status],
                       ["Transport", receiverRuntime.transport],
                       [
                         "Last error",

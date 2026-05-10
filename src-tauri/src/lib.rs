@@ -111,6 +111,23 @@ struct ReceiverRuntimeSnapshot {
     last_error: Option<String>,
 }
 
+#[derive(Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum BonjourStatusKind {
+    Ready,
+    Missing,
+    Stopped,
+    Unknown,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct BonjourStatusSnapshot {
+    status: BonjourStatusKind,
+    service_name: String,
+    detail: String,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct PreviewDiagnosticsSnapshot {
@@ -625,6 +642,83 @@ fn emit_runtime_error(
     )
 }
 
+#[cfg(windows)]
+fn query_bonjour_status() -> BonjourStatusSnapshot {
+    const SERVICE_NAME: &str = "Bonjour Service";
+
+    let output = Command::new("sc")
+        .args(["query", SERVICE_NAME])
+        .output();
+
+    match output {
+        Ok(output) => {
+            let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
+            let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
+            let combined = format!("{}\n{}", stdout, stderr);
+
+            if combined.contains("does not exist as an installed service") {
+                return BonjourStatusSnapshot {
+                    status: BonjourStatusKind::Missing,
+                    service_name: SERVICE_NAME.to_string(),
+                    detail: String::from(
+                        "Bonjour for Windows is not installed. Install it so your iPhone can discover this PC over AirPlay.",
+                    ),
+                };
+            }
+
+            if combined.contains("state") && combined.contains("running") {
+                return BonjourStatusSnapshot {
+                    status: BonjourStatusKind::Ready,
+                    service_name: SERVICE_NAME.to_string(),
+                    detail: String::from("Bonjour Service is installed and running."),
+                };
+            }
+
+            if combined.contains("state") {
+                return BonjourStatusSnapshot {
+                    status: BonjourStatusKind::Stopped,
+                    service_name: SERVICE_NAME.to_string(),
+                    detail: String::from(
+                        "Bonjour Service is installed but not running. Start the service in Windows Services before using discovery.",
+                    ),
+                };
+            }
+
+            BonjourStatusSnapshot {
+                status: BonjourStatusKind::Unknown,
+                service_name: SERVICE_NAME.to_string(),
+                detail: String::from(
+                    "MirrorSim could not determine whether Bonjour Service is available. If discovery fails, verify Bonjour is installed and running.",
+                ),
+            }
+        }
+        Err(error) => BonjourStatusSnapshot {
+            status: BonjourStatusKind::Unknown,
+            service_name: SERVICE_NAME.to_string(),
+            detail: format!(
+                "MirrorSim could not query Bonjour Service ({}). If discovery fails, verify Bonjour is installed and running.",
+                error
+            ),
+        },
+    }
+}
+
+#[cfg(not(windows))]
+fn query_bonjour_status() -> BonjourStatusSnapshot {
+    BonjourStatusSnapshot {
+        status: BonjourStatusKind::Unknown,
+        service_name: String::from("Bonjour Service"),
+        detail: String::from("Bonjour status checks are only available on Windows."),
+    }
+}
+
+fn bonjour_blocking_message(status: &BonjourStatusSnapshot) -> Option<String> {
+    match status.status {
+        BonjourStatusKind::Missing | BonjourStatusKind::Stopped => Some(status.detail.clone()),
+        BonjourStatusKind::Ready | BonjourStatusKind::Unknown => None,
+    }
+}
+
 fn handle_sidecar_event(
     app: &AppHandle,
     store: &Arc<Mutex<SessionStore>>,
@@ -1015,6 +1109,11 @@ fn get_preview_diagnostics(state: State<'_, AppState>) -> CommandResult<PreviewD
 
 #[tauri::command]
 fn start_session(app: AppHandle, state: State<'_, AppState>) -> CommandResult<SessionSnapshot> {
+    if let Err(error) = ensure_bonjour_ready() {
+        emit_runtime_error(&app, &state.inner, error.clone(), false)?;
+        return Err(error);
+    }
+
     let sidecar_was_running = state
         .sidecar
         .lock()
@@ -1089,6 +1188,11 @@ fn start_session(app: AppHandle, state: State<'_, AppState>) -> CommandResult<Se
 
 #[tauri::command]
 fn reconnect_session(app: AppHandle, state: State<'_, AppState>) -> CommandResult<SessionSnapshot> {
+    if let Err(error) = ensure_bonjour_ready() {
+        emit_runtime_error(&app, &state.inner, error.clone(), false)?;
+        return Err(error);
+    }
+
     let active_session_id = {
         let guard = state.inner.lock().map_err(|error| error.to_string())?;
         guard.active_session_id.clone()
@@ -1305,6 +1409,51 @@ fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> CommandResult<S
     Ok(snapshot)
 }
 
+#[tauri::command]
+fn get_bonjour_status() -> BonjourStatusSnapshot {
+    query_bonjour_status()
+}
+
+#[tauri::command]
+fn open_windows_services() -> CommandResult<()> {
+    #[cfg(windows)]
+    {
+        Command::new("cmd")
+            .args(["/C", "start", "", "services.msc"])
+            .spawn()
+            .map_err(|error| error.to_string())?;
+        return Ok(());
+    }
+
+    #[allow(unreachable_code)]
+    Err(String::from("Windows Services is only available on Windows."))
+}
+
+#[tauri::command]
+fn refresh_receiver_readiness(app: AppHandle, state: State<'_, AppState>) -> CommandResult<ReceiverRuntimeSnapshot> {
+    let bonjour = query_bonjour_status();
+
+    let receiver_runtime = {
+        let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
+        if matches!(guard.snapshot.status, SessionStatus::Idle) {
+            guard.receiver_runtime.last_error = bonjour_blocking_message(&bonjour);
+        }
+        guard.receiver_runtime.clone()
+    };
+
+    emit_receiver_runtime(&app, &receiver_runtime)?;
+    Ok(receiver_runtime)
+}
+
+fn ensure_bonjour_ready() -> CommandResult<()> {
+    let bonjour = query_bonjour_status();
+    if let Some(message) = bonjour_blocking_message(&bonjour) {
+        return Err(message);
+    }
+
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -1319,14 +1468,17 @@ pub fn run() {
             get_receiver_sidecar_spec,
             get_receiver_runtime,
             get_preview_diagnostics,
+            get_bonjour_status,
             start_session,
             reconnect_session,
+            refresh_receiver_readiness,
             stop_session,
             take_screenshot,
             save_screenshot,
             save_recording,
             start_recording,
-            stop_recording
+            stop_recording,
+            open_windows_services
         ])
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())

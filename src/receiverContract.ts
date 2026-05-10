@@ -2,6 +2,8 @@ export const PREVIEW_STREAM_EVENT = "preview-stream";
 export const RECEIVER_RUNTIME_EVENT = "receiver-runtime";
 export const PREVIEW_DIAGNOSTICS_EVENT = "preview-diagnostics";
 
+export type BonjourStatus = "ready" | "missing" | "stopped" | "unknown";
+
 export type ReceiverRuntimeState = "idle" | "priming" | "ready" | "streaming";
 export type ReceiverTransport = "fixture" | "airplayserver";
 export type PreviewDeliveryMode = "static-paths" | "command-stream";
@@ -22,6 +24,12 @@ export type ReceiverRuntimeSnapshot = {
   streamId: string;
   queuedSegments: number;
   lastError: string | null;
+};
+
+export type BonjourStatusSnapshot = {
+  status: BonjourStatus;
+  serviceName: string;
+  detail: string;
 };
 
 export type PreviewDiagnosticsSnapshot = {
@@ -68,4 +76,10 @@ export const initialPreviewDiagnostics: PreviewDiagnosticsSnapshot = {
   lastDeliveredSequenceNumber: null,
   lastDeliveredFirstSampleIndex: null,
   lastDeliveredLastSampleIndex: null,
+};
+
+export const initialBonjourStatus: BonjourStatusSnapshot = {
+  status: "unknown",
+  serviceName: "Bonjour Service",
+  detail: "Checking Bonjour availability...",
 };

@@ -112,6 +112,8 @@ You can change the save location in the app preferences.
 - Make sure both devices are on the same network.
 - Allow MirrorSim through Windows Firewall on private networks.
 
+MirrorSim will warn you in the session panel if Bonjour is missing or if the Bonjour Service is stopped, and it can open the installer link or Windows Services directly.
+
 ### Session connects but stays blank
 
 - Disable VPNs or proxies temporarily.
@@ -128,13 +130,18 @@ If you are building releases yourself:
 bun run fetch:airplay-runtime
 bun run sync:airplay-runtime
 bun run release:prep
+bun run release:prep:fetch
 bun run release:installer
+bun run release:installer:fetch
 bun run release:portable
+bun run release:portable:fetch
 bun run release:all
+bun run release:all:fetch
 ```
 
 Use `bun run fetch:airplay-runtime` when you want MirrorSim to download the versioned runtime bundle declared in `receivers/runtime-manifest.json`.
 Use `bun run sync:airplay-runtime` when you have a local sibling AirPlayServer build and want to copy it in directly.
+Use the `*:fetch` release commands when you want local release validation to use the published runtime bundle instead of your sibling AirPlayServer checkout.
 
 - `release:prep` syncs the bundled receiver runtime and builds the frontend
 - `release:installer` builds installer artifacts through Tauri

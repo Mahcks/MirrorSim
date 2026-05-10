@@ -1,6 +1,8 @@
 param(
   [ValidateSet('prep', 'installer', 'portable', 'all')]
-  [string]$Target = 'all'
+  [string]$Target = 'all',
+  [ValidateSet('sync', 'fetch')]
+  [string]$RuntimeSource = 'sync'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,7 +44,13 @@ function Invoke-Step {
 }
 
 function Invoke-Prep {
-  Invoke-Step 'bun run sync:airplay-runtime'
+  if ($RuntimeSource -eq 'fetch') {
+    Invoke-Step 'bun run fetch:airplay-runtime'
+  }
+  else {
+    Invoke-Step 'bun run sync:airplay-runtime'
+  }
+
   Invoke-Step 'bun run build'
 }
 
@@ -114,4 +122,4 @@ switch ($Target) {
   }
 }
 
-Write-Host "Release target '$Target' completed."
+Write-Host "Release target '$Target' completed using runtime source '$RuntimeSource'."

@@ -10,9 +10,13 @@
     "fetch:airplay-runtime": "powershell -ExecutionPolicy Bypass -File scripts/fetch-airplay-runtime.ps1",
     "sync:airplay-runtime": "powershell -ExecutionPolicy Bypass -File scripts/sync-airplay-runtime.ps1",
     "release:prep": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Target prep",
+    "release:prep:fetch": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Target prep -RuntimeSource fetch",
     "release:installer": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Target installer",
+    "release:installer:fetch": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Target installer -RuntimeSource fetch",
     "release:portable": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Target portable",
+    "release:portable:fetch": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Target portable -RuntimeSource fetch",
     "release:all": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Target all",
+    "release:all:fetch": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Target all -RuntimeSource fetch",
     "tauri": "tauri"
   },
   "dependencies": {
