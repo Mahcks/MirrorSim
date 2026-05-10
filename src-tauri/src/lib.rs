@@ -1,13 +1,27 @@
-use serde::Serialize;
+mod preview_fragments;
+mod remux;
+mod sidecar;
+
+use crate::preview_fragments::{LivePreviewBuffer, PreviewPushResult, QueuedPreviewSegment};
+use crate::remux::RemuxBlueprint;
+use crate::sidecar::ReceiverSidecarSpec;
+use base64::prelude::{Engine as _, BASE64_STANDARD};
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 use std::{
+    io::{BufRead, BufReader, Write},
+    path::PathBuf,
+    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
     sync::{Arc, Mutex},
     thread,
-    time::Duration,
 };
 use tauri::{AppHandle, Emitter, State};
 
 const SESSION_STATUS_EVENT: &str = "session-status";
 const PREVIEW_TELEMETRY_EVENT: &str = "preview-telemetry";
+const PREVIEW_STREAM_EVENT: &str = "preview-stream";
+const RECEIVER_RUNTIME_EVENT: &str = "receiver-runtime";
+const PREVIEW_DIAGNOSTICS_EVENT: &str = "preview-diagnostics";
 
 #[derive(Clone, Copy, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -17,6 +31,22 @@ enum SessionStatus {
     Connecting,
     Mirroring,
     Recording,
+}
+
+#[derive(Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum ReceiverTransport {
+    Fixture,
+    Airplayserver,
+}
+
+#[derive(Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum ReceiverRuntimeState {
+    Idle,
+    Priming,
+    Ready,
+    Streaming,
 }
 
 #[derive(Clone, Serialize)]
@@ -37,21 +67,119 @@ struct PreviewTelemetry {
     activity: f32,
 }
 
+#[derive(Clone, Copy, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+enum PreviewDeliveryMode {
+    StaticPaths,
+    CommandStream,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewStreamDescriptor {
+    stream_id: String,
+    transport: ReceiverTransport,
+    delivery_mode: PreviewDeliveryMode,
+    mime_type: String,
+    init_segment_path: String,
+    media_segment_paths: Vec<String>,
+    should_loop: bool,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewMediaSegmentPayload {
+    sequence_number: u32,
+    first_sample_index: u32,
+    last_sample_index: u32,
+    bytes: Vec<u8>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ReceiverRuntimeSnapshot {
+    state: ReceiverRuntimeState,
+    transport: ReceiverTransport,
+    stream_id: String,
+    queued_segments: usize,
+    last_error: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct PreviewDiagnosticsSnapshot {
+    transport: ReceiverTransport,
+    init_segment_ready: bool,
+    track_timescale: u32,
+    pending_samples: usize,
+    queued_segments: usize,
+    emitted_segments: u32,
+    delivered_segments: u32,
+    last_access_unit_index: Option<u32>,
+    last_access_unit_duration: Option<u32>,
+    last_queued_sequence_number: Option<u32>,
+    last_queued_first_sample_index: Option<u32>,
+    last_queued_last_sample_index: Option<u32>,
+    last_queued_duration: Option<u32>,
+    last_delivered_sequence_number: Option<u32>,
+    last_delivered_first_sample_index: Option<u32>,
+    last_delivered_last_sample_index: Option<u32>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct RemuxBlueprintSnapshot {
+    transport: ReceiverTransport,
+    blueprint: RemuxBlueprint,
+}
+
 struct SessionStore {
     sequence: u64,
+    active_session_id: Option<String>,
     snapshot: SessionSnapshot,
     preview: PreviewTelemetry,
+    preview_stream: PreviewStreamDescriptor,
+    live_preview_buffer: LivePreviewBuffer,
+    remux_blueprint: RemuxBlueprint,
+    receiver_runtime: ReceiverRuntimeSnapshot,
+    preview_diagnostics: PreviewDiagnosticsSnapshot,
+}
+
+struct SidecarRuntime {
+    child: Child,
+    stdin: ChildStdin,
+}
+
+impl SidecarRuntime {
+    fn send_command(&mut self, command: serde_json::Value) -> CommandResult<()> {
+        serde_json::to_writer(&mut self.stdin, &command).map_err(|error| error.to_string())?;
+        self.stdin.write_all(b"\n").map_err(|error| error.to_string())?;
+        self.stdin.flush().map_err(|error| error.to_string())
+    }
+}
+
+impl Drop for SidecarRuntime {
+    fn drop(&mut self) {
+        let _ = self.send_command(json!({ "name": "shutdown" }));
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
 }
 
 struct AppState {
     inner: Arc<Mutex<SessionStore>>,
+    sidecar: Arc<Mutex<Option<SidecarRuntime>>>,
 }
 
 impl Default for AppState {
     fn default() -> Self {
+        let remux_blueprint = RemuxBlueprint::fixture_preview();
+        let preview_stream = preview_stream_from_blueprint(&remux_blueprint, ReceiverTransport::Fixture);
+
         Self {
             inner: Arc::new(Mutex::new(SessionStore {
                 sequence: 0,
+                active_session_id: None,
                 snapshot: SessionSnapshot {
                     status: SessionStatus::Idle,
                     capture_count: 0,
@@ -64,12 +192,103 @@ impl Default for AppState {
                     latency_ms: 0,
                     activity: 0.0,
                 },
+                preview_stream,
+                live_preview_buffer: LivePreviewBuffer::new(),
+                remux_blueprint: remux_blueprint.clone(),
+                receiver_runtime: ReceiverRuntimeSnapshot {
+                    state: ReceiverRuntimeState::Idle,
+                    transport: ReceiverTransport::Fixture,
+                    stream_id: remux_blueprint.stream_id.clone(),
+                    queued_segments: 0,
+                    last_error: None,
+                },
+                preview_diagnostics: PreviewDiagnosticsSnapshot {
+                    transport: ReceiverTransport::Fixture,
+                    init_segment_ready: true,
+                    track_timescale: remux_blueprint.track.timescale,
+                    pending_samples: 0,
+                    queued_segments: remux_blueprint.queued_segment_count(),
+                    emitted_segments: 0,
+                    delivered_segments: 0,
+                    last_access_unit_index: None,
+                    last_access_unit_duration: None,
+                    last_queued_sequence_number: None,
+                    last_queued_first_sample_index: None,
+                    last_queued_last_sample_index: None,
+                    last_queued_duration: None,
+                    last_delivered_sequence_number: None,
+                    last_delivered_first_sample_index: None,
+                    last_delivered_last_sample_index: None,
+                },
             })),
+            sidecar: Arc::new(Mutex::new(None)),
         }
     }
 }
 
+#[derive(Deserialize)]
+#[serde(tag = "name", rename_all = "snake_case")]
+enum SidecarEvent {
+    ReceiverReady {
+        receiver_id: String,
+        protocol_version: String,
+        capabilities: Vec<String>,
+    },
+    SessionStarted {
+        session_id: String,
+        stream_id: String,
+        device_name: String,
+    },
+    VideoAccessUnit {
+        stream_id: String,
+        sample_index: u32,
+        keyframe: bool,
+        pts: u64,
+        dts: u64,
+        duration: u32,
+        #[serde(rename = "payloadBase64")]
+        payload_base64: String,
+    },
+    StreamDiscontinuity {
+        stream_id: String,
+        reason: String,
+        requires_init_segment_refresh: bool,
+    },
+    ReceiverError {
+        code: String,
+        message: String,
+        recoverable: bool,
+    },
+}
+
 type CommandResult<T> = Result<T, String>;
+
+fn preview_stream_from_blueprint(
+    blueprint: &RemuxBlueprint,
+    transport: ReceiverTransport,
+) -> PreviewStreamDescriptor {
+    PreviewStreamDescriptor {
+        stream_id: blueprint.stream_id.clone(),
+        transport,
+        delivery_mode: match transport {
+            ReceiverTransport::Fixture => PreviewDeliveryMode::StaticPaths,
+            ReceiverTransport::Airplayserver => PreviewDeliveryMode::CommandStream,
+        },
+        mime_type: blueprint.mime_type.clone(),
+        init_segment_path: blueprint.init_segment_path.clone(),
+        media_segment_paths: blueprint
+            .media_segments
+            .iter()
+            .map(|segment| segment.file_path.clone())
+            .collect(),
+        should_loop: blueprint.should_loop,
+    }
+}
+
+fn emit_preview_stream(app: &AppHandle, preview_stream: &PreviewStreamDescriptor) -> CommandResult<()> {
+    app.emit(PREVIEW_STREAM_EVENT, preview_stream.clone())
+        .map_err(|error| error.to_string())
+}
 
 fn emit_session_status(app: &AppHandle, snapshot: &SessionSnapshot) -> CommandResult<()> {
     app.emit(SESSION_STATUS_EVENT, snapshot.clone())
@@ -79,6 +298,87 @@ fn emit_session_status(app: &AppHandle, snapshot: &SessionSnapshot) -> CommandRe
 fn emit_preview_telemetry(app: &AppHandle, preview: &PreviewTelemetry) -> CommandResult<()> {
     app.emit(PREVIEW_TELEMETRY_EVENT, preview.clone())
         .map_err(|error| error.to_string())
+}
+
+fn emit_receiver_runtime(app: &AppHandle, receiver_runtime: &ReceiverRuntimeSnapshot) -> CommandResult<()> {
+    app.emit(RECEIVER_RUNTIME_EVENT, receiver_runtime.clone())
+        .map_err(|error| error.to_string())
+}
+
+fn emit_preview_diagnostics(app: &AppHandle, preview_diagnostics: &PreviewDiagnosticsSnapshot) -> CommandResult<()> {
+    app.emit(PREVIEW_DIAGNOSTICS_EVENT, preview_diagnostics.clone())
+        .map_err(|error| error.to_string())
+}
+
+fn emit_state_updates(
+    app: &AppHandle,
+    snapshot: Option<SessionSnapshot>,
+    preview: Option<PreviewTelemetry>,
+    preview_stream: Option<PreviewStreamDescriptor>,
+    receiver_runtime: Option<ReceiverRuntimeSnapshot>,
+    preview_diagnostics: Option<PreviewDiagnosticsSnapshot>,
+) -> CommandResult<()> {
+    if let Some(snapshot) = snapshot.as_ref() {
+        emit_session_status(app, snapshot)?;
+    }
+
+    if let Some(preview) = preview.as_ref() {
+        emit_preview_telemetry(app, preview)?;
+    }
+
+    if let Some(preview_stream) = preview_stream.as_ref() {
+        emit_preview_stream(app, preview_stream)?;
+    }
+
+    if let Some(receiver_runtime) = receiver_runtime.as_ref() {
+        emit_receiver_runtime(app, receiver_runtime)?;
+    }
+
+    if let Some(preview_diagnostics) = preview_diagnostics.as_ref() {
+        emit_preview_diagnostics(app, preview_diagnostics)?;
+    }
+
+    Ok(())
+}
+
+fn sync_preview_diagnostics(store: &mut SessionStore) {
+    store.preview_diagnostics.transport = store.receiver_runtime.transport;
+    store.preview_diagnostics.track_timescale = store.remux_blueprint.track.timescale;
+    store.preview_diagnostics.pending_samples = store.live_preview_buffer.pending_sample_count();
+    store.preview_diagnostics.queued_segments = match store.receiver_runtime.transport {
+        ReceiverTransport::Fixture => store.remux_blueprint.queued_segment_count(),
+        ReceiverTransport::Airplayserver => store.live_preview_buffer.queued_segment_count(),
+    };
+    store.preview_diagnostics.init_segment_ready = match store.receiver_runtime.transport {
+        ReceiverTransport::Fixture => true,
+        ReceiverTransport::Airplayserver => store.live_preview_buffer.has_init_segment(),
+    };
+}
+
+fn reset_preview_diagnostics(store: &mut SessionStore, transport: ReceiverTransport, init_segment_ready: bool) {
+    store.preview_diagnostics = PreviewDiagnosticsSnapshot {
+        transport,
+        init_segment_ready,
+        track_timescale: store.remux_blueprint.track.timescale,
+        pending_samples: 0,
+        queued_segments: if transport == ReceiverTransport::Fixture {
+            store.remux_blueprint.queued_segment_count()
+        } else {
+            0
+        },
+        emitted_segments: 0,
+        delivered_segments: 0,
+        last_access_unit_index: None,
+        last_access_unit_duration: None,
+        last_queued_sequence_number: None,
+        last_queued_first_sample_index: None,
+        last_queued_last_sample_index: None,
+        last_queued_duration: None,
+        last_delivered_sequence_number: None,
+        last_delivered_first_sample_index: None,
+        last_delivered_last_sample_index: None,
+    };
+    sync_preview_diagnostics(store);
 }
 
 fn reset_preview(store: &mut SessionStore) {
@@ -91,69 +391,429 @@ fn reset_preview(store: &mut SessionStore) {
     };
 }
 
-fn schedule_preview_stream(app: AppHandle, store: Arc<Mutex<SessionStore>>, sequence: u64) {
-    thread::spawn(move || loop {
-        thread::sleep(Duration::from_millis(250));
+fn reset_fixture_transport(store: &mut SessionStore) {
+    let remux_blueprint = RemuxBlueprint::fixture_preview();
+    store.preview_stream = preview_stream_from_blueprint(&remux_blueprint, ReceiverTransport::Fixture);
+    store.live_preview_buffer.reset();
+    store.remux_blueprint = remux_blueprint.clone();
+    store.receiver_runtime.transport = ReceiverTransport::Fixture;
+    store.receiver_runtime.stream_id = remux_blueprint.stream_id;
+    reset_preview_diagnostics(store, ReceiverTransport::Fixture, true);
+}
 
-        let preview = {
-            let mut guard = match store.lock() {
-                Ok(guard) => guard,
-                Err(_) => return,
+fn prepare_live_transport(store: &mut SessionStore, stream_id: String) {
+    store.live_preview_buffer.reset();
+    store.remux_blueprint = RemuxBlueprint::live_preview(stream_id.clone());
+    store.preview_stream = preview_stream_from_blueprint(&store.remux_blueprint, ReceiverTransport::Airplayserver);
+    store.receiver_runtime.transport = ReceiverTransport::Airplayserver;
+    store.receiver_runtime.stream_id = stream_id;
+    reset_preview_diagnostics(store, ReceiverTransport::Airplayserver, false);
+}
+
+fn refresh_live_preview_descriptor(store: &mut SessionStore) {
+    store.preview_stream = preview_stream_from_blueprint(&store.remux_blueprint, ReceiverTransport::Airplayserver);
+}
+
+fn set_receiver_runtime_state(store: &mut SessionStore, state: ReceiverRuntimeState) {
+    store.receiver_runtime.state = state;
+    store.receiver_runtime.queued_segments = match state {
+        ReceiverRuntimeState::Idle => 0,
+        ReceiverRuntimeState::Priming => 1,
+        ReceiverRuntimeState::Ready | ReceiverRuntimeState::Streaming => match store.receiver_runtime.transport {
+            ReceiverTransport::Fixture => store.remux_blueprint.queued_segment_count(),
+            ReceiverTransport::Airplayserver => store.remux_blueprint.buffered_access_unit_count(),
+        },
+    };
+    store.receiver_runtime.last_error = None;
+    sync_preview_diagnostics(store);
+}
+
+fn preview_fps_from_duration(duration: u32, timescale: u32) -> u16 {
+    if duration == 0 {
+        return 0;
+    }
+
+    ((timescale as f32 / duration as f32).round() as u16).max(1)
+}
+
+fn preview_bitrate_kbps(size_bytes: usize, duration: u32, timescale: u32) -> u32 {
+    if duration == 0 {
+        return 0;
+    }
+
+    ((size_bytes as u64 * 8 * timescale as u64) / (duration as u64 * 1_000)) as u32
+}
+
+fn preview_activity(size_bytes: usize) -> f32 {
+    ((size_bytes as f32 / 16_000.0).clamp(0.15, 1.0) * 10.0).round() / 10.0
+}
+
+fn resolve_sidecar_path(relative_path: &str) -> CommandResult<PathBuf> {
+    let current_dir = std::env::current_dir().map_err(|error| error.to_string())?;
+    let mut candidates = vec![current_dir.join(relative_path), current_dir.join("src-tauri").join(relative_path)];
+
+    if let Some(parent) = current_dir.parent() {
+        candidates.push(parent.join(relative_path));
+    }
+
+    for candidate in candidates {
+        if candidate.exists() {
+            return Ok(candidate);
+        }
+    }
+
+    Err(format!(
+        "unable to resolve receiver sidecar path '{}' from {}",
+        relative_path,
+        current_dir.display()
+    ))
+}
+
+fn emit_runtime_error(
+    app: &AppHandle,
+    store: &Arc<Mutex<SessionStore>>,
+    message: String,
+    recoverable: bool,
+) -> CommandResult<()> {
+    let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics) = {
+        let mut guard = store.lock().map_err(|error| error.to_string())?;
+
+        if recoverable {
+            if guard.snapshot.status != SessionStatus::Idle {
+                guard.snapshot.status = SessionStatus::Connecting;
+            }
+            guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
+            set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Ready);
+        } else {
+            guard.snapshot.status = SessionStatus::Idle;
+            guard.active_session_id = None;
+            reset_preview(&mut guard);
+            reset_fixture_transport(&mut guard);
+            set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Idle);
+        }
+
+        guard.receiver_runtime.last_error = Some(message);
+        sync_preview_diagnostics(&mut guard);
+
+        (
+            guard.snapshot.clone(),
+            guard.preview.clone(),
+            guard.preview_stream.clone(),
+            guard.receiver_runtime.clone(),
+            guard.preview_diagnostics.clone(),
+        )
+    };
+
+    emit_state_updates(
+        app,
+        Some(snapshot),
+        Some(preview),
+        Some(preview_stream),
+        Some(receiver_runtime),
+        Some(preview_diagnostics),
+    )
+}
+
+fn handle_sidecar_event(
+    app: &AppHandle,
+    store: &Arc<Mutex<SessionStore>>,
+    sidecar: &Arc<Mutex<Option<SidecarRuntime>>>,
+    event: SidecarEvent,
+) -> CommandResult<()> {
+    let mut request_keyframe: Option<(String, String)> = None;
+
+    let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics) = {
+        let mut guard = store.lock().map_err(|error| error.to_string())?;
+        let mut emit_snapshot = false;
+        let mut emit_preview = false;
+        let mut emit_preview_stream = false;
+
+        match event {
+            SidecarEvent::ReceiverReady {
+                receiver_id,
+                protocol_version,
+                capabilities,
+            } => {
+                guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
+                if guard.snapshot.status != SessionStatus::Idle {
+                    guard.snapshot.status = SessionStatus::Connecting;
+                    emit_snapshot = true;
+                }
+
+                let ready_note = format!(
+                    "{} {} ({})",
+                    receiver_id,
+                    protocol_version,
+                    capabilities.join(", ")
+                );
+                set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Ready);
+                guard.receiver_runtime.last_error = Some(ready_note);
+            }
+            SidecarEvent::SessionStarted {
+                session_id,
+                stream_id,
+                device_name,
+            } => {
+                guard.active_session_id = Some(session_id);
+                guard.snapshot.device_name = device_name;
+                guard.snapshot.status = SessionStatus::Connecting;
+                prepare_live_transport(&mut guard, stream_id);
+                set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Ready);
+                guard.receiver_runtime.last_error = Some(String::from(
+                    "receiver connected; waiting for the first H.264 frame from the iPhone",
+                ));
+                emit_snapshot = true;
+                emit_preview_stream = true;
+            }
+            SidecarEvent::VideoAccessUnit {
+                stream_id,
+                sample_index,
+                keyframe,
+                pts,
+                dts,
+                duration,
+                payload_base64,
+            } => {
+                if guard.receiver_runtime.stream_id != stream_id {
+                    prepare_live_transport(&mut guard, stream_id.clone());
+                    emit_preview_stream = true;
+                }
+
+                let payload = BASE64_STANDARD
+                    .decode(payload_base64.as_bytes())
+                    .map_err(|error| format!("failed to decode receiver payload: {}", error))?;
+                let size_bytes = payload.len();
+                guard.remux_blueprint.push_access_unit(sample_index, size_bytes, keyframe, dts, pts, duration);
+                let push_result: PreviewPushResult = guard
+                    .live_preview_buffer
+                    .push_access_unit(sample_index, payload, keyframe, dts, pts, duration)?;
+                guard.preview_diagnostics.last_access_unit_index = Some(sample_index);
+                guard.preview_diagnostics.last_access_unit_duration = Some(duration);
+                if push_result.init_segment_became_available {
+                    if let Some(track) = guard.live_preview_buffer.track_config() {
+                        guard.remux_blueprint.track = track.clone();
+                        guard.remux_blueprint.mime_type = format!("video/mp4; codecs=\"{}\"", track.codec);
+                        refresh_live_preview_descriptor(&mut guard);
+                        emit_preview_stream = true;
+                    }
+                }
+
+                if let Some(segment) = push_result.emitted_segment {
+                    guard.preview_diagnostics.emitted_segments += 1;
+                    guard.preview_diagnostics.last_queued_sequence_number = Some(segment.sequence_number);
+                    guard.preview_diagnostics.last_queued_first_sample_index = Some(segment.first_sample_index);
+                    guard.preview_diagnostics.last_queued_last_sample_index = Some(segment.last_sample_index);
+                    guard.preview_diagnostics.last_queued_duration = Some(segment.duration);
+                }
+
+                if !push_result.sample_enqueued {
+                    guard.snapshot.status = SessionStatus::Connecting;
+                    guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
+                    guard.receiver_runtime.stream_id = stream_id;
+                    guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
+                    guard.receiver_runtime.queued_segments = guard.live_preview_buffer.queued_segment_count();
+                    guard.receiver_runtime.last_error = Some(String::from(
+                        "receiver initialized; waiting for the first decodable video frame",
+                    ));
+
+                    emit_snapshot = true;
+                } else {
+                    if guard.snapshot.status != SessionStatus::Recording {
+                        guard.snapshot.status = SessionStatus::Mirroring;
+                    }
+
+                    guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
+                    guard.receiver_runtime.stream_id = stream_id;
+                    guard.receiver_runtime.state = ReceiverRuntimeState::Streaming;
+                    guard.receiver_runtime.queued_segments = guard.live_preview_buffer.queued_segment_count();
+                    guard.receiver_runtime.last_error = None;
+
+                    guard.preview.frame_number = sample_index as u64 + 1;
+                    let preview_timescale = guard.remux_blueprint.track.timescale;
+                    guard.preview.fps = preview_fps_from_duration(duration, preview_timescale);
+                    guard.preview.bitrate_kbps = preview_bitrate_kbps(size_bytes, duration, preview_timescale);
+                    guard.preview.latency_ms = 18 + ((sample_index % 5) as u16 * 2);
+                    guard.preview.activity = preview_activity(size_bytes);
+
+                    emit_snapshot = true;
+                    emit_preview = true;
+                }
+
+                sync_preview_diagnostics(&mut guard);
+            }
+            SidecarEvent::StreamDiscontinuity {
+                stream_id,
+                reason,
+                requires_init_segment_refresh,
+            } => {
+                prepare_live_transport(&mut guard, stream_id.clone());
+                guard.remux_blueprint.reset_live_preview(stream_id.clone());
+                guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
+                guard.receiver_runtime.queued_segments = 0;
+                guard.receiver_runtime.last_error = Some(format!("stream discontinuity: {}", reason));
+
+                if matches!(guard.snapshot.status, SessionStatus::Mirroring | SessionStatus::Recording) {
+                    guard.snapshot.status = SessionStatus::Connecting;
+                    emit_snapshot = true;
+                }
+
+                if requires_init_segment_refresh {
+                    reset_preview(&mut guard);
+                    emit_preview = true;
+                    emit_preview_stream = true;
+                    request_keyframe = Some((stream_id, reason));
+                }
+
+                sync_preview_diagnostics(&mut guard);
+
+            }
+            SidecarEvent::ReceiverError {
+                code,
+                message,
+                recoverable,
+            } => {
+                drop(guard);
+                return emit_runtime_error(app, store, format!("{}: {}", code, message), recoverable);
+            }
+        }
+
+        (
+            emit_snapshot.then(|| guard.snapshot.clone()),
+            emit_preview.then(|| guard.preview.clone()),
+            emit_preview_stream.then(|| guard.preview_stream.clone()),
+            Some(guard.receiver_runtime.clone()),
+            Some(guard.preview_diagnostics.clone()),
+        )
+    };
+
+    emit_state_updates(app, snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics)?;
+
+    if let Some((stream_id, reason)) = request_keyframe {
+        let _ = send_sidecar_command(
+            sidecar,
+            json!({
+                "name": "request_keyframe",
+                "stream_id": stream_id,
+                "reason": reason,
+            }),
+        );
+    }
+
+    Ok(())
+}
+
+fn spawn_sidecar_stdout_loop(
+    app: AppHandle,
+    store: Arc<Mutex<SessionStore>>,
+    sidecar: Arc<Mutex<Option<SidecarRuntime>>>,
+    stdout: ChildStdout,
+) {
+    thread::spawn(move || {
+        let reader = BufReader::new(stdout);
+
+        for line in reader.lines() {
+            let line = match line {
+                Ok(line) => line,
+                Err(error) => {
+                    let _ = emit_runtime_error(&app, &store, format!("receiver output error: {}", error), true);
+                    break;
+                }
             };
 
-            if guard.sequence != sequence {
-                return;
+            if line.trim().is_empty() {
+                continue;
             }
 
-            if !matches!(guard.snapshot.status, SessionStatus::Mirroring | SessionStatus::Recording) {
-                return;
+            match serde_json::from_str::<SidecarEvent>(&line) {
+                Ok(event) => {
+                    let _ = handle_sidecar_event(&app, &store, &sidecar, event);
+                }
+                Err(error) => {
+                    let _ = emit_runtime_error(
+                        &app,
+                        &store,
+                        format!("receiver emitted malformed event: {}", error),
+                        true,
+                    );
+                }
             }
+        }
 
-            guard.preview.frame_number += 1;
-            guard.preview.fps = if guard.snapshot.status == SessionStatus::Recording { 59 } else { 60 };
-            guard.preview.bitrate_kbps = 6800 + ((guard.preview.frame_number % 6) as u32 * 235);
-            guard.preview.latency_ms = 24 + ((guard.preview.frame_number % 5) as u16 * 3);
-            guard.preview.activity = ((guard.preview.frame_number % 8) as f32 + 2.0) / 10.0;
-            guard.preview.clone()
+        if let Ok(mut guard) = sidecar.lock() {
+            *guard = None;
+        }
+
+        let is_idle = match store.lock() {
+            Ok(guard) => guard.snapshot.status == SessionStatus::Idle,
+            Err(_) => true,
         };
 
-        let _ = emit_preview_telemetry(&app, &preview);
+        if !is_idle {
+            let _ = emit_runtime_error(&app, &store, String::from("receiver sidecar exited unexpectedly"), false);
+        }
     });
 }
 
-fn schedule_session_flow(app: AppHandle, store: Arc<Mutex<SessionStore>>, sequence: u64) {
+fn spawn_sidecar_stderr_loop(app: AppHandle, store: Arc<Mutex<SessionStore>>, stderr: ChildStderr) {
     thread::spawn(move || {
-        for (delay_ms, next_status) in [
-            (900_u64, SessionStatus::Connecting),
-            (1200_u64, SessionStatus::Mirroring),
-        ] {
-            thread::sleep(Duration::from_millis(delay_ms));
+        let reader = BufReader::new(stderr);
 
-            let snapshot = {
-                let mut guard = match store.lock() {
-                    Ok(guard) => guard,
-                    Err(_) => return,
-                };
-
-                if guard.sequence != sequence || guard.snapshot.status == SessionStatus::Idle {
-                    return;
-                }
-
-                if matches!(guard.snapshot.status, SessionStatus::Mirroring | SessionStatus::Recording) {
-                    return;
-                }
-
-                guard.snapshot.status = next_status;
-                guard.snapshot.clone()
+        for line in reader.lines() {
+            let line = match line {
+                Ok(line) => line,
+                Err(_) => break,
             };
 
-            let _ = emit_session_status(&app, &snapshot);
-
-            if next_status == SessionStatus::Mirroring {
-                schedule_preview_stream(app.clone(), store.clone(), sequence);
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
             }
+
+            let _ = emit_runtime_error(&app, &store, format!("receiver stderr: {}", trimmed), true);
         }
     });
+}
+
+fn ensure_sidecar_runtime(app: &AppHandle, state: &AppState) -> CommandResult<bool> {
+    let mut sidecar_guard = state.sidecar.lock().map_err(|error| error.to_string())?;
+    if sidecar_guard.is_some() {
+        return Ok(false);
+    }
+
+    let spec = ReceiverSidecarSpec::direct_receiver_boundary();
+    let executable = resolve_sidecar_path(&spec.launch.executable)?;
+    let working_directory = resolve_sidecar_path(&spec.launch.working_directory)?;
+
+    let mut child = Command::new(&executable)
+        .args(&spec.launch.args)
+        .current_dir(working_directory)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|error| format!("failed to launch receiver sidecar '{}': {}", executable.display(), error))?;
+
+    let stdin = child.stdin.take().ok_or_else(|| String::from("receiver sidecar stdin was unavailable"))?;
+    let stdout = child.stdout.take().ok_or_else(|| String::from("receiver sidecar stdout was unavailable"))?;
+    let stderr = child.stderr.take().ok_or_else(|| String::from("receiver sidecar stderr was unavailable"))?;
+
+    spawn_sidecar_stdout_loop(app.clone(), state.inner.clone(), state.sidecar.clone(), stdout);
+    spawn_sidecar_stderr_loop(app.clone(), state.inner.clone(), stderr);
+
+    *sidecar_guard = Some(SidecarRuntime { child, stdin });
+    Ok(true)
+}
+
+fn send_sidecar_command(
+    sidecar: &Arc<Mutex<Option<SidecarRuntime>>>,
+    command: serde_json::Value,
+) -> CommandResult<()> {
+    let mut guard = sidecar.lock().map_err(|error| error.to_string())?;
+    let runtime = guard
+        .as_mut()
+        .ok_or_else(|| String::from("receiver sidecar is not running"))?;
+
+    runtime.send_command(command)
 }
 
 #[tauri::command]
@@ -169,32 +829,142 @@ fn get_preview_telemetry(state: State<'_, AppState>) -> CommandResult<PreviewTel
 }
 
 #[tauri::command]
-fn start_session(app: AppHandle, state: State<'_, AppState>) -> CommandResult<SessionSnapshot> {
-    let (snapshot, sequence, should_schedule) = {
+fn get_preview_stream_descriptor(state: State<'_, AppState>) -> CommandResult<PreviewStreamDescriptor> {
+    let guard = state.inner.lock().map_err(|error| error.to_string())?;
+    Ok(guard.preview_stream.clone())
+}
+
+#[tauri::command]
+fn get_preview_init_segment(state: State<'_, AppState>) -> CommandResult<Option<Vec<u8>>> {
+    let guard = state.inner.lock().map_err(|error| error.to_string())?;
+    Ok(guard.live_preview_buffer.init_segment_bytes())
+}
+
+#[tauri::command]
+fn take_preview_media_segment(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CommandResult<Option<PreviewMediaSegmentPayload>> {
+    let (payload, receiver_runtime, preview_diagnostics) = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
+        let payload = guard.live_preview_buffer.take_next_segment().map(|segment: QueuedPreviewSegment| {
+            guard.preview_diagnostics.delivered_segments += 1;
+            guard.preview_diagnostics.last_delivered_sequence_number = Some(segment.descriptor.sequence_number);
+            guard.preview_diagnostics.last_delivered_first_sample_index = Some(segment.descriptor.first_sample_index);
+            guard.preview_diagnostics.last_delivered_last_sample_index = Some(segment.descriptor.last_sample_index);
 
-        let should_schedule = guard.snapshot.status == SessionStatus::Idle;
-
-        if should_schedule {
-            guard.sequence += 1;
-            guard.snapshot.status = SessionStatus::Discovering;
-            reset_preview(&mut guard);
-        }
-
-        (guard.snapshot.clone(), guard.sequence, should_schedule)
+            PreviewMediaSegmentPayload {
+                sequence_number: segment.descriptor.sequence_number,
+                first_sample_index: segment.descriptor.first_sample_index,
+                last_sample_index: segment.descriptor.last_sample_index,
+                bytes: segment.bytes,
+            }
+        });
+        guard.receiver_runtime.queued_segments = guard.live_preview_buffer.queued_segment_count();
+        sync_preview_diagnostics(&mut guard);
+        (payload, guard.receiver_runtime.clone(), guard.preview_diagnostics.clone())
     };
 
-    emit_session_status(&app, &snapshot)?;
-    if should_schedule {
-        let preview = {
-            let guard = state.inner.lock().map_err(|error| error.to_string())?;
-            guard.preview.clone()
-        };
-        emit_preview_telemetry(&app, &preview)?;
-    }
+    emit_receiver_runtime(&app, &receiver_runtime)?;
+    emit_preview_diagnostics(&app, &preview_diagnostics)?;
+    Ok(payload)
+}
 
-    if should_schedule {
-        schedule_session_flow(app, state.inner.clone(), sequence);
+#[tauri::command]
+fn get_remux_blueprint(state: State<'_, AppState>) -> CommandResult<RemuxBlueprintSnapshot> {
+    let guard = state.inner.lock().map_err(|error| error.to_string())?;
+    Ok(RemuxBlueprintSnapshot {
+        transport: guard.receiver_runtime.transport,
+        blueprint: guard.remux_blueprint.clone(),
+    })
+}
+
+#[tauri::command]
+fn get_receiver_sidecar_spec() -> CommandResult<ReceiverSidecarSpec> {
+    Ok(ReceiverSidecarSpec::direct_receiver_boundary())
+}
+
+#[tauri::command]
+fn get_receiver_runtime(state: State<'_, AppState>) -> CommandResult<ReceiverRuntimeSnapshot> {
+    let guard = state.inner.lock().map_err(|error| error.to_string())?;
+    Ok(guard.receiver_runtime.clone())
+}
+
+#[tauri::command]
+fn get_preview_diagnostics(state: State<'_, AppState>) -> CommandResult<PreviewDiagnosticsSnapshot> {
+    let guard = state.inner.lock().map_err(|error| error.to_string())?;
+    Ok(guard.preview_diagnostics.clone())
+}
+
+#[tauri::command]
+fn start_session(app: AppHandle, state: State<'_, AppState>) -> CommandResult<SessionSnapshot> {
+    let sidecar_was_running = state
+        .sidecar
+        .lock()
+        .map_err(|error| error.to_string())?
+        .is_some();
+
+    let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics, session_id, stream_id, should_start) = {
+        let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
+
+        let should_start = guard.snapshot.status == SessionStatus::Idle;
+
+        let session_id = format!("session-{:04}", guard.sequence + 1);
+        let stream_id = format!("airplay-stream-{:04}", guard.sequence + 1);
+
+        if should_start {
+            guard.sequence += 1;
+            guard.active_session_id = Some(session_id.clone());
+            guard.snapshot.status = SessionStatus::Discovering;
+            reset_preview(&mut guard);
+            prepare_live_transport(&mut guard, stream_id.clone());
+            set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Priming);
+
+            if sidecar_was_running {
+                guard.snapshot.status = SessionStatus::Connecting;
+                set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Ready);
+            }
+        }
+
+        (
+            guard.snapshot.clone(),
+            guard.preview.clone(),
+            guard.preview_stream.clone(),
+            guard.receiver_runtime.clone(),
+            guard.preview_diagnostics.clone(),
+            session_id,
+            stream_id,
+            should_start,
+        )
+    };
+
+    emit_state_updates(
+        &app,
+        Some(snapshot.clone()),
+        Some(preview),
+        Some(preview_stream),
+        Some(receiver_runtime),
+        Some(preview_diagnostics),
+    )?;
+
+    if should_start {
+        if let Err(error) = ensure_sidecar_runtime(&app, &state) {
+            emit_runtime_error(&app, &state.inner, error.clone(), false)?;
+            return Err(error);
+        }
+
+        if let Err(error) = send_sidecar_command(
+            &state.sidecar,
+            json!({
+                "name": "start_session",
+                "session_id": session_id,
+                "expected_stream_id": stream_id,
+                "device_hint": snapshot.device_name,
+            }),
+        ) {
+            emit_runtime_error(&app, &state.inner, error.clone(), false)?;
+            return Err(error);
+        }
     }
 
     Ok(snapshot)
@@ -202,16 +972,43 @@ fn start_session(app: AppHandle, state: State<'_, AppState>) -> CommandResult<Se
 
 #[tauri::command]
 fn stop_session(app: AppHandle, state: State<'_, AppState>) -> CommandResult<SessionSnapshot> {
-    let (snapshot, preview) = {
-        let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
-        guard.sequence += 1;
-        guard.snapshot.status = SessionStatus::Idle;
-        reset_preview(&mut guard);
-        (guard.snapshot.clone(), guard.preview.clone())
+    let active_session_id = {
+        let guard = state.inner.lock().map_err(|error| error.to_string())?;
+        guard.active_session_id.clone()
     };
 
-    emit_session_status(&app, &snapshot)?;
-    emit_preview_telemetry(&app, &preview)?;
+    if let Some(session_id) = active_session_id {
+        let _ = send_sidecar_command(&state.sidecar, json!({
+            "name": "stop_session",
+            "session_id": session_id,
+        }));
+    }
+
+    let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics) = {
+        let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
+        guard.sequence += 1;
+        guard.active_session_id = None;
+        guard.snapshot.status = SessionStatus::Idle;
+        reset_preview(&mut guard);
+        reset_fixture_transport(&mut guard);
+        set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Idle);
+        (
+            guard.snapshot.clone(),
+            guard.preview.clone(),
+            guard.preview_stream.clone(),
+            guard.receiver_runtime.clone(),
+            guard.preview_diagnostics.clone(),
+        )
+    };
+
+    emit_state_updates(
+        &app,
+        Some(snapshot.clone()),
+        Some(preview),
+        Some(preview_stream),
+        Some(receiver_runtime),
+        Some(preview_diagnostics),
+    )?;
     Ok(snapshot)
 }
 
@@ -281,6 +1078,13 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             get_session_snapshot,
             get_preview_telemetry,
+            get_preview_stream_descriptor,
+            get_preview_init_segment,
+            take_preview_media_segment,
+            get_remux_blueprint,
+            get_receiver_sidecar_spec,
+            get_receiver_runtime,
+            get_preview_diagnostics,
             start_session,
             stop_session,
             take_screenshot,

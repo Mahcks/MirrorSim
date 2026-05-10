@@ -1,7 +1,23 @@
 import type { CSSProperties } from "react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
+import {
+  attachMockPreviewStream,
+  initialPreviewStreamClientDiagnostics,
+  type MockPreviewStreamStatus,
+  type PreviewStreamClientDiagnostics,
+} from "./mockPreviewStream";
+import {
+  initialPreviewDiagnostics,
+  initialReceiverRuntime,
+  PREVIEW_DIAGNOSTICS_EVENT,
+  PREVIEW_STREAM_EVENT,
+  RECEIVER_RUNTIME_EVENT,
+  type PreviewDiagnosticsSnapshot,
+  type PreviewStreamDescriptor,
+  type ReceiverRuntimeSnapshot,
+} from "./receiverContract";
 import "./App.css";
 
 const scaleSteps = [75, 85, 100] as const;
@@ -9,11 +25,16 @@ const SESSION_STATUS_EVENT = "session-status";
 const PREVIEW_TELEMETRY_EVENT = "preview-telemetry";
 
 type Orientation = "portrait" | "landscape";
-type GlyphName = "home" | "camera" | "rotate" | "record" | "scale";
+type GlyphName = "home" | "camera" | "rotate" | "record" | "scale" | "debug";
 type SessionState = "idle" | "discovering" | "connecting" | "mirroring" | "recording";
 type SessionCommand =
   | "get_session_snapshot"
   | "get_preview_telemetry"
+  | "get_preview_stream_descriptor"
+  | "get_preview_init_segment"
+  | "take_preview_media_segment"
+  | "get_preview_diagnostics"
+  | "get_receiver_runtime"
   | "start_session"
   | "stop_session"
   | "take_screenshot"
@@ -34,6 +55,17 @@ type PreviewTelemetry = {
   activity: number;
 };
 
+type VideoElementDiagnostics = {
+  currentTime: number;
+  bufferedEnd: number;
+  readyState: number;
+  paused: boolean;
+  totalVideoFrames: number;
+  droppedVideoFrames: number;
+};
+
+type PreviewSurfaceTone = "inactive" | "live" | "warning";
+
 const sessionOrder: SessionState[] = ["idle", "discovering", "connecting", "mirroring", "recording"];
 
 const sessionLabels: Record<SessionState, string> = {
@@ -47,7 +79,7 @@ const sessionLabels: Record<SessionState, string> = {
 const sessionDescriptions: Record<SessionState, string> = {
   idle: "Ready to discover a nearby iPhone and start a simulated session.",
   discovering: "Scanning for Bonjour and AirPlay endpoints on the local network.",
-  connecting: "Negotiating the receiver session and warming the first media pipeline.",
+  connecting: "Receiver connected. Waiting for the first video frame and keyframe metadata from the sender.",
   mirroring: "Mock video frames are live and ready for control actions.",
   recording: "Capturing the simulated stream while the session remains interactive.",
 };
@@ -74,12 +106,46 @@ const initialPreview: PreviewTelemetry = {
   activity: 0,
 };
 
+const initialVideoElementDiagnostics: VideoElementDiagnostics = {
+  currentTime: 0,
+  bufferedEnd: 0,
+  readyState: 0,
+  paused: true,
+  totalVideoFrames: 0,
+  droppedVideoFrames: 0,
+};
+
 function formatCommandError(error: unknown) {
   if (error instanceof Error) {
     return error.message;
   }
 
   return String(error);
+}
+
+function formatNullableNumber(value: number | null) {
+  return value === null ? "-" : String(value);
+}
+
+function formatSampleRange(start: number | null, end: number | null) {
+  if (start === null || end === null) {
+    return "-";
+  }
+
+  return `${start}-${end}`;
+}
+
+function readBufferedEnd(videoElement: HTMLVideoElement) {
+  try {
+    const { buffered } = videoElement;
+    if (buffered.length === 0) {
+      return 0;
+    }
+
+    return buffered.end(buffered.length - 1);
+  } catch {
+    return 0;
+  }
 }
 
 async function invokeSessionCommand(command: SessionCommand) {
@@ -125,6 +191,16 @@ function Glyph({ name }: { name: GlyphName }) {
           <path d="M19 15v4h-4" />
         </svg>
       );
+    case "debug":
+      return (
+        <svg viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M5 6.5h14v11H5z" />
+          <path d="M9 10h6" />
+          <path d="M9 14h3" />
+          <path d="M8 3.5v3" />
+          <path d="M16 3.5v3" />
+        </svg>
+      );
   }
 }
 
@@ -133,9 +209,19 @@ function App() {
   const [scale, setScale] = useState<(typeof scaleSteps)[number]>(100);
   const [session, setSession] = useState<SessionSnapshot>(initialSnapshot);
   const [preview, setPreview] = useState<PreviewTelemetry>(initialPreview);
+  const [previewStream, setPreviewStream] = useState<PreviewStreamDescriptor | null>(null);
+  const [receiverRuntime, setReceiverRuntime] = useState<ReceiverRuntimeSnapshot>(initialReceiverRuntime);
+  const [previewDiagnostics, setPreviewDiagnostics] = useState<PreviewDiagnosticsSnapshot>(initialPreviewDiagnostics);
+  const [previewClientDiagnostics, setPreviewClientDiagnostics] =
+    useState<PreviewStreamClientDiagnostics>(initialPreviewStreamClientDiagnostics);
+  const [videoDiagnostics, setVideoDiagnostics] = useState<VideoElementDiagnostics>(initialVideoElementDiagnostics);
+  const [previewSurfaceStatus, setPreviewSurfaceStatus] = useState<MockPreviewStreamStatus>("loading");
+  const [previewSurfaceError, setPreviewSurfaceError] = useState<string | null>(null);
   const [backdropMode, setBackdropMode] = useState<"clean" | "stage">("clean");
+  const [debugMenuOpen, setDebugMenuOpen] = useState(true);
   const [commandPending, setCommandPending] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
+  const previewVideoRef = useRef<HTMLVideoElement | null>(null);
 
   const sessionState = session.status;
   const shellTitle = orientation === "portrait" ? `${session.deviceName} - iOS 17.2` : `${session.deviceName} - Landscape`;
@@ -144,10 +230,33 @@ function App() {
   const sessionProgress = `${((sessionIndex / (sessionOrder.length - 1)) * 100).toFixed(0)}%`;
   const canCapture = sessionState === "mirroring" || sessionState === "recording";
   const canRecord = sessionState === "mirroring" || sessionState === "recording";
-  const previewBars = Array.from({ length: 10 }, (_, index) => {
-    const base = ((preview.frameNumber + index * 3) % 7) + 2;
-    return Math.max(16, Math.round(base * 8 * (0.45 + preview.activity)));
-  });
+  const previewIsLive = sessionState === "mirroring" || sessionState === "recording";
+  const previewSegmentCount = previewStream?.mediaSegmentPaths.length ?? 0;
+  const previewSurfaceTone: PreviewSurfaceTone =
+    previewSurfaceStatus === "error" || previewSurfaceStatus === "unsupported"
+      ? "warning"
+      : previewIsLive && previewSurfaceStatus === "ready"
+        ? "live"
+        : "inactive";
+  const previewSurfaceLabel =
+    previewSurfaceStatus === "ready"
+      ? `${receiverRuntime.transport} transport ${receiverRuntime.state}`
+      : previewSurfaceStatus === "loading"
+        ? receiverRuntime.transport === "airplayserver"
+          ? "Waiting for first video frame"
+          : "Loading receiver preview"
+        : previewSurfaceStatus === "unsupported"
+          ? "MediaSource unsupported"
+          : "Fixture stream failed";
+  const previewTransportCopy =
+    previewSurfaceStatus === "ready"
+      ? previewIsLive
+        ? receiverRuntime.transport === "airplayserver"
+          ? `Appending ${receiverRuntime.queuedSegments} queued live fragments from the AirPlayServer adapter while Frame ${preview.frameNumber} tracks live receiver telemetry.`
+          : `Appending ${previewSegmentCount} queued ${receiverRuntime.transport} fragments through MediaSource while Frame ${preview.frameNumber} tracks the mock transport telemetry.`
+        : `Receiver transport is primed with ${receiverRuntime.queuedSegments} queued fragments and waiting for live mirroring.`
+      : previewSurfaceError ?? receiverRuntime.lastError ?? "Preparing the receiver-backed preview transport inside the shell.";
+  const bufferedAhead = Math.max(0, videoDiagnostics.bufferedEnd - videoDiagnostics.currentTime);
 
   useEffect(() => {
     let isMounted = true;
@@ -174,14 +283,50 @@ function App() {
         });
         unlistenCallbacks.push(unlistenPreview);
 
-        const [snapshot, previewTelemetry] = await Promise.all([
+        const unlistenPreviewStream = await listen<PreviewStreamDescriptor>(PREVIEW_STREAM_EVENT, (event) => {
+          if (!isMounted) {
+            return;
+          }
+
+          setPreviewStream(event.payload);
+        });
+        unlistenCallbacks.push(unlistenPreviewStream);
+
+        const unlistenPreviewDiagnostics = await listen<PreviewDiagnosticsSnapshot>(
+          PREVIEW_DIAGNOSTICS_EVENT,
+          (event) => {
+            if (!isMounted) {
+              return;
+            }
+
+            setPreviewDiagnostics(event.payload);
+          },
+        );
+        unlistenCallbacks.push(unlistenPreviewDiagnostics);
+
+        const unlistenReceiverRuntime = await listen<ReceiverRuntimeSnapshot>(RECEIVER_RUNTIME_EVENT, (event) => {
+          if (!isMounted) {
+            return;
+          }
+
+          setReceiverRuntime(event.payload);
+        });
+        unlistenCallbacks.push(unlistenReceiverRuntime);
+
+        const [snapshot, previewTelemetry, receiverSnapshot, diagnosticsSnapshot, streamDescriptor] = await Promise.all([
           invokeSessionCommand("get_session_snapshot") as Promise<SessionSnapshot>,
           invokeSessionCommand("get_preview_telemetry") as Promise<PreviewTelemetry>,
+          invokeSessionCommand("get_receiver_runtime") as Promise<ReceiverRuntimeSnapshot>,
+          invokeSessionCommand("get_preview_diagnostics") as Promise<PreviewDiagnosticsSnapshot>,
+          invokeSessionCommand("get_preview_stream_descriptor") as Promise<PreviewStreamDescriptor>,
         ]);
 
         if (isMounted) {
           setSession(snapshot);
           setPreview(previewTelemetry);
+          setReceiverRuntime(receiverSnapshot);
+          setPreviewDiagnostics(diagnosticsSnapshot);
+          setPreviewStream(streamDescriptor);
         }
       } catch (error) {
         if (isMounted) {
@@ -195,6 +340,110 @@ function App() {
       unlistenCallbacks.forEach((callback) => callback());
     };
   }, []);
+
+  useEffect(() => {
+    setPreviewClientDiagnostics(initialPreviewStreamClientDiagnostics);
+    setVideoDiagnostics(initialVideoElementDiagnostics);
+  }, [previewStream?.streamId]);
+
+  useEffect(() => {
+    const videoElement = previewVideoRef.current;
+
+    if (!videoElement || !previewStream) {
+      return;
+    }
+
+    return attachMockPreviewStream(videoElement, previewStream, {
+      onStatusChange: (status) => {
+        setPreviewSurfaceStatus(status);
+        if (status !== "error") {
+          setPreviewSurfaceError(null);
+        }
+      },
+      onError: (message) => {
+        setPreviewSurfaceError(message);
+      },
+      onDiagnosticsChange: (diagnostics) => {
+        setPreviewClientDiagnostics(diagnostics);
+      },
+    });
+  }, [previewStream]);
+
+  useEffect(() => {
+    const videoElement = previewVideoRef.current;
+
+    if (!videoElement) {
+      return;
+    }
+
+    const syncDiagnostics = () => {
+      const quality =
+        typeof videoElement.getVideoPlaybackQuality === "function"
+          ? videoElement.getVideoPlaybackQuality()
+          : null;
+
+      setVideoDiagnostics({
+        currentTime: videoElement.currentTime,
+        bufferedEnd: readBufferedEnd(videoElement),
+        readyState: videoElement.readyState,
+        paused: videoElement.paused,
+        totalVideoFrames: quality?.totalVideoFrames ?? 0,
+        droppedVideoFrames: quality?.droppedVideoFrames ?? 0,
+      });
+    };
+
+    syncDiagnostics();
+    const intervalId = window.setInterval(syncDiagnostics, 250);
+
+    return () => {
+      window.clearInterval(intervalId);
+    };
+  }, [previewStream?.streamId, previewSurfaceStatus]);
+
+  useEffect(() => {
+    const videoElement = previewVideoRef.current;
+
+    if (!videoElement || previewSurfaceStatus !== "ready") {
+      return;
+    }
+
+    if (previewIsLive) {
+      void videoElement.play().catch((error) => {
+        setPreviewSurfaceError(formatCommandError(error));
+        setPreviewSurfaceStatus("error");
+      });
+      return;
+    }
+
+    videoElement.pause();
+    videoElement.currentTime = 0;
+  }, [previewIsLive, previewSurfaceStatus]);
+
+  useEffect(() => {
+    const videoElement = previewVideoRef.current;
+
+    if (!videoElement || !previewIsLive || previewSurfaceStatus !== "ready") {
+      return;
+    }
+
+    const bufferedLead = videoDiagnostics.bufferedEnd - videoDiagnostics.currentTime;
+    const looksStalled = !videoDiagnostics.paused && bufferedLead > 0.75 && videoDiagnostics.readyState >= 2;
+
+    if (!looksStalled) {
+      return;
+    }
+
+    const liveEdge = Math.max(0, videoDiagnostics.bufferedEnd - 0.12);
+    if (liveEdge <= videoDiagnostics.currentTime + 0.2) {
+      return;
+    }
+
+    videoElement.currentTime = liveEdge;
+    void videoElement.play().catch((error) => {
+      setPreviewSurfaceError(formatCommandError(error));
+      setPreviewSurfaceStatus("error");
+    });
+  }, [previewIsLive, previewSurfaceStatus, videoDiagnostics]);
 
   async function runSessionCommand(command: SessionCommand) {
     setCommandPending(true);
@@ -253,6 +502,14 @@ function App() {
         <div className="chrome-toolbar">
           <button
             type="button"
+            className={`toolbar-primary-action toolbar-primary-action-${sessionState}`}
+            onClick={handlePrimaryAction}
+            disabled={commandPending}
+          >
+            {commandPending ? "Working..." : sessionActions[sessionState]}
+          </button>
+          <button
+            type="button"
             className={`toolbar-button ${sessionState === "idle" ? "toolbar-button-disabled" : ""}`}
             aria-label="Reset session"
             onClick={() => void runSessionCommand("stop_session")}
@@ -294,6 +551,14 @@ function App() {
           >
             <Glyph name="scale" />
           </button>
+          <button
+            type="button"
+            className={`toolbar-button ${debugMenuOpen ? "active-mode" : ""}`}
+            aria-label="Toggle debug console"
+            onClick={() => setDebugMenuOpen((value) => !value)}
+          >
+            <Glyph name="debug" />
+          </button>
         </div>
       </section>
 
@@ -312,94 +577,110 @@ function App() {
             <div className="device-bezel">
               <div className="device-island" />
               <div className={`device-screen session-screen session-${sessionState}`}>
-                <div className="status-bar">
-                  <span>7:20</span>
-                  <div className="status-icons">
-                    <span className="signal-dots" />
-                    <span className="wifi-mark" />
-                    <span className="battery-mark" />
-                  </div>
-                </div>
-
-                <div className="wallpaper-glow wallpaper-glow-top" />
-                <div className="wallpaper-glow wallpaper-glow-bottom" />
-
-                <div className="session-content">
-                  <div className="session-hero">
-                    <div className="session-chip">{sessionLabels[sessionState]}</div>
-                    <h2>Mirror pipeline</h2>
-                    <p>{sessionDescriptions[sessionState]}</p>
-                    <div className={`session-bridge-note ${commandError ? "session-bridge-note-error" : ""}`}>
-                      {commandError ?? (commandPending ? "Syncing with the Rust session manager..." : "Driven by Tauri commands and backend events.")}
-                    </div>
-                  </div>
-
-                  <div className="mirror-preview">
-                    <div className="preview-overlay" />
-                    <div className="preview-frame preview-frame-one" />
-                    <div className="preview-frame preview-frame-two" />
-                    <div className="preview-hud">
-                      <span>{preview.fps} FPS</span>
-                      <span>{preview.latencyMs} ms</span>
-                      <span>{(preview.bitrateKbps / 1000).toFixed(1)} Mbps</span>
-                    </div>
-                    <div className="preview-scanlines">
-                      {previewBars.map((height, index) => (
-                        <span
-                          key={`${preview.frameNumber}-${index}`}
-                          className="preview-bar"
-                          style={{ height: `${height}px` }}
-                        />
-                      ))}
-                    </div>
-                    <div className="preview-copy">
-                      <strong>{sessionState === "idle" ? "No active stream" : sessionState === "recording" ? "Recording active" : "Live device surface"}</strong>
-                      <span>{sessionState === "idle" ? "Start discovery to stage a session." : `Frame ${preview.frameNumber} is arriving over the mock transport boundary.`}</span>
-                    </div>
-                  </div>
-
-                  <div className="session-stats">
-                    <div className="session-stat">
-                      <span>Session</span>
-                      <strong>{sessionProgress}</strong>
-                    </div>
-                    <div className="session-stat">
-                      <span>Shots</span>
-                      <strong>{session.captureCount}</strong>
-                    </div>
-                    <div className="session-stat">
-                      <span>Mode</span>
-                      <strong>{sessionState === "recording" ? "REC" : orientation === "portrait" ? "P" : "L"}</strong>
-                    </div>
-                    <div className="session-stat">
-                      <span>Frames</span>
-                      <strong>{preview.frameNumber}</strong>
-                    </div>
-                  </div>
-
-                  <div className="session-actions">
-                    <button
-                      type="button"
-                      className="session-primary-action"
-                      onClick={handlePrimaryAction}
-                      disabled={commandPending}
-                    >
-                      {commandPending ? "Working..." : sessionActions[sessionState]}
-                    </button>
-                    <button
-                      type="button"
-                      className="session-secondary-action"
-                      onClick={() => void runSessionCommand("stop_session")}
-                      disabled={sessionState === "idle" || commandPending}
-                    >
-                      Reset shell
-                    </button>
+                <div className={`mirror-preview mirror-preview-${previewSurfaceTone}`}>
+                  <div className={`preview-video-shell preview-video-shell-${previewSurfaceTone}`}>
+                    <video ref={previewVideoRef} className="preview-video" muted playsInline />
                   </div>
                 </div>
               </div>
             </div>
           </div>
         </div>
+      </section>
+
+      <section className={`debug-console ${debugMenuOpen ? "debug-console-open" : "debug-console-closed"}`}>
+        <div className="debug-console-header">
+          <div>
+            <span className="debug-console-kicker">Runtime debug</span>
+            <h2>Mirror Console</h2>
+          </div>
+          <button type="button" className="debug-console-toggle" onClick={() => setDebugMenuOpen((value) => !value)}>
+            {debugMenuOpen ? "Hide panel" : "Show panel"}
+          </button>
+        </div>
+
+        <div className="debug-console-summary">
+          <span>{sessionLabels[sessionState]}</span>
+          <span>{previewSurfaceLabel}</span>
+          <span>{preview.fps} FPS</span>
+          <span>{preview.latencyMs} ms</span>
+          <span>{(preview.bitrateKbps / 1000).toFixed(1)} Mbps</span>
+          <span>{previewIsLive ? "Live mirror visible" : "Waiting for stream"}</span>
+        </div>
+
+        {debugMenuOpen ? (
+          <div className="debug-console-grid">
+            <div className="debug-console-card debug-console-card-wide">
+              <span className="diagnostics-label">Session</span>
+              <strong>{sessionState === "idle" ? "No active stream" : sessionState === "recording" ? "Recording active" : "Live device surface"}</strong>
+              <span>{sessionState === "idle" ? "Start discovery to stage a session." : previewTransportCopy}</span>
+              <span>{commandError ?? sessionDescriptions[sessionState]}</span>
+            </div>
+
+            <div className="debug-console-card">
+              <span className="diagnostics-label">State</span>
+              <strong>{sessionProgress}</strong>
+              <span>Shots {session.captureCount}</span>
+              <span>Mode {sessionState === "recording" ? "REC" : orientation === "portrait" ? "Portrait" : "Landscape"}</span>
+              <span>Frames {preview.frameNumber}</span>
+            </div>
+
+            <div className="debug-console-card">
+              <span className="diagnostics-label">Receiver</span>
+              <strong>
+                {previewDiagnostics.queuedSegments} queued / {previewDiagnostics.pendingSamples} pending
+              </strong>
+              <span>
+                init {previewDiagnostics.initSegmentReady ? "ready" : "waiting"} / timescale {previewDiagnostics.trackTimescale}
+              </span>
+              <span>
+                emitted {previewDiagnostics.emittedSegments} / delivered {previewDiagnostics.deliveredSegments}
+              </span>
+              <span>
+                last AU {formatNullableNumber(previewDiagnostics.lastAccessUnitIndex)} @ {formatNullableNumber(previewDiagnostics.lastAccessUnitDuration)} us
+              </span>
+              <span>
+                queued #{formatNullableNumber(previewDiagnostics.lastQueuedSequenceNumber)} [{formatSampleRange(previewDiagnostics.lastQueuedFirstSampleIndex, previewDiagnostics.lastQueuedLastSampleIndex)}]
+              </span>
+              <span>
+                delivered #{formatNullableNumber(previewDiagnostics.lastDeliveredSequenceNumber)} [{formatSampleRange(previewDiagnostics.lastDeliveredFirstSampleIndex, previewDiagnostics.lastDeliveredLastSampleIndex)}]
+              </span>
+            </div>
+
+            <div className="debug-console-card">
+              <span className="diagnostics-label">Append</span>
+              <strong>
+                {previewClientDiagnostics.mediaAppendCount} media / {previewClientDiagnostics.initAppendCount} init
+              </strong>
+              <span>
+                empty polls {previewClientDiagnostics.emptyPollCount} / errors {previewClientDiagnostics.appendErrorCount}
+              </span>
+              <span>
+                last seq #{formatNullableNumber(previewClientDiagnostics.lastAppendedSequenceNumber)} / bytes {previewClientDiagnostics.lastAppendedBytes}
+              </span>
+              <span>
+                sourceBuffer {previewClientDiagnostics.sourceBufferUpdating ? "updating" : "idle"} / MediaSource {previewClientDiagnostics.mediaSourceReadyState}
+              </span>
+              <span>
+                last append {previewClientDiagnostics.lastAppendAtMs === null ? "-" : `${Math.round(previewClientDiagnostics.lastAppendAtMs)} ms`}
+              </span>
+            </div>
+
+            <div className="debug-console-card">
+              <span className="diagnostics-label">Playback</span>
+              <strong>
+                t={videoDiagnostics.currentTime.toFixed(2)}s / +{bufferedAhead.toFixed(2)}s
+              </strong>
+              <span>
+                buffer end {videoDiagnostics.bufferedEnd.toFixed(2)}s / readyState {videoDiagnostics.readyState}
+              </span>
+              <span>paused {videoDiagnostics.paused ? "yes" : "no"}</span>
+              <span>
+                decoded {videoDiagnostics.totalVideoFrames} / dropped {videoDiagnostics.droppedVideoFrames}
+              </span>
+            </div>
+          </div>
+        ) : null}
       </section>
 
       <footer className="shell-footer">

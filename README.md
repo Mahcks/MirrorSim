@@ -8,6 +8,12 @@ The repository now contains the first working shell layer at the repo root:
 - Tauri desktop wrapper
 - First-pass simulator-style device stage
 - Mock session controls for orientation, quality profile, and shell tone
+- MediaSource preview surface fed by local fragmented MP4 fixtures
+- Mock receiver IPC contract for runtime status and preview transport descriptors
+- First-pass Rust remux boundary for H.264 access-unit and fMP4 segment descriptors
+- Direct receiver sidecar protocol spec for the future native ingest process
+- Runnable receiver sidecar skeleton under `receivers/mirror-receiver`
+- AirPlayServer `MirrorSimAdapter` headless target builds and is now the preferred direct sidecar path
 
 ## Run
 
@@ -42,13 +48,13 @@ The current shell is the Milestone 0 surface from the project outline:
 - a proper desktop app root
 - a framed device stage
 - session and readiness panels
-- an interaction model we can hang the media pipeline on next
+- a MediaSource playback slice driven by fixture fragments
 
-It does not include real mirroring yet. The next technical milestone is proving MediaSource playback with known-good fragmented MP4 inside the shell.
+It does not include real mirroring yet. The next technical milestone is feeding the AirPlayServer adapter's real access-unit output into the remux boundary and replacing the fixture transport.
 
 ## Next Steps
 
-1. Add a mock MediaSource player fed by fixture fragments.
-2. Define the IPC contract between the Tauri shell and a future receiver sidecar.
-3. Build the Rust remux crate boundary for H.264 access units to fMP4 output.
-4. Integrate a native receiver sidecar after playback and transport are stable.
+1. Feed the AirPlayServer adapter's real H.264 access units into the remux boundary and emit preview fragments.
+2. Replace the fixture transport in the current Tauri receiver contract.
+3. Add stream health diagnostics, discontinuity handling, and reconnect policy.
+4. Add audio-path integration once video ingest is stable.
