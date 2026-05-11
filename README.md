@@ -278,11 +278,11 @@ Updater-enabled release builds require:
 
 The GitHub release workflow expects `receivers/runtime-manifest.json` to point at a downloadable AirPlay runtime zip with a matching SHA-256 checksum. The workflow also publishes `release/latest.json` for Tauri updater checks.
 
-The first public release line is `v0.1.0-beta.x`. Use a tag like:
+The first public beta release uses MSI-safe numeric prerelease versions such as `v0.1.0-1`. Use a tag like:
 
 ```powershell
-git tag v0.1.0-beta.1
-git push origin v0.1.0-beta.1
+git tag v0.1.0-1
+git push origin v0.1.0-1
 ```
 
 The release workflow uploads installer, portable zip, updater metadata, and `checksums.txt`.
