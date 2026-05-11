@@ -29,6 +29,7 @@ type UseCaptureActionsArgs = {
   recordingSettings: RecordingSettings;
   screenshotSettings: ScreenshotSettings;
   setCaptures: Dispatch<SetStateAction<Capture[]>>;
+  setCaptureNotice: Dispatch<SetStateAction<string | null>>;
   setCommandError: Dispatch<SetStateAction<string | null>>;
   setCommandPending: Dispatch<SetStateAction<boolean>>;
   setRecordingSettings: Dispatch<SetStateAction<RecordingSettings>>;
@@ -46,6 +47,7 @@ export function useCaptureActions({
   recordingSettings,
   screenshotSettings,
   setCaptures,
+  setCaptureNotice,
   setCommandError,
   setCommandPending,
   setRecordingSettings,
@@ -124,13 +126,14 @@ export function useCaptureActions({
   ) {
     const bytes = new Uint8Array(await blob.arrayBuffer());
     const pngBase64 = uint8ArrayToBase64(bytes);
+    const normalizedCustomDirectory = customDirectory?.trim() || null;
 
     return invoke<SavedCaptureFile>("save_screenshot", {
       request: {
         fileName,
         pngBase64,
         location,
-        customDirectory: location === "custom" ? customDirectory ?? null : null,
+        customDirectory: location === "custom" ? normalizedCustomDirectory : null,
       },
     });
   }
@@ -143,13 +146,14 @@ export function useCaptureActions({
   ) {
     const bytes = new Uint8Array(await blob.arrayBuffer());
     const mediaBase64 = uint8ArrayToBase64(bytes);
+    const normalizedCustomDirectory = customDirectory?.trim() || null;
 
     return invoke<SavedCaptureFile>("save_recording", {
       request: {
         fileName,
         mediaBase64,
         location,
-        customDirectory: location === "custom" ? customDirectory ?? null : null,
+        customDirectory: location === "custom" ? normalizedCustomDirectory : null,
       },
     });
   }
@@ -280,6 +284,7 @@ export function useCaptureActions({
 
   async function doCapture(overrides: ScreenshotCaptureOverrides = {}) {
     if (!canCapture) {
+      console.info("[MirrorSim capture] skipped: capture is not available");
       return;
     }
 
@@ -289,21 +294,35 @@ export function useCaptureActions({
     };
 
     if (!captureSettings.saveToDisk && !captureSettings.copyToClipboard) {
-      setCommandError("Enable disk save or clipboard copy in Screenshot Settings first.");
+      const message = "Enable disk save or clipboard copy in Screenshot Settings first.";
+      console.warn("[MirrorSim capture] skipped:", message, captureSettings);
+      setCaptureNotice(message);
+      setCommandError(message);
       return;
     }
 
     if (captureSettings.saveToDisk && captureSettings.saveLocation === "custom" && !captureSettings.customSavePath.trim()) {
-      setCommandError("Enter a custom screenshot folder before using the custom save location.");
+      const message = "Enter a custom screenshot folder before using the custom save location.";
+      console.warn("[MirrorSim capture] skipped:", message, captureSettings);
+      setCaptureNotice(message);
+      setCommandError(message);
       return;
     }
 
     setCommandPending(true);
     setCommandError(null);
+    setCaptureNotice("Taking screenshot...");
 
     try {
       const now = new Date();
       const fileName = buildScreenshotFileName(captureSettings, now);
+      console.info("[MirrorSim capture] starting screenshot", {
+        fileName,
+        saveToDisk: captureSettings.saveToDisk,
+        copyToClipboard: captureSettings.copyToClipboard,
+        saveLocation: captureSettings.saveLocation,
+        customSavePath: captureSettings.customSavePath,
+      });
       const screenshotBlob = await captureVideoFrameBlob();
       let savedScreenshot: SavedCaptureFile | null = null;
 
@@ -314,10 +333,12 @@ export function useCaptureActions({
           captureSettings.saveLocation,
           captureSettings.customSavePath,
         );
+        console.info("[MirrorSim capture] screenshot save result", savedScreenshot);
       }
 
       if (captureSettings.copyToClipboard) {
         await copyScreenshotToClipboard(screenshotBlob);
+        console.info("[MirrorSim capture] screenshot copied to clipboard");
       }
 
       setSession(await invoke<SessionSnapshot>("take_screenshot"));
@@ -328,6 +349,13 @@ export function useCaptureActions({
       if (savedScreenshot?.filePath && appPreferences.autoRevealSavedCaptures) {
         await revealItemInDir(savedScreenshot.filePath);
       }
+
+      const notice = savedScreenshot?.filePath
+        ? `Saved screenshot to ${savedScreenshot.filePath}`
+        : captureSettings.copyToClipboard
+          ? "Copied screenshot to clipboard"
+          : "Screenshot finished, but no disk path was returned.";
+      setCaptureNotice(notice);
 
       setCaptures((previous) => [
         ...previous,
@@ -340,7 +368,14 @@ export function useCaptureActions({
         },
       ]);
     } catch (error) {
-      setCommandError(fmtError(error));
+      const message = fmtError(error);
+      console.error("[MirrorSim capture] screenshot failed", {
+        message,
+        settings: captureSettings,
+        error,
+      });
+      setCaptureNotice(`Screenshot failed: ${message}`);
+      setCommandError(message);
     } finally {
       setCommandPending(false);
     }
@@ -353,6 +388,7 @@ export function useCaptureActions({
 
     setCommandPending(true);
     setCommandError(null);
+    setCaptureNotice(isRec ? "Stopping recording..." : "Starting recording...");
 
     try {
       if (isRec) {
@@ -368,10 +404,12 @@ export function useCaptureActions({
           recordingSettings.saveLocation,
           recordingSettings.customSavePath,
         );
+        console.info("[MirrorSim capture] recording save result", savedRecording);
 
         if (recordingSettings.autoReveal || appPreferences.autoRevealSavedCaptures) {
           await revealItemInDir(savedRecording.filePath);
         }
+        setCaptureNotice(`Saved recording to ${savedRecording.filePath}`);
 
         setCaptures((previous) => [
           ...previous,
@@ -389,8 +427,14 @@ export function useCaptureActions({
           throw new Error("Choose a recording folder before saving to a custom location.");
         }
 
+        console.info("[MirrorSim capture] starting recording", {
+          saveLocation: recordingSettings.saveLocation,
+          customSavePath: recordingSettings.customSavePath,
+          fileNamePrefix: recordingSettings.fileNamePrefix,
+        });
         await startLocalRecording();
         setSession(await invoke<SessionSnapshot>("start_recording"));
+        setCaptureNotice("Recording started");
       }
     } catch (error) {
       if (!isRec && mediaRecorderRef.current) {
@@ -400,7 +444,14 @@ export function useCaptureActions({
       recordingStreamRef.current = null;
       mediaRecorderRef.current = null;
       recordingChunksRef.current = [];
-      setCommandError(fmtError(error));
+      const message = fmtError(error);
+      console.error("[MirrorSim capture] recording failed", {
+        message,
+        settings: recordingSettings,
+        error,
+      });
+      setCaptureNotice(`Recording failed: ${message}`);
+      setCommandError(message);
     } finally {
       setCommandPending(false);
     }

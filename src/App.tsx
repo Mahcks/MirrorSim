@@ -80,6 +80,7 @@ export default function App() {
   const [zoom, setZoom] = useState<ZoomLevel>(1);
   const [commandPending, setCommandPending] = useState(false);
   const [commandError, setCommandError] = useState<string | null>(null);
+  const [captureNotice, setCaptureNotice] = useState<string | null>(null);
   const [diagExpanded, setDiagExpanded] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [minimalChromeHidden, setMinimalChromeHidden] = useState(false);
@@ -163,6 +164,7 @@ export default function App() {
     recordingSettings,
     screenshotSettings,
     setCaptures,
+    setCaptureNotice,
     setCommandError,
     setCommandPending,
     setRecordingSettings,
@@ -523,6 +525,12 @@ export default function App() {
     const timeoutId = window.setTimeout(() => setScreenshotFlashActive(false), 180);
     return () => window.clearTimeout(timeoutId);
   }, [screenshotFlashActive]);
+
+  useEffect(() => {
+    if (!captureNotice) return;
+    const timeoutId = window.setTimeout(() => setCaptureNotice(null), 9000);
+    return () => window.clearTimeout(timeoutId);
+  }, [captureNotice]);
 
   useEffect(() => {
     if (appPreferences.rememberLastMode && appPreferences.lastMode !== appMode) {
@@ -1214,6 +1222,7 @@ export default function App() {
           bonjourStatus={bonjourStatus}
           bonjourNeedsAttention={bonjourNeedsAttention}
           captures={captures}
+          captureNotice={captureNotice}
           canCapture={canCapture}
           canRecord={canRecord}
           commandPending={commandPending}
@@ -1278,6 +1287,8 @@ export default function App() {
       <MinimalView
         canCapture={canCapture}
         canRecord={canRecord}
+        captureNotice={captureNotice}
+        commandError={commandError}
         commandPending={commandPending}
         contextMenu={(
           <MinimalContextMenu

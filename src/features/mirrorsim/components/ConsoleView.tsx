@@ -17,6 +17,7 @@ type ConsoleViewProps = {
   bonjourStatus: BonjourStatusSnapshot;
   bonjourNeedsAttention: boolean;
   captures: Capture[];
+  captureNotice: string | null;
   canCapture: boolean;
   canRecord: boolean;
   commandPending: boolean;
@@ -79,9 +80,11 @@ export function ConsoleView({
   bonjourStatus,
   bonjourNeedsAttention,
   captures,
+  captureNotice,
   canCapture,
   canRecord,
   commandPending,
+  commandError,
   currentDeviceTrusted,
   currentDeviceVisible,
   deviceFrame,
@@ -256,6 +259,19 @@ export function ConsoleView({
               </div>
             )}
             {updateBanner}
+            {(captureNotice || commandError) && (
+              <div
+                className={cn(
+                  "rounded-[8px] border p-2.5 text-[11px] leading-4",
+                  commandError
+                    ? "border-red-400/20 bg-red-500/10 text-red-100"
+                    : "border-emerald-300/20 bg-emerald-500/10 text-emerald-100",
+                )}
+              >
+                <div className="font-medium">{commandError ? "Action failed" : "Capture status"}</div>
+                <div className="mt-1 break-all opacity-80">{commandError ?? captureNotice}</div>
+              </div>
+            )}
             <div className="flex items-start gap-2.5">
               <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-white/8 bg-[#1a1b1e] text-white/55">
                 <Icon name="phone" size={14} />

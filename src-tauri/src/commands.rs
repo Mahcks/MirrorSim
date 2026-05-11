@@ -524,6 +524,10 @@ pub(crate) fn save_screenshot(
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
 
     let file_path = directory.join(&request.file_name);
+    eprintln!(
+        "[MirrorSim capture] saving screenshot to {}",
+        file_path.display()
+    );
     fs::write(&file_path, png_bytes).map_err(|error| error.to_string())?;
 
     Ok(SavedScreenshot {
@@ -546,6 +550,10 @@ pub(crate) fn save_recording(
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
 
     let file_path = directory.join(&request.file_name);
+    eprintln!(
+        "[MirrorSim capture] saving recording to {}",
+        file_path.display()
+    );
     fs::write(&file_path, media_bytes).map_err(|error| error.to_string())?;
 
     Ok(SavedScreenshot {

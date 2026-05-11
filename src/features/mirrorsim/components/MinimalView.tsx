@@ -9,6 +9,8 @@ import { WindowControls } from "./WindowControls";
 type MinimalViewProps = {
   canCapture: boolean;
   canRecord: boolean;
+  captureNotice: string | null;
+  commandError: string | null;
   commandPending: boolean;
   contextMenu: ReactNode;
   deviceFrame: ReactNode;
@@ -36,6 +38,8 @@ type MinimalViewProps = {
 export function MinimalView({
   canCapture,
   canRecord,
+  captureNotice,
+  commandError,
   commandPending,
   contextMenu,
   deviceFrame,
@@ -130,6 +134,22 @@ export function MinimalView({
 
         {deviceFrame}
       </div>
+
+      {(captureNotice || commandError) && (
+        <div className="pointer-events-none fixed bottom-3 left-1/2 z-50 max-w-[calc(100vw-24px)] -translate-x-1/2">
+          <div
+            className={cn(
+              "max-w-[360px] truncate rounded-[8px] border px-3 py-2 text-[11px] font-medium shadow-2xl backdrop-blur",
+              commandError
+                ? "border-red-400/25 bg-red-950/85 text-red-100"
+                : "border-emerald-300/20 bg-[#101418]/90 text-emerald-100",
+            )}
+            title={commandError ?? captureNotice ?? undefined}
+          >
+            {commandError ?? captureNotice}
+          </div>
+        </div>
+      )}
 
       {contextMenu}
       {settingsModal}

@@ -43,9 +43,9 @@ type PreferencesState = {
 };
 
 export function usePreferencesState(): PreferencesState {
-  const browserStoredPreferences = readBrowserStoredPreferences();
-  const initialPreferences = mergeStoredPreferences(browserStoredPreferences);
-  const [preferencesReady, setPreferencesReady] = useState(true);
+  const [browserStoredPreferences] = useState<StoredPreferences | null>(() => readBrowserStoredPreferences());
+  const [initialPreferences] = useState(() => mergeStoredPreferences(browserStoredPreferences));
+  const [preferencesReady, setPreferencesReady] = useState(false);
   const [storeHydrated, setStoreHydrated] = useState(false);
   const [screenshotSettings, setScreenshotSettings] = useState<ScreenshotSettings>(initialPreferences.screenshots ?? defaultScreenshotSettings);
   const [recordingSettings, setRecordingSettings] = useState<RecordingSettings>(initialPreferences.recordings ?? defaultRecordingSettings);
