@@ -2,6 +2,8 @@
 
 This folder holds the native AirPlay receiver runtime that MirrorSim packages into its Windows releases.
 
+The bundled runtime's upstream license text is stored at `LICENSES/AirPlayServer-LICENSE` in the repository root and is copied into portable release builds.
+
 Expected executable:
 
 ```text

@@ -109,7 +109,8 @@ function Invoke-PortableBuild {
 
   Copy-Item $releaseExe (Join-Path $portableFolder 'MirrorSim.exe') -Force
   Copy-Item (Join-Path $repoRoot 'README.md') (Join-Path $portableFolder 'README.md') -Force
-  Copy-Item (Join-Path $repoRoot 'AirPlayServer-LICENSE') (Join-Path $portableFolder 'AirPlayServer-LICENSE') -Force
+  Copy-Item (Join-Path $repoRoot 'LICENSE') (Join-Path $portableFolder 'LICENSE') -Force
+  Copy-Item (Join-Path $repoRoot 'LICENSES\AirPlayServer-LICENSE') (Join-Path $portableFolder 'AirPlayServer-LICENSE') -Force
 
   if (Test-Path $releaseSupportDir) {
     Copy-Item $releaseSupportDir (Join-Path $portableFolder '_up_') -Recurse -Force

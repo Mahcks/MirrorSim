@@ -164,4 +164,6 @@ MirrorSim depends on the work of the AirPlay reverse-engineering community.
 - [airplay2-win](https://github.com/fingergit/airplay2-win) by fingergit
 - Bonjour, FFmpeg, SDL2, and related upstream libraries used by the bundled receiver runtime
 
+MirrorSim itself is licensed under MIT. The bundled AirPlay receiver runtime includes separate third-party license terms in `LICENSES/AirPlayServer-LICENSE`.
+
 Apple, AirPlay, and iPhone are trademarks of Apple Inc. MirrorSim is an independent project and is not affiliated with or endorsed by Apple Inc.
