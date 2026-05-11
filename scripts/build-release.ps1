@@ -21,7 +21,7 @@ $portableFolder = Join-Path $portableRoot $portableFolderName
 $portableZip = Join-Path $portableRoot ("$portableFolderName.zip")
 
 $tauriManifest = Join-Path $repoRoot 'src-tauri\Cargo.toml'
-$releaseExe = Join-Path $repoRoot 'src-tauri\target\release\MirrorSim.exe'
+$releaseTargetDir = Join-Path $repoRoot 'src-tauri\target\release'
 $releaseSupportDir = Join-Path $repoRoot 'src-tauri\target\release\_up_'
 $receiverBundle = Join-Path $repoRoot 'receivers\AirPlayServer'
 
@@ -78,6 +78,26 @@ function Assert-UpdaterReleaseConfig {
   }
 }
 
+function Resolve-ReleaseExecutable {
+  $candidateNames = @('MirrorSim.exe', 'mirrorsim.exe')
+
+  foreach ($candidateName in $candidateNames) {
+    $candidatePath = Join-Path $releaseTargetDir $candidateName
+    if (Test-Path $candidatePath) {
+      return $candidatePath
+    }
+  }
+
+  $exeCandidates = Get-ChildItem -Path $releaseTargetDir -File -Filter '*.exe' -ErrorAction SilentlyContinue |
+    Sort-Object LastWriteTimeUtc -Descending
+
+  if ($exeCandidates.Count -gt 0) {
+    return $exeCandidates[0].FullName
+  }
+
+  throw "Release executable not found under $releaseTargetDir"
+}
+
 function Invoke-Prep {
   if ($RuntimeSource -eq 'fetch') {
     Invoke-Step 'bun run fetch:airplay-runtime'
@@ -98,9 +118,7 @@ function Invoke-PortableBuild {
   Assert-UpdaterReleaseConfig
   Invoke-Step 'bunx tauri build --no-bundle' -RustToolchain $releaseRustToolchain
 
-  if (-not (Test-Path $releaseExe)) {
-    throw "Release executable not found: $releaseExe"
-  }
+  $releaseExe = Resolve-ReleaseExecutable
 
   if (-not (Test-Path (Join-Path $receiverBundle 'MirrorSimAdapter.exe'))) {
     throw "Receiver runtime is missing. Run 'bun run sync:airplay-runtime' first."
