@@ -1,7 +1,18 @@
 {
   "name": "mirrorsim",
   "private": true,
-  "version": "1.0.0",
+  "version": "0.1.0-beta.1",
+  "description": "A Windows AirPlay receiver app for mirroring iPhone in a clean, presentation-ready device frame.",
+  "author": "Mahcks",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Mahcks/MirrorSim.git"
+  },
+  "homepage": "https://github.com/Mahcks/MirrorSim#readme",
+  "bugs": {
+    "url": "https://github.com/Mahcks/MirrorSim/issues"
+  },
   "type": "module",
   "scripts": {
     "dev": "vite",

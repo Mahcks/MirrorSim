@@ -51,6 +51,17 @@ MirrorSim bundles its AirPlay receiver runtime in release builds. You do not nee
 
 ## Install
 
+### Unsigned beta builds
+
+MirrorSim is currently shipping as an unsigned early beta while the project is still getting its first public releases out. Windows SmartScreen may warn on first launch.
+
+To run the official GitHub release build:
+
+1. Click **More info** on the SmartScreen warning.
+2. Click **Run anyway**.
+
+Only download MirrorSim from the official [GitHub Releases](https://github.com/Mahcks/MirrorSim/releases/latest) page. Release assets include SHA-256 checksums so you can verify the installer or portable zip before running it.
+
 MirrorSim ships in two formats:
 
 - **Installer**: best for most users. Installs MirrorSim like a normal desktop app.
@@ -266,6 +277,15 @@ Updater-enabled release builds require:
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, if your key has a password
 
 The GitHub release workflow expects `receivers/runtime-manifest.json` to point at a downloadable AirPlay runtime zip with a matching SHA-256 checksum. The workflow also publishes `release/latest.json` for Tauri updater checks.
+
+The first public release line is `v0.1.0-beta.x`. Use a tag like:
+
+```powershell
+git tag v0.1.0-beta.1
+git push origin v0.1.0-beta.1
+```
+
+The release workflow uploads installer, portable zip, updater metadata, and `checksums.txt`.
 
 ---
 

@@ -72,6 +72,10 @@ jobs:
         shell: pwsh
         run: powershell -ExecutionPolicy Bypass -File scripts/build-updater-manifest.ps1 -Repository $env:GITHUB_REPOSITORY -Tag "${{ steps.release_meta.outputs.tag }}"
 
+      - name: Generate release checksums
+        shell: pwsh
+        run: powershell -ExecutionPolicy Bypass -File scripts/write-release-checksums.ps1
+
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
         with:
@@ -84,3 +88,4 @@ jobs:
             src-tauri/target/release/bundle/msi/*.msi.sig
             release/portable/*.zip
             release/latest.json
+            release/checksums.txt
