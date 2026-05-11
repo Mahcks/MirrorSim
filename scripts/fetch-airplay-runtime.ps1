@@ -7,6 +7,28 @@ $ErrorActionPreference = 'Stop'
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
 
+function Get-Sha256Hex {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Path
+  )
+
+  $stream = [System.IO.File]::OpenRead($Path)
+  try {
+    $sha256 = [System.Security.Cryptography.SHA256]::Create()
+    try {
+      $hashBytes = $sha256.ComputeHash($stream)
+      return [System.BitConverter]::ToString($hashBytes).Replace('-', '').ToLowerInvariant()
+    }
+    finally {
+      $sha256.Dispose()
+    }
+  }
+  finally {
+    $stream.Dispose()
+  }
+}
+
 if ([string]::IsNullOrWhiteSpace($ManifestPath)) {
   $ManifestPath = Join-Path $repoRoot 'receivers\runtime-manifest.json'
 }
@@ -55,7 +77,7 @@ try {
   Write-Host "Downloading AirPlay runtime $runtimeVersion from $downloadUrl"
   Invoke-WebRequest -Uri $downloadUrl -OutFile $archivePath
 
-  $actualSha256 = (Get-FileHash -Algorithm SHA256 $archivePath).Hash.ToLowerInvariant()
+  $actualSha256 = Get-Sha256Hex -Path $archivePath
   if ($actualSha256 -ne $expectedSha256) {
     throw "Runtime archive checksum mismatch. Expected $expectedSha256 but got $actualSha256"
   }
