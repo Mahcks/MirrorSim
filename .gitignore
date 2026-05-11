@@ -33,3 +33,6 @@ receivers/AirPlayServer/*.pdb
 
 # Local release artifacts
 release/
+
+# Local planning docs
+V1-ROADMAP.md

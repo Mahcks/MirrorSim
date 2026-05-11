@@ -235,7 +235,14 @@ export default function App() {
   const currentDeviceOsLabel = session.currentDeviceOsVersion
     ? `${session.currentDeviceOsName ?? "iPhone OS"} ${session.currentDeviceOsVersion}${session.currentDeviceOsBuildVersion ? ` (${session.currentDeviceOsBuildVersion})` : ""}`
     : session.currentDeviceOsName;
-  const titlebarStateLabel = isLive ? "Connected" : isTransitioningSession ? "Connecting" : "Waiting";
+  const reconnectAttemptLabel = reconnectUiState && reconnectUiState.attempt > 1 ? ` #${reconnectUiState.attempt}` : "";
+  const titlebarStateLabel = isLive
+    ? "Connected"
+    : reconnectUiState?.phase === "retrying"
+      ? `Reconnecting${reconnectAttemptLabel}`
+      : isTransitioningSession
+        ? "Connecting"
+        : "Waiting";
   const titlebarStateDotClass = isLive
     ? "bg-emerald-400"
     : isTransitioningSession
@@ -296,12 +303,9 @@ export default function App() {
   };
 
   function renderReconnectBadge(compact = false) {
-    if (!reconnectUiState) return null;
+    if (!reconnectUiState || reconnectUiState.phase !== "scheduled") return null;
 
-    const content =
-      reconnectUiState.phase === "retrying"
-        ? `Reconnecting${reconnectUiState.attempt > 1 ? ` #${reconnectUiState.attempt}` : ""}`
-        : `Reconnect${reconnectCountdownSeconds !== null ? ` in ${reconnectCountdownSeconds}s` : " queued"}`;
+    const content = `Reconnect${reconnectCountdownSeconds !== null ? ` in ${reconnectCountdownSeconds}s` : " queued"}`;
 
     return (
       <span
@@ -826,9 +830,11 @@ export default function App() {
   }
 
   const latestSavedCapture = [...captures].reverse().find((capture) => capture.type === "screenshot" && capture.filePath);
-  const settingsModal = (
+  function renderSettingsModal(embedded = false) {
+    return (
     <SettingsModal
       open={settingsOpen}
+      embedded={embedded}
       appPreferences={appPreferences}
       screenshotSettings={screenshotSettings}
       recordingSettings={recordingSettings}
@@ -858,7 +864,10 @@ export default function App() {
       onOpenWindowsFirewall={() => void invoke("open_windows_firewall").catch((error) => setCommandError(fmtError(error)))}
       onExportDiagnostics={() => void exportDiagnostics()}
     />
-  );
+    );
+  }
+
+  const settingsModal = renderSettingsModal();
   const pairingModal = (
     <PairingModal
       pairing={pairing}
@@ -935,6 +944,7 @@ export default function App() {
       previewDimClass={previewDimClass}
       previewVideoStyle={previewVideoStyle}
       tone={tone}
+      overlay={renderSettingsModal(true)}
       setVideoEl={setVideoEl}
       onContextMenu={(event) => {
         event.preventDefault();
@@ -1073,7 +1083,7 @@ export default function App() {
         onStartWindowDrag={startWindowDrag}
         orientation={orientation}
         reconnectBadge={renderReconnectBadge(true)}
-        settingsModal={settingsModal}
+        settingsModal={null}
         shellWidth={MINIMAL_SHELL_WIDTH[orientation]}
         titlebarStateDotClass={cn("h-1.5 w-1.5 rounded-full", titlebarStateDotClass)}
         titlebarStateLabel={titlebarStateLabel}

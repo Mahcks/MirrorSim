@@ -1,4 +1,4 @@
-import type { CSSProperties, MouseEventHandler, WheelEventHandler } from "react";
+import type { CSSProperties, MouseEventHandler, ReactNode, WheelEventHandler } from "react";
 
 import { cn } from "@/lib/utils";
 import { fmtDuration } from "@/features/mirrorsim/helpers";
@@ -27,6 +27,7 @@ type DeviceFrameProps = {
   previewDimClass: string;
   previewVideoStyle: CSSProperties;
   tone: "inactive" | "live" | "warning";
+  overlay?: ReactNode;
   onContextMenu?: MouseEventHandler<HTMLDivElement>;
   onWheel?: WheelEventHandler<HTMLDivElement>;
   setVideoEl: (element: HTMLVideoElement | null) => void;
@@ -53,6 +54,7 @@ export function DeviceFrame({
   previewDimClass,
   previewVideoStyle,
   tone,
+  overlay,
   onContextMenu,
   onWheel,
   setVideoEl,
@@ -120,6 +122,7 @@ export function DeviceFrame({
               )}
             />
           </div>
+          {overlay}
           {!isLive && (
             <div className="absolute inset-0 z-20 flex flex-col items-center justify-center px-7 py-8 text-center">
               <div className="relative mb-5 flex h-10 w-10 items-center justify-center">
