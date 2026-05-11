@@ -5,6 +5,8 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$packageJson = Get-Content -Raw (Join-Path $repoRoot 'package.json') | ConvertFrom-Json
+$version = [string]$packageJson.version
 
 function Get-Sha256Hex {
   param(
@@ -28,6 +30,27 @@ function Get-Sha256Hex {
   }
 }
 
+function Get-RelativeArtifactPath {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$BasePath,
+
+    [Parameter(Mandatory = $true)]
+    [string]$TargetPath
+  )
+
+  $baseFullPath = [System.IO.Path]::GetFullPath($BasePath)
+  if (-not $baseFullPath.EndsWith([System.IO.Path]::DirectorySeparatorChar.ToString())) {
+    $baseFullPath += [System.IO.Path]::DirectorySeparatorChar
+  }
+
+  $targetFullPath = [System.IO.Path]::GetFullPath($TargetPath)
+  $baseUri = New-Object System.Uri($baseFullPath)
+  $targetUri = New-Object System.Uri($targetFullPath)
+
+  return [System.Uri]::UnescapeDataString($baseUri.MakeRelativeUri($targetUri).ToString()).Replace('\', '/')
+}
+
 $resolvedOutputPath = if ([System.IO.Path]::IsPathRooted($OutputPath)) {
   $OutputPath
 }
@@ -36,9 +59,9 @@ else {
 }
 
 $patterns = @(
-  'src-tauri/target/release/bundle/nsis/*.exe',
-  'src-tauri/target/release/bundle/msi/*.msi',
-  'release/portable/*.zip',
+  "src-tauri/target/release/bundle/nsis/*$version*.exe",
+  "src-tauri/target/release/bundle/msi/*$version*.msi",
+  "release/portable/*$version*.zip",
   'release/latest.json'
 )
 
@@ -54,7 +77,7 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $resolvedOutputPat
 
 $lines = foreach ($artifact in ($artifacts | Sort-Object FullName)) {
   $hash = Get-Sha256Hex -Path $artifact.FullName
-  $relativePath = [System.IO.Path]::GetRelativePath($repoRoot, $artifact.FullName).Replace('\', '/')
+  $relativePath = Get-RelativeArtifactPath -BasePath $repoRoot -TargetPath $artifact.FullName
   "$hash  $relativePath"
 }
 
