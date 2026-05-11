@@ -67,11 +67,12 @@ MirrorSim bundles the receiver runtime inside both installer and portable releas
 |-----|--------|
 | `Ctrl+S` | Take screenshot |
 | `Ctrl+R` | Toggle recording |
-| `Ctrl+F` | Toggle fullscreen |
+| `Ctrl+F` / `F` | Toggle fullscreen |
 | `Ctrl+M` | Toggle UI mode |
-| `F` / Double-click | Toggle fullscreen |
-| `F1` | Toggle diagnostics |
-| `H` | Toggle overlay UI |
+| Double-click the device | Toggle fullscreen |
+| `F1` | Toggle diagnostics; switches to Console mode if needed |
+| `H` | Hide or show the Minimal mode toolbar |
+| `Esc` | Close Preferences or the context menu |
 
 ---
 
@@ -85,7 +86,7 @@ MirrorSim bundles the receiver runtime inside both installer and portable releas
 
 ## Captures
 
-By default, captures are saved under `Documents/MirrorSim/`.
+By default, captures are saved under `Pictures/MirrorSim/`.
 
 - Screenshots: `mirrorsim_screenshot_YYYYMMDD_HHMMSS.png`
 - Recordings: `mirrorsim_recording_YYYYMMDD_HHMMSS.webm`

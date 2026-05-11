@@ -1,6 +1,6 @@
 [package]
 name = "mirrorsim"
-version = "0.1.0"
+version = "1.0.0"
 description = "MirrorSim desktop shell"
 authors = ["mahcks"]
 edition = "2021"

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -51,7 +51,7 @@ function getDevUpdateOverride(): AppUpdateInfo | null {
 
   return {
     version,
-    currentVersion: import.meta.env.VITE_DEV_UPDATER_CURRENT_VERSION?.trim() || "0.1.0",
+    currentVersion: import.meta.env.VITE_DEV_UPDATER_CURRENT_VERSION?.trim() || "1.0.0",
     notes: import.meta.env.VITE_DEV_UPDATER_NOTES?.trim() || "This is a local dev-only updater preview.",
     pubDate: import.meta.env.VITE_DEV_UPDATER_PUB_DATE?.trim() || new Date().toISOString(),
   };
@@ -82,6 +82,7 @@ export default function App() {
   const [commandError, setCommandError] = useState<string | null>(null);
   const [diagExpanded, setDiagExpanded] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [minimalChromeHidden, setMinimalChromeHidden] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
   const [captures, setCaptures] = useState<Capture[]>([]);
   const [trustedDevices, setTrustedDevices] = useState<TrustedDevice[]>([]);
@@ -560,6 +561,22 @@ export default function App() {
   }, [appPreferences, orientation, preferencesReady]);
 
   useEffect(() => {
+    if (!isLive || videoDiag.videoWidth === 0 || videoDiag.videoHeight === 0) {
+      return;
+    }
+
+    const aspectDelta = Math.abs(videoDiag.videoWidth - videoDiag.videoHeight);
+    if (aspectDelta < 16) {
+      return;
+    }
+
+    const decodedOrientation = videoDiag.videoWidth > videoDiag.videoHeight ? "landscape" : "portrait";
+    if (decodedOrientation !== orientation) {
+      setOrientation(decodedOrientation);
+    }
+  }, [isLive, orientation, videoDiag.videoHeight, videoDiag.videoWidth]);
+
+  useEffect(() => {
     if (!appPreferences.openDiagnosticsOnError) return;
     if (receiverRuntime.lastError || surfaceError || commandError) {
       setDiagExpanded(true);
@@ -626,8 +643,40 @@ export default function App() {
   // keyboard shortcuts — intentionally no deps so closures are always fresh
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (!(e.metaKey || e.ctrlKey)) return;
-      switch (e.key.toLowerCase()) {
+      if (isEditableShortcutTarget(e.target)) return;
+
+      const key = e.key.toLowerCase();
+
+      if (key === "escape") {
+        if (contextMenu || settingsOpen) {
+          e.preventDefault();
+          setContextMenu(null);
+          setSettingsOpen(false);
+        }
+        return;
+      }
+
+      if (key === "f1") {
+        e.preventDefault();
+        setDiagExpanded((value) => !value);
+        if (appMode === "minimal") {
+          void goConsole();
+        }
+        return;
+      }
+
+      if (!e.metaKey && !e.ctrlKey) {
+        if (key === "f") {
+          e.preventDefault();
+          toggleFullscreen();
+        } else if (key === "h" && appMode === "minimal") {
+          e.preventDefault();
+          setMinimalChromeHidden((value) => !value);
+        }
+        return;
+      }
+
+      switch (key) {
         case "s":
           e.preventDefault();
           void doCapture();
@@ -638,7 +687,7 @@ export default function App() {
           break;
         case "f":
           e.preventDefault();
-          void getCurrentWindow().toggleMaximize();
+          toggleFullscreen();
           break;
         case "m":
           e.preventDefault();
@@ -886,6 +935,26 @@ export default function App() {
     setSettingsOpen((value) => !value);
   }
 
+  function toggleFullscreen() {
+    void getCurrentWindow().toggleMaximize();
+  }
+
+  function handleDeviceDoubleClick(event: ReactMouseEvent<HTMLDivElement>) {
+    if (event.target instanceof HTMLElement && event.target.closest("button, input, textarea, select, [contenteditable='true']")) {
+      return;
+    }
+
+    toggleFullscreen();
+  }
+
+  function isEditableShortcutTarget(target: EventTarget | null) {
+    if (!(target instanceof HTMLElement)) {
+      return false;
+    }
+
+    return Boolean(target.closest("input, textarea, select, [contenteditable='true']"));
+  }
+
   function doPrimary() {
     if (ss === "idle") void startSessionFlow("start_session", "manual");
     else if (isRec) void doRecordToggle();
@@ -1058,6 +1127,7 @@ export default function App() {
     ["FPS", String(preview.fps)],
     ["Bitrate", `${(preview.bitrateKbps / 1000).toFixed(1)} Mbps`],
     ["Latency", `${preview.latencyMs} ms`],
+    ["Source", videoDiag.videoWidth > 0 && videoDiag.videoHeight > 0 ? `${videoDiag.videoWidth}x${videoDiag.videoHeight}` : "waiting"],
     ["Frames", String(preview.frameNumber)],
     ["Buffer", `+${bufferedAhead.toFixed(2)}s`],
     ["Queued", String(previewDiag.queuedSegments)],
@@ -1092,6 +1162,7 @@ export default function App() {
       previewVideoStyle={previewVideoStyle}
       tone={tone}
       overlay={renderPairingModal(true)}
+      onDoubleClick={handleDeviceDoubleClick}
       setVideoEl={setVideoEl}
     />
   );
@@ -1119,6 +1190,7 @@ export default function App() {
       previewVideoStyle={previewVideoStyle}
       tone={tone}
       overlay={settingsOpen ? renderSettingsModal(true) : renderPairingModal(true)}
+      onDoubleClick={handleDeviceDoubleClick}
       setVideoEl={setVideoEl}
       onContextMenu={(event) => {
         event.preventDefault();
@@ -1170,7 +1242,7 @@ export default function App() {
           onStartWindowDrag={startWindowDrag}
           onTrustCurrentDevice={() => void trustCurrentDevice()}
           onToggleDiagnostics={() => setDiagExpanded((value) => !value)}
-          onToggleFullscreen={() => void getCurrentWindow().toggleMaximize()}
+          onToggleFullscreen={toggleFullscreen}
           orientation={orientation}
           previewFps={preview.fps}
           previewLatencyMs={preview.latencyMs}
@@ -1228,15 +1300,12 @@ export default function App() {
           />
         )}
         deviceFrame={minimalDeviceFrame}
+        chromeHidden={minimalChromeHidden}
         isRec={isRec}
         minimalFloatingButtonClass={minimalFloatingButtonClass}
         minimalShellRef={minimalShellRef}
         onCapture={() => void doCapture()}
         onFit={() => {
-          console.log("[MirrorSim] fit button clicked", {
-            orientation,
-            shellPresent: Boolean(minimalShellRef.current),
-          });
           void fitMinimalWindow(orientation);
         }}
         onGoConsole={() => void goConsole()}

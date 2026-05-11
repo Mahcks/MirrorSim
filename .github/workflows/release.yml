@@ -62,11 +62,11 @@ jobs:
 
       - name: Build installer assets
         shell: pwsh
-        run: bun run release:installer
+        run: bun run release:installer:fetch
 
       - name: Build portable asset
         shell: pwsh
-        run: bun run release:portable
+        run: bun run release:portable:fetch
 
       - name: Generate updater manifest
         shell: pwsh

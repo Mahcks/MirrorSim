@@ -84,6 +84,8 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
     bufferedEnd: 0,
     readyState: 0,
     paused: true,
+    videoWidth: 0,
+    videoHeight: 0,
     totalVideoFrames: 0,
     droppedVideoFrames: 0,
   });
@@ -181,6 +183,8 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
       bufferedEnd: 0,
       readyState: 0,
       paused: true,
+      videoWidth: 0,
+      videoHeight: 0,
       totalVideoFrames: 0,
       droppedVideoFrames: 0,
     });
@@ -215,6 +219,8 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
         bufferedEnd: readBufferedEnd(videoEl),
         readyState: videoEl.readyState,
         paused: videoEl.paused,
+        videoWidth: videoEl.videoWidth,
+        videoHeight: videoEl.videoHeight,
         totalVideoFrames: quality?.totalVideoFrames ?? 0,
         droppedVideoFrames: quality?.droppedVideoFrames ?? 0,
       });

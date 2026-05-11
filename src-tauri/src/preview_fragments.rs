@@ -100,10 +100,25 @@ impl LivePreviewBuffer {
         let mut emitted_segment = None;
         let parsed_payload = parse_h264_payload(&payload);
 
-        if self.init_segment.is_none() {
-            if let Some((track, init_segment)) =
-                track_config_from_parameter_sets(parsed_payload.parameter_sets.as_ref())
-            {
+        if let Some((track, init_segment)) =
+            track_config_from_parameter_sets(parsed_payload.parameter_sets.as_ref())
+        {
+            let config_changed = self.track.as_ref().is_some_and(|current| {
+                current.codec != track.codec
+                    || current.width != track.width
+                    || current.height != track.height
+                    || current.decoder_config_hex != track.decoder_config_hex
+            });
+
+            if self.init_segment.is_none() || config_changed {
+                if config_changed {
+                    self.pending_samples.clear();
+                    self.emitted_segments.clear();
+                    self.next_sequence_number = 1;
+                    self.last_emitted_segment = None;
+                    self.next_media_timestamp = 0;
+                }
+
                 self.track = Some(track);
                 self.init_segment = Some(init_segment);
                 init_segment_became_available = true;
@@ -916,6 +931,18 @@ mod tests {
         bytes
     }
 
+    fn avcc_sample_with_changed_decoder_config() -> Vec<u8> {
+        let mut sps = SAMPLE_SPS;
+        sps[3] = 0x1F;
+
+        let mut bytes = Vec::new();
+        for nal in [&sps[..], &SAMPLE_PPS[..], &SAMPLE_IDR[..]] {
+            bytes.extend_from_slice(&(nal.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(nal);
+        }
+        bytes
+    }
+
     fn annex_b_parameter_sets() -> Vec<u8> {
         let mut bytes = Vec::new();
         for nal in [&SAMPLE_SPS[..], &SAMPLE_PPS[..]] {
@@ -1007,5 +1034,43 @@ mod tests {
         assert!(!result.sample_enqueued);
         assert!(buffer.init_segment_bytes().is_some());
         assert_eq!(buffer.queued_segment_count(), 0);
+    }
+
+    #[test]
+    fn changed_decoder_config_restarts_live_preview() {
+        let mut buffer = LivePreviewBuffer::new();
+
+        buffer
+            .push_access_unit(0, avcc_sample(), true, 0, 0, 3_000)
+            .expect("push initial sample");
+        for index in 1..4 {
+            buffer
+                .push_access_unit(
+                    index,
+                    avcc_sample(),
+                    false,
+                    index as u64 * 3_000,
+                    index as u64 * 3_000,
+                    3_000,
+                )
+                .expect("push sample");
+        }
+        assert_eq!(buffer.queued_segment_count(), 1);
+
+        let result = buffer
+            .push_access_unit(
+                4,
+                avcc_sample_with_changed_decoder_config(),
+                true,
+                12_000,
+                12_000,
+                3_000,
+            )
+            .expect("push changed config");
+
+        assert!(result.init_segment_became_available);
+        assert!(result.sample_enqueued);
+        assert_eq!(buffer.queued_segment_count(), 0);
+        assert_eq!(buffer.pending_sample_count(), 1);
     }
 }

@@ -392,7 +392,7 @@ export function ConsoleView({
             className={cn(controlButtonClass, isRec && "bg-red-500/15 text-red-300")}
             onClick={onRecordToggle}
             disabled={!canRecord || commandPending}
-            title="Toggle recording (⌘R)"
+            title="Toggle recording (Ctrl+R)"
           >
             <Icon name="record" size={15} />
           </button>
@@ -401,7 +401,7 @@ export function ConsoleView({
             className={controlButtonClass}
             onClick={onCapture}
             disabled={!canCapture || commandPending}
-            title="Screenshot (⌘S)"
+            title="Screenshot (Ctrl+S)"
           >
             <Icon name="camera" size={15} />
           </button>

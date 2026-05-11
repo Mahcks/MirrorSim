@@ -34,12 +34,6 @@ export function useWindowMode({
     const shell = minimalShellRef.current;
 
     if (!shell) {
-      console.log("[MirrorSim] fitMinimalWindow: using fallback size", {
-        reason: "missing-shell-ref",
-        nextOrientation,
-        currentOrientation: orientation,
-        fallback,
-      });
       return fallback;
     }
 
@@ -49,45 +43,27 @@ export function useWindowMode({
       height: Math.max(fallback.height, Math.ceil(rect.height)),
     };
 
-    console.log("[MirrorSim] fitMinimalWindow: measured shell", {
-      nextOrientation,
-      currentOrientation: orientation,
-      rect: {
-        width: rect.width,
-        height: rect.height,
-      },
-      fallback,
-      measured,
-    });
-
     return measured;
   }
 
   async function fitMinimalWindow(nextOrientation: Orientation) {
     const win = getCurrentWindow();
     const { width, height } = readMinimalShellSize(nextOrientation);
-    console.log("[MirrorSim] fitMinimalWindow: requested resize", {
-      nextOrientation,
-      target: { width, height },
-    });
 
     try {
       await win.setMinSize(null);
-      console.log("[MirrorSim] fitMinimalWindow: cleared min size");
     } catch (error) {
       console.error("[MirrorSim] fitMinimalWindow: setMinSize(null) failed", error);
     }
 
     try {
       await win.setMaxSize(null);
-      console.log("[MirrorSim] fitMinimalWindow: cleared max size");
     } catch (error) {
       console.error("[MirrorSim] fitMinimalWindow: setMaxSize(null) failed", error);
     }
 
     try {
       await win.setSize(new LogicalSize(width, height));
-      console.log("[MirrorSim] fitMinimalWindow: setSize succeeded", { width, height });
     } catch (error) {
       console.error("[MirrorSim] fitMinimalWindow: setSize failed", error);
       setCommandError(`Fit resize failed: ${fmtError(error)}`);
@@ -95,7 +71,6 @@ export function useWindowMode({
 
     try {
       await win.setMinSize(new LogicalSize(width, height));
-      console.log("[MirrorSim] fitMinimalWindow: setMinSize succeeded", { width, height });
     } catch (error) {
       console.error("[MirrorSim] fitMinimalWindow: setMinSize(target) failed", error);
     }

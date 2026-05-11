@@ -118,6 +118,8 @@ export type VideoElementDiag = {
   bufferedEnd: number;
   readyState: number;
   paused: boolean;
+  videoWidth: number;
+  videoHeight: number;
   totalVideoFrames: number;
   droppedVideoFrames: number;
 };
