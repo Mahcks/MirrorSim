@@ -146,6 +146,17 @@ pub(crate) struct DiagnosticsExport {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct AppUpdateInfo {
+    pub(crate) version: String,
+    pub(crate) current_version: String,
+    #[serde(default)]
+    pub(crate) notes: Option<String>,
+    #[serde(default)]
+    pub(crate) pub_date: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct PairingSnapshot {
     pub(crate) phase: PairingPhase,
     pub(crate) entry_mode: PairingEntryMode,

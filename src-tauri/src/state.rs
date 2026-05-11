@@ -1,8 +1,7 @@
 use crate::models::{
     PairingEntryMode, PairingPhase, PairingSnapshot, PreviewDeliveryMode,
-    PreviewDiagnosticsSnapshot, PreviewStreamDescriptor, PreviewTelemetry,
-    ReceiverRuntimeSnapshot, ReceiverRuntimeState, ReceiverTransport, SessionSnapshot,
-    SessionStatus,
+    PreviewDiagnosticsSnapshot, PreviewStreamDescriptor, PreviewTelemetry, ReceiverRuntimeSnapshot,
+    ReceiverRuntimeState, ReceiverTransport, SessionSnapshot, SessionStatus,
 };
 use crate::preview_fragments::LivePreviewBuffer;
 use crate::remux::RemuxBlueprint;
@@ -29,7 +28,8 @@ pub(crate) struct SessionStore {
 impl Default for SessionStore {
     fn default() -> Self {
         let remux_blueprint = RemuxBlueprint::fixture_preview();
-        let preview_stream = preview_stream_from_blueprint(&remux_blueprint, ReceiverTransport::Fixture);
+        let preview_stream =
+            preview_stream_from_blueprint(&remux_blueprint, ReceiverTransport::Fixture);
 
         Self {
             sequence: 0,
@@ -218,6 +218,7 @@ pub(crate) fn clear_pairing(store: &mut SessionStore) {
 
 pub(crate) fn resume_local_session_approval(store: &mut SessionStore) {
     store.pending_local_session_approval = false;
+    store.require_local_session_approval = false;
 
     if store.live_preview_buffer.queued_segment_count() > 0 {
         if store.snapshot.status != SessionStatus::Recording {
@@ -241,7 +242,8 @@ pub(crate) fn resume_local_session_approval(store: &mut SessionStore) {
 
 pub(crate) fn reset_fixture_transport(store: &mut SessionStore) {
     let remux_blueprint = RemuxBlueprint::fixture_preview();
-    store.preview_stream = preview_stream_from_blueprint(&remux_blueprint, ReceiverTransport::Fixture);
+    store.preview_stream =
+        preview_stream_from_blueprint(&remux_blueprint, ReceiverTransport::Fixture);
     store.live_preview_buffer.reset();
     store.remux_blueprint = remux_blueprint.clone();
     store.receiver_runtime.transport = ReceiverTransport::Fixture;
@@ -252,14 +254,16 @@ pub(crate) fn reset_fixture_transport(store: &mut SessionStore) {
 pub(crate) fn prepare_live_transport(store: &mut SessionStore, stream_id: String) {
     store.live_preview_buffer.reset();
     store.remux_blueprint = RemuxBlueprint::live_preview(stream_id.clone());
-    store.preview_stream = preview_stream_from_blueprint(&store.remux_blueprint, ReceiverTransport::Airplayserver);
+    store.preview_stream =
+        preview_stream_from_blueprint(&store.remux_blueprint, ReceiverTransport::Airplayserver);
     store.receiver_runtime.transport = ReceiverTransport::Airplayserver;
     store.receiver_runtime.stream_id = stream_id;
     reset_preview_diagnostics(store, ReceiverTransport::Airplayserver, false);
 }
 
 pub(crate) fn refresh_live_preview_descriptor(store: &mut SessionStore) {
-    store.preview_stream = preview_stream_from_blueprint(&store.remux_blueprint, ReceiverTransport::Airplayserver);
+    store.preview_stream =
+        preview_stream_from_blueprint(&store.remux_blueprint, ReceiverTransport::Airplayserver);
 }
 
 pub(crate) fn set_receiver_runtime_state(store: &mut SessionStore, state: ReceiverRuntimeState) {
@@ -267,7 +271,10 @@ pub(crate) fn set_receiver_runtime_state(store: &mut SessionStore, state: Receiv
     store.receiver_runtime.queued_segments = match state {
         ReceiverRuntimeState::Idle => 0,
         ReceiverRuntimeState::Priming => 1,
-        ReceiverRuntimeState::Ready | ReceiverRuntimeState::Streaming => match store.receiver_runtime.transport {
+        ReceiverRuntimeState::Ready | ReceiverRuntimeState::Streaming => match store
+            .receiver_runtime
+            .transport
+        {
             ReceiverTransport::Fixture => store.remux_blueprint.queued_segment_count(),
             ReceiverTransport::Airplayserver => store.remux_blueprint.buffered_access_unit_count(),
         },
@@ -302,8 +309,8 @@ mod tests {
     use crate::models::{PairingEntryMode, PairingPhase, ReceiverRuntimeState, SessionStatus};
 
     const SAMPLE_SPS: [u8; 28] = [
-        0x67, 0x42, 0xC0, 0x1E, 0xDA, 0x02, 0x80, 0xBF, 0xE5, 0xC0, 0x5A, 0x80, 0x80, 0x80,
-        0xA0, 0x00, 0x00, 0x03, 0x00, 0x20, 0x00, 0x00, 0x07, 0x91, 0xE2, 0x85, 0x49, 0x01,
+        0x67, 0x42, 0xC0, 0x1E, 0xDA, 0x02, 0x80, 0xBF, 0xE5, 0xC0, 0x5A, 0x80, 0x80, 0x80, 0xA0,
+        0x00, 0x00, 0x03, 0x00, 0x20, 0x00, 0x00, 0x07, 0x91, 0xE2, 0x85, 0x49, 0x01,
     ];
     const SAMPLE_PPS: [u8; 4] = [0x68, 0xCE, 0x0F, 0xC8];
     const SAMPLE_IDR: [u8; 5] = [0x65, 0x88, 0x84, 0x21, 0xA0];
@@ -349,7 +356,10 @@ mod tests {
         resume_local_session_approval(&mut store);
 
         assert!(matches!(store.snapshot.status, SessionStatus::Mirroring));
-        assert!(matches!(store.receiver_runtime.state, ReceiverRuntimeState::Streaming));
+        assert!(matches!(
+            store.receiver_runtime.state,
+            ReceiverRuntimeState::Streaming
+        ));
         assert!(store.live_preview_buffer.queued_segment_count() > 0);
         assert!(matches!(store.pairing.phase, PairingPhase::Idle));
         assert!(!store.pending_local_session_approval);

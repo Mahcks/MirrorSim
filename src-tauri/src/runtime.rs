@@ -1,25 +1,26 @@
 use crate::history::{append_history_entry, now_unix_timestamp};
 use crate::models::{
-    BonjourStatusKind, BonjourStatusSnapshot, CommandResult, ConnectionHistoryEntry,
-    PairingPhase, PairingSnapshot,
-    PreviewDiagnosticsSnapshot, PreviewStreamDescriptor, PreviewTelemetry,
+    BonjourStatusKind, BonjourStatusSnapshot, CommandResult, ConnectionHistoryEntry, PairingPhase,
+    PairingSnapshot, PreviewDiagnosticsSnapshot, PreviewStreamDescriptor, PreviewTelemetry,
     ReceiverRuntimeSnapshot, ReceiverRuntimeState, ReceiverTransport, ScreenshotSaveLocation,
     SessionSnapshot, SessionStatus, SidecarEvent,
 };
 use crate::sidecar::ReceiverSidecarSpec;
 use crate::state::{
-    clear_session_identity, prepare_live_transport, preview_bitrate_kbps,
-    preview_fps_from_duration, preview_activity, refresh_live_preview_descriptor,
-    reset_fixture_transport, reset_preview, clear_pairing,
+    clear_pairing, clear_session_identity, prepare_live_transport, preview_activity,
+    preview_bitrate_kbps, preview_fps_from_duration, refresh_live_preview_descriptor,
+    reset_fixture_transport, reset_preview, resume_local_session_approval,
     set_receiver_runtime_state, sync_preview_diagnostics, SessionStore,
 };
 use crate::trust::{
-    apply_current_device_trust, get_trusted_devices, note_device_connected,
-    note_device_failure, note_known_device, note_pairing_state, trust_device,
+    apply_current_device_trust, get_trusted_devices, note_device_connected, note_device_failure,
+    note_known_device, note_pairing_state, trust_device,
 };
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 use serde_json::json;
 use std::io::{BufRead, BufReader, Write};
+#[cfg(windows)]
+use std::os::windows::io::AsRawHandle;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
@@ -27,6 +28,14 @@ use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter, Manager};
+#[cfg(windows)]
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+#[cfg(windows)]
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+    JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
 
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
@@ -39,15 +48,79 @@ const PREVIEW_DIAGNOSTICS_EVENT: &str = "preview-diagnostics";
 const PAIRING_STATUS_EVENT: &str = "pairing-status";
 const KEYFRAME_REQUEST_CAPABILITY: &str = "keyframe-request";
 
+#[cfg(windows)]
+struct SidecarJob {
+    handle: HANDLE,
+}
+
+#[cfg(windows)]
+unsafe impl Send for SidecarJob {}
+
+#[cfg(windows)]
+impl SidecarJob {
+    fn create() -> CommandResult<Self> {
+        let handle = unsafe { CreateJobObjectW(std::ptr::null(), std::ptr::null()) };
+        if handle.is_null() {
+            return Err(String::from("failed to create receiver cleanup job"));
+        }
+
+        let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+        let configured = unsafe {
+            SetInformationJobObject(
+                handle,
+                JobObjectExtendedLimitInformation,
+                std::ptr::addr_of!(limits).cast(),
+                std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            )
+        };
+
+        if configured == 0 {
+            unsafe {
+                CloseHandle(handle);
+            }
+            return Err(String::from("failed to configure receiver cleanup job"));
+        }
+
+        Ok(Self { handle })
+    }
+
+    fn assign_child(&self, child: &Child) -> CommandResult<()> {
+        let process_handle = child.as_raw_handle() as HANDLE;
+        let assigned = unsafe { AssignProcessToJobObject(self.handle, process_handle) };
+        if assigned == 0 {
+            return Err(String::from(
+                "failed to attach receiver process to cleanup job",
+            ));
+        }
+
+        Ok(())
+    }
+}
+
+#[cfg(windows)]
+impl Drop for SidecarJob {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.handle);
+        }
+    }
+}
+
 pub(crate) struct SidecarRuntime {
     child: Child,
     stdin: ChildStdin,
+    #[cfg(windows)]
+    _job: SidecarJob,
 }
 
 impl SidecarRuntime {
     fn send_command(&mut self, command: serde_json::Value) -> CommandResult<()> {
         serde_json::to_writer(&mut self.stdin, &command).map_err(|error| error.to_string())?;
-        self.stdin.write_all(b"\n").map_err(|error| error.to_string())?;
+        self.stdin
+            .write_all(b"\n")
+            .map_err(|error| error.to_string())?;
         self.stdin.flush().map_err(|error| error.to_string())
     }
 }
@@ -115,12 +188,18 @@ pub(crate) fn emit_preview_stream(
         .map_err(|error| error.to_string())
 }
 
-pub(crate) fn emit_session_status(app: &AppHandle, snapshot: &SessionSnapshot) -> CommandResult<()> {
+pub(crate) fn emit_session_status(
+    app: &AppHandle,
+    snapshot: &SessionSnapshot,
+) -> CommandResult<()> {
     app.emit(SESSION_STATUS_EVENT, snapshot.clone())
         .map_err(|error| error.to_string())
 }
 
-pub(crate) fn emit_preview_telemetry(app: &AppHandle, preview: &PreviewTelemetry) -> CommandResult<()> {
+pub(crate) fn emit_preview_telemetry(
+    app: &AppHandle,
+    preview: &PreviewTelemetry,
+) -> CommandResult<()> {
     app.emit(PREVIEW_TELEMETRY_EVENT, preview.clone())
         .map_err(|error| error.to_string())
 }
@@ -290,7 +369,12 @@ pub(crate) fn emit_runtime_error(
 pub(crate) fn query_bonjour_status() -> BonjourStatusSnapshot {
     const SERVICE_NAME: &str = "Bonjour Service";
 
-    let output = Command::new("sc").args(["query", SERVICE_NAME]).output();
+    let mut command = Command::new("sc");
+    command
+        .args(["query", SERVICE_NAME])
+        .creation_flags(CREATE_NO_WINDOW);
+
+    let output = command.output();
 
     match output {
         Ok(output) => {
@@ -460,7 +544,10 @@ fn handle_sidecar_event(
                     emit_pairing = true;
                     (
                         String::from("warning"),
-                        format!("{} was rejected because this iPhone is blocked on this PC.", device_name),
+                        format!(
+                            "{} was rejected because this iPhone is blocked on this PC.",
+                            device_name
+                        ),
                     )
                 } else if guard.require_known_device && !guard.snapshot.current_device_known {
                     guard.pairing.phase = PairingPhase::Failed;
@@ -478,9 +565,14 @@ fn handle_sidecar_event(
                     emit_pairing = true;
                     (
                         String::from("warning"),
-                        format!("{} was rejected because it is not known on this PC yet.", device_name),
+                        format!(
+                            "{} was rejected because it is not known on this PC yet.",
+                            device_name
+                        ),
                     )
-                } else if guard.require_local_session_approval && !guard.snapshot.current_device_trusted {
+                } else if guard.require_local_session_approval
+                    && !guard.snapshot.current_device_trusted
+                {
                     guard.pending_local_session_approval = true;
                     guard.pairing.phase = PairingPhase::AwaitingTrust;
                     guard.pairing.entry_mode = crate::models::PairingEntryMode::ConfirmOnly;
@@ -498,7 +590,10 @@ fn handle_sidecar_event(
                     emit_pairing = true;
                     (
                         String::from("info"),
-                        format!("{} connected and is waiting for local approval.", device_name),
+                        format!(
+                            "{} connected and is waiting for local approval.",
+                            device_name
+                        ),
                     )
                 } else {
                     guard.receiver_runtime.last_error = Some(String::from(
@@ -573,7 +668,12 @@ fn handle_sidecar_event(
                         guard.snapshot.current_device_os_version.as_deref(),
                         guard.snapshot.current_device_os_build_version.as_deref(),
                         guard.snapshot.current_device_source_version.as_deref(),
-                        matches!(phase, PairingPhase::PinRequired | PairingPhase::AwaitingTrust | PairingPhase::Verifying),
+                        matches!(
+                            phase,
+                            PairingPhase::PinRequired
+                                | PairingPhase::AwaitingTrust
+                                | PairingPhase::Verifying
+                        ),
                         guard.pairing.failure_message.as_deref(),
                     )?;
                     apply_current_device_trust(&mut guard.snapshot, &trusted_devices);
@@ -613,6 +713,24 @@ fn handle_sidecar_event(
                         apply_current_device_trust(&mut guard.snapshot, &trusted_devices);
                         emit_snapshot = true;
                     }
+
+                    if guard.pending_local_session_approval {
+                        resume_local_session_approval(&mut guard);
+                        emit_snapshot = true;
+                        if guard
+                            .snapshot
+                            .receiver_capabilities
+                            .iter()
+                            .any(|capability| capability == KEYFRAME_REQUEST_CAPABILITY)
+                        {
+                            request_keyframe = guard.active_session_id.as_ref().map(|_| {
+                                (
+                                    guard.receiver_runtime.stream_id.clone(),
+                                    String::from("pairing_approved"),
+                                )
+                            });
+                        }
+                    }
                 }
 
                 history_entries.push(ConnectionHistoryEntry {
@@ -631,7 +749,9 @@ fn handle_sidecar_event(
                         .failure_message
                         .clone()
                         .or_else(|| guard.pairing.prompt.clone())
-                        .unwrap_or_else(|| format!("Pairing moved to {}.", serde_variant_name(&phase))),
+                        .unwrap_or_else(|| {
+                            format!("Pairing moved to {}.", serde_variant_name(&phase))
+                        }),
                     device_name: Some(guard.snapshot.device_name.clone()),
                     device_id: guard.snapshot.current_device_id.clone(),
                     device_model: guard.snapshot.current_device_model.clone(),
@@ -663,12 +783,22 @@ fn handle_sidecar_event(
                     .decode(payload_base64.as_bytes())
                     .map_err(|error| format!("failed to decode receiver payload: {}", error))?;
                 let size_bytes = payload.len();
-                guard
-                    .remux_blueprint
-                    .push_access_unit(sample_index, size_bytes, keyframe, dts, pts, duration);
-                let push_result = guard
-                    .live_preview_buffer
-                    .push_access_unit(sample_index, payload, keyframe, dts, pts, duration)?;
+                guard.remux_blueprint.push_access_unit(
+                    sample_index,
+                    size_bytes,
+                    keyframe,
+                    dts,
+                    pts,
+                    duration,
+                );
+                let push_result = guard.live_preview_buffer.push_access_unit(
+                    sample_index,
+                    payload,
+                    keyframe,
+                    dts,
+                    pts,
+                    duration,
+                )?;
                 guard.preview_diagnostics.last_access_unit_index = Some(sample_index);
                 guard.preview_diagnostics.last_access_unit_duration = Some(duration);
                 if push_result.init_segment_became_available {
@@ -683,7 +813,8 @@ fn handle_sidecar_event(
 
                 if let Some(segment) = push_result.emitted_segment {
                     guard.preview_diagnostics.emitted_segments += 1;
-                    guard.preview_diagnostics.last_queued_sequence_number = Some(segment.sequence_number);
+                    guard.preview_diagnostics.last_queued_sequence_number =
+                        Some(segment.sequence_number);
                     guard.preview_diagnostics.last_queued_first_sample_index =
                         Some(segment.first_sample_index);
                     guard.preview_diagnostics.last_queued_last_sample_index =
@@ -749,9 +880,13 @@ fn handle_sidecar_event(
                 guard.remux_blueprint.reset_live_preview(stream_id.clone());
                 guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
                 guard.receiver_runtime.queued_segments = 0;
-                guard.receiver_runtime.last_error = Some(format!("stream discontinuity: {}", reason));
+                guard.receiver_runtime.last_error =
+                    Some(format!("stream discontinuity: {}", reason));
 
-                if matches!(guard.snapshot.status, SessionStatus::Mirroring | SessionStatus::Recording) {
+                if matches!(
+                    guard.snapshot.status,
+                    SessionStatus::Mirroring | SessionStatus::Recording
+                ) {
                     guard.snapshot.status = SessionStatus::Connecting;
                     emit_snapshot = true;
                 }
@@ -815,7 +950,11 @@ fn handle_sidecar_event(
                         id: String::new(),
                         occurred_at: now_unix_timestamp(),
                         event: String::from("receiver-error"),
-                        status: if recoverable { String::from("warning") } else { String::from("error") },
+                        status: if recoverable {
+                            String::from("warning")
+                        } else {
+                            String::from("error")
+                        },
                         message: format!("{}: {}", code, message),
                         device_name: Some(snapshot.device_name),
                         device_id: snapshot.current_device_id,
@@ -827,7 +966,12 @@ fn handle_sidecar_event(
                     },
                 );
 
-                return emit_runtime_error(app, store, format!("{}: {}", code, message), recoverable);
+                return emit_runtime_error(
+                    app,
+                    store,
+                    format!("{}: {}", code, message),
+                    recoverable,
+                );
             }
         }
 
@@ -841,7 +985,14 @@ fn handle_sidecar_event(
         )
     };
 
-    emit_state_updates(app, snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics)?;
+    emit_state_updates(
+        app,
+        snapshot,
+        preview,
+        preview_stream,
+        receiver_runtime,
+        preview_diagnostics,
+    )?;
     if let Some(pairing) = pairing.as_ref() {
         emit_pairing_status(app, pairing)?;
     }
@@ -898,7 +1049,12 @@ fn spawn_sidecar_stdout_loop(
             let line = match line {
                 Ok(line) => line,
                 Err(error) => {
-                    let _ = emit_runtime_error(&app, &store, format!("receiver output error: {}", error), true);
+                    let _ = emit_runtime_error(
+                        &app,
+                        &store,
+                        format!("receiver output error: {}", error),
+                        true,
+                    );
                     break;
                 }
             };
@@ -932,16 +1088,17 @@ fn spawn_sidecar_stdout_loop(
         };
 
         if !is_idle {
-            let _ = emit_runtime_error(&app, &store, String::from("receiver sidecar exited unexpectedly"), false);
+            let _ = emit_runtime_error(
+                &app,
+                &store,
+                String::from("receiver sidecar exited unexpectedly"),
+                false,
+            );
         }
     });
 }
 
-fn spawn_sidecar_stderr_loop(
-    app: AppHandle,
-    store: Arc<Mutex<SessionStore>>,
-    stderr: ChildStderr,
-) {
+fn spawn_sidecar_stderr_loop(app: AppHandle, store: Arc<Mutex<SessionStore>>, stderr: ChildStderr) {
     thread::spawn(move || {
         let reader = BufReader::new(stderr);
 
@@ -971,6 +1128,9 @@ pub(crate) fn ensure_sidecar_runtime(app: &AppHandle, state: &AppState) -> Comma
     let executable = resolve_sidecar_path(app, &spec.launch.executable)?;
     let working_directory = resolve_sidecar_path(app, &spec.launch.working_directory)?;
 
+    #[cfg(windows)]
+    let sidecar_job = SidecarJob::create()?;
+
     let mut command = Command::new(&executable);
     command
         .args(&spec.launch.args)
@@ -982,18 +1142,48 @@ pub(crate) fn ensure_sidecar_runtime(app: &AppHandle, state: &AppState) -> Comma
     #[cfg(windows)]
     command.creation_flags(CREATE_NO_WINDOW);
 
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("failed to launch receiver sidecar '{}': {}", executable.display(), error))?;
+    let mut child = command.spawn().map_err(|error| {
+        format!(
+            "failed to launch receiver sidecar '{}': {}",
+            executable.display(),
+            error
+        )
+    })?;
 
-    let stdin = child.stdin.take().ok_or_else(|| String::from("receiver sidecar stdin was unavailable"))?;
-    let stdout = child.stdout.take().ok_or_else(|| String::from("receiver sidecar stdout was unavailable"))?;
-    let stderr = child.stderr.take().ok_or_else(|| String::from("receiver sidecar stderr was unavailable"))?;
+    #[cfg(windows)]
+    if let Err(error) = sidecar_job.assign_child(&child) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(error);
+    }
 
-    spawn_sidecar_stdout_loop(app.clone(), state.inner.clone(), state.sidecar.clone(), stdout);
+    let stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| String::from("receiver sidecar stdin was unavailable"))?;
+    let stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| String::from("receiver sidecar stdout was unavailable"))?;
+    let stderr = child
+        .stderr
+        .take()
+        .ok_or_else(|| String::from("receiver sidecar stderr was unavailable"))?;
+
+    spawn_sidecar_stdout_loop(
+        app.clone(),
+        state.inner.clone(),
+        state.sidecar.clone(),
+        stdout,
+    );
     spawn_sidecar_stderr_loop(app.clone(), state.inner.clone(), stderr);
 
-    *sidecar_guard = Some(SidecarRuntime { child, stdin });
+    *sidecar_guard = Some(SidecarRuntime {
+        child,
+        stdin,
+        #[cfg(windows)]
+        _job: sidecar_job,
+    });
     Ok(true)
 }
 

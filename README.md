@@ -145,6 +145,11 @@ Use `bun run fetch:airplay-runtime` when you want MirrorSim to download the vers
 Use `bun run sync:airplay-runtime` when you have a local sibling AirPlayServer build and want to copy it in directly.
 Use the `*:fetch` release commands when you want local release validation to use the published runtime bundle instead of your sibling AirPlayServer checkout.
 
+Updater-enabled release builds require these environment variables:
+
+- `TAURI_SIGNING_PRIVATE_KEY`: the private key used to sign Windows updater artifacts
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: optional password for the private key
+
 - `release:prep` syncs the bundled receiver runtime and builds the frontend
 - `release:installer` builds installer artifacts through Tauri
 - `release:portable` builds `release/portable/MirrorSim-portable-v<version>.zip`
@@ -152,7 +157,7 @@ Use the `*:fetch` release commands when you want local release validation to use
 
 Normal development uses your installed stable Rust toolchain. Release packaging is still pinned to Rust `1.88.0` through the release script and CI.
 
-For GitHub Releases, `.github/workflows/release.yml` expects `receivers/runtime-manifest.json` to point at a real downloadable runtime zip and checksum.
+For GitHub Releases, `.github/workflows/release.yml` expects `receivers/runtime-manifest.json` to point at a real downloadable runtime zip and checksum, and it now publishes `release/latest.json` for launch-time updater checks.
 
 ---
 

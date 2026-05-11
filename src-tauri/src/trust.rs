@@ -15,7 +15,10 @@ struct TrustedDeviceRegistry {
 }
 
 fn trust_registry_path(app: &AppHandle) -> CommandResult<PathBuf> {
-    let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
     Ok(app_data_dir.join(TRUST_REGISTRY_FILE))
 }
 
@@ -60,11 +63,26 @@ fn apply_device_identity(
     os_build_version: Option<&str>,
     source_version: Option<&str>,
 ) {
-    device.model = model.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned);
-    device.os_name = os_name.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned);
-    device.os_version = os_version.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned);
-    device.os_build_version = os_build_version.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned);
-    device.source_version = source_version.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned);
+    device.model = model
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    device.os_name = os_name
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    device.os_version = os_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    device.os_build_version = os_build_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
+    device.source_version = source_version
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned);
 }
 
 fn find_device_mut<'a>(
@@ -84,12 +102,23 @@ fn find_device_mut<'a>(
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
 
-    if let Some(index) = registry.devices.iter().position(|device| device.key == device_key) {
+    if let Some(index) = registry
+        .devices
+        .iter()
+        .position(|device| device.key == device_key)
+    {
         let device = &mut registry.devices[index];
         device.display_name = device_name.trim().to_string();
         device.device_id = normalized_device_id;
         device.last_seen_at = now;
-        apply_device_identity(device, model, os_name, os_version, os_build_version, source_version);
+        apply_device_identity(
+            device,
+            model,
+            os_name,
+            os_version,
+            os_build_version,
+            source_version,
+        );
         return Some(device);
     }
 
@@ -113,12 +142,23 @@ fn upsert_device<'a>(
         .filter(|value| !value.is_empty())
         .map(str::to_owned);
 
-    if let Some(index) = registry.devices.iter().position(|device| device.key == device_key) {
+    if let Some(index) = registry
+        .devices
+        .iter()
+        .position(|device| device.key == device_key)
+    {
         let device = &mut registry.devices[index];
         device.display_name = device_name.trim().to_string();
         device.device_id = normalized_device_id;
         device.last_seen_at = now;
-        apply_device_identity(device, model, os_name, os_version, os_build_version, source_version);
+        apply_device_identity(
+            device,
+            model,
+            os_name,
+            os_version,
+            os_build_version,
+            source_version,
+        );
         return Some(device);
     }
 
@@ -126,11 +166,26 @@ fn upsert_device<'a>(
         key: device_key,
         device_id: normalized_device_id,
         display_name: device_name.trim().to_string(),
-        model: model.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned),
-        os_name: os_name.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned),
-        os_version: os_version.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned),
-        os_build_version: os_build_version.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned),
-        source_version: source_version.map(str::trim).filter(|value| !value.is_empty()).map(str::to_owned),
+        model: model
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        os_name: os_name
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        os_version: os_version
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        os_build_version: os_build_version
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
+        source_version: source_version
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(str::to_owned),
         nickname: None,
         first_seen_at: now,
         last_seen_at: now,
@@ -156,7 +211,10 @@ pub(crate) fn device_key_for_name(device_name: &str) -> Option<String> {
     Some(trimmed.to_ascii_lowercase())
 }
 
-pub(crate) fn device_key_for_identity(device_id: Option<&str>, device_name: &str) -> Option<String> {
+pub(crate) fn device_key_for_identity(
+    device_id: Option<&str>,
+    device_name: &str,
+) -> Option<String> {
     let normalized_device_id = device_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -165,8 +223,12 @@ pub(crate) fn device_key_for_identity(device_id: Option<&str>, device_name: &str
     normalized_device_id.or_else(|| device_key_for_name(device_name))
 }
 
-pub(crate) fn apply_current_device_trust(snapshot: &mut SessionSnapshot, trusted_devices: &[TrustedDevice]) {
-    snapshot.current_device_key = device_key_for_identity(snapshot.current_device_id.as_deref(), &snapshot.device_name);
+pub(crate) fn apply_current_device_trust(
+    snapshot: &mut SessionSnapshot,
+    trusted_devices: &[TrustedDevice],
+) {
+    snapshot.current_device_key =
+        device_key_for_identity(snapshot.current_device_id.as_deref(), &snapshot.device_name);
     snapshot.current_device_nickname = None;
     snapshot.current_device_known = false;
     snapshot.current_device_trusted = false;
@@ -174,7 +236,10 @@ pub(crate) fn apply_current_device_trust(snapshot: &mut SessionSnapshot, trusted
     snapshot.current_device_blocked_reason = None;
 
     if let Some(device_key) = snapshot.current_device_key.as_ref() {
-        if let Some(device) = trusted_devices.iter().find(|device| &device.key == device_key) {
+        if let Some(device) = trusted_devices
+            .iter()
+            .find(|device| &device.key == device_key)
+        {
             snapshot.current_device_nickname = device.nickname.clone();
             snapshot.current_device_known = true;
             if snapshot.current_device_model.is_none() {
@@ -202,10 +267,11 @@ pub(crate) fn apply_current_device_trust(snapshot: &mut SessionSnapshot, trusted
 pub(crate) fn get_trusted_devices(app: &AppHandle) -> CommandResult<Vec<TrustedDevice>> {
     let mut devices = load_registry(app)?.devices;
     devices.sort_by(|left, right| {
-        right
-            .last_seen_at
-            .cmp(&left.last_seen_at)
-            .then_with(|| display_label(left).to_ascii_lowercase().cmp(&display_label(right).to_ascii_lowercase()))
+        right.last_seen_at.cmp(&left.last_seen_at).then_with(|| {
+            display_label(left)
+                .to_ascii_lowercase()
+                .cmp(&display_label(right).to_ascii_lowercase())
+        })
     });
     Ok(devices)
 }
@@ -384,7 +450,11 @@ pub(crate) fn rename_trusted_device(
     nickname: Option<&str>,
 ) -> CommandResult<Vec<TrustedDevice>> {
     let mut registry = load_registry(app)?;
-    if let Some(device) = registry.devices.iter_mut().find(|device| device.key == device_key) {
+    if let Some(device) = registry
+        .devices
+        .iter_mut()
+        .find(|device| device.key == device_key)
+    {
         device.nickname = nickname
             .map(str::trim)
             .filter(|value| !value.is_empty())
@@ -401,7 +471,11 @@ pub(crate) fn set_trusted_device_blocked(
     reason: Option<&str>,
 ) -> CommandResult<Vec<TrustedDevice>> {
     let mut registry = load_registry(app)?;
-    if let Some(device) = registry.devices.iter_mut().find(|device| device.key == device_key) {
+    if let Some(device) = registry
+        .devices
+        .iter_mut()
+        .find(|device| device.key == device_key)
+    {
         device.is_blocked = blocked;
         device.blocked_reason = if blocked {
             reason
@@ -420,7 +494,10 @@ pub(crate) fn set_trusted_device_blocked(
     get_trusted_devices(app)
 }
 
-pub(crate) fn forget_trusted_device(app: &AppHandle, device_key: &str) -> CommandResult<Vec<TrustedDevice>> {
+pub(crate) fn forget_trusted_device(
+    app: &AppHandle,
+    device_key: &str,
+) -> CommandResult<Vec<TrustedDevice>> {
     let mut registry = load_registry(app)?;
     registry.devices.retain(|device| device.key != device_key);
     save_registry(app, &registry)?;

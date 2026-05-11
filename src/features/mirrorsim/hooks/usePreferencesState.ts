@@ -15,6 +15,20 @@ import {
 } from "@/features/mirrorsim/helpers";
 import type { AppPreferences, RecordingSettings, ScreenshotSettings, StoredPreferences } from "@/features/mirrorsim/types";
 
+function scheduleAfterFirstPaint(callback: () => void, delayMs = 0) {
+  let timeoutId: number | null = null;
+  const frameId = window.requestAnimationFrame(() => {
+    timeoutId = window.setTimeout(callback, delayMs);
+  });
+
+  return () => {
+    window.cancelAnimationFrame(frameId);
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+  };
+}
+
 type PreferencesState = {
   preferencesReady: boolean;
   screenshotSettings: ScreenshotSettings;
@@ -29,53 +43,53 @@ type PreferencesState = {
 };
 
 export function usePreferencesState(): PreferencesState {
-  const [preferencesReady, setPreferencesReady] = useState(false);
-  const [screenshotSettings, setScreenshotSettings] = useState<ScreenshotSettings>(defaultScreenshotSettings);
-  const [recordingSettings, setRecordingSettings] = useState<RecordingSettings>(defaultRecordingSettings);
-  const [appPreferences, setAppPreferences] = useState<AppPreferences>(defaultAppPreferences);
+  const browserStoredPreferences = readBrowserStoredPreferences();
+  const initialPreferences = mergeStoredPreferences(browserStoredPreferences);
+  const [preferencesReady, setPreferencesReady] = useState(true);
+  const [storeHydrated, setStoreHydrated] = useState(false);
+  const [screenshotSettings, setScreenshotSettings] = useState<ScreenshotSettings>(initialPreferences.screenshots ?? defaultScreenshotSettings);
+  const [recordingSettings, setRecordingSettings] = useState<RecordingSettings>(initialPreferences.recordings ?? defaultRecordingSettings);
+  const [appPreferences, setAppPreferences] = useState<AppPreferences>(initialPreferences.app ?? defaultAppPreferences);
 
   useEffect(() => {
     let cancelled = false;
+    const cancelScheduledLoad = scheduleAfterFirstPaint(() => {
+      void (async () => {
+        try {
+          const store = await getPreferencesStore();
+          const stored = (await store.get<StoredPreferences>(PREFERENCES_STORE_KEY)) ?? browserStoredPreferences;
+          const merged = mergeStoredPreferences(stored);
 
-    void (async () => {
-      try {
-        const store = await getPreferencesStore();
-        const stored = (await store.get<StoredPreferences>(PREFERENCES_STORE_KEY)) ?? readBrowserStoredPreferences();
-        const merged = mergeStoredPreferences(stored);
+          if (!cancelled) {
+            setScreenshotSettings(merged.screenshots);
+            setRecordingSettings(merged.recordings);
+            setAppPreferences(merged.app);
+          }
 
-        if (!cancelled) {
-          setScreenshotSettings(merged.screenshots);
-          setRecordingSettings(merged.recordings);
-          setAppPreferences(merged.app);
+          if (stored) {
+            await store.set(PREFERENCES_STORE_KEY, merged);
+            clearBrowserStoredPreferences();
+            await store.save();
+          }
+        } catch {
+          // Browser fallback was already applied synchronously.
+        } finally {
+          if (!cancelled) {
+            setStoreHydrated(true);
+            setPreferencesReady(true);
+          }
         }
-
-        if (stored) {
-          await store.set(PREFERENCES_STORE_KEY, merged);
-          clearBrowserStoredPreferences();
-          await store.save();
-        }
-      } catch {
-        const merged = mergeStoredPreferences(readBrowserStoredPreferences());
-
-        if (!cancelled) {
-          setScreenshotSettings(merged.screenshots);
-          setRecordingSettings(merged.recordings);
-          setAppPreferences(merged.app);
-        }
-      } finally {
-        if (!cancelled) {
-          setPreferencesReady(true);
-        }
-      }
-    })();
+      })();
+    }, 120);
 
     return () => {
       cancelled = true;
+      cancelScheduledLoad();
     };
-  }, []);
+  }, [browserStoredPreferences]);
 
   useEffect(() => {
-    if (!preferencesReady) {
+    if (!preferencesReady || !storeHydrated) {
       return;
     }
 

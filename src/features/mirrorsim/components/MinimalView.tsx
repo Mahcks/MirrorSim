@@ -24,6 +24,7 @@ type MinimalViewProps = {
   orientation: Orientation;
   reconnectBadge: ReactNode;
   settingsModal: ReactNode;
+  showConsoleBadge: boolean;
   shellWidth: number;
   titlebarStateDotClass: string;
   titlebarStateLabel: string;
@@ -47,6 +48,7 @@ export function MinimalView({
   onStartWindowDrag,
   reconnectBadge,
   settingsModal,
+  showConsoleBadge,
   shellWidth,
   titlebarStateDotClass,
   titlebarStateLabel,
@@ -94,14 +96,19 @@ export function MinimalView({
             <button type="button" className={minimalFloatingButtonClass} onClick={onFit} title="Fit window to phone">
               <Icon name="compress" size={14} />
             </button>
-            <button
-              type="button"
-              className="inline-flex h-7 w-7 items-center justify-center text-cyan-300 transition hover:text-white"
-              onClick={onGoConsole}
-              title="Switch to Console (Ctrl+M)"
-            >
-              <Icon name="console" size={12} />
-            </button>
+            <div className="relative">
+              <button
+                type="button"
+                className="inline-flex h-7 w-7 items-center justify-center text-cyan-300 transition hover:text-white"
+                onClick={onGoConsole}
+                title="Switch to Console (Ctrl+M)"
+              >
+                <Icon name="console" size={12} />
+              </button>
+              {showConsoleBadge && (
+                <span className="pointer-events-none absolute right-0.5 top-0.5 h-2 w-2 rounded-full bg-amber-300 shadow-[0_0_0_2px_rgba(23,25,29,0.95)]" />
+              )}
+            </div>
           </div>
         </div>
 

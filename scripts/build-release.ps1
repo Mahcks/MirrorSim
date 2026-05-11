@@ -25,6 +25,12 @@ $releaseExe = Join-Path $repoRoot 'src-tauri\target\release\MirrorSim.exe'
 $releaseSupportDir = Join-Path $repoRoot 'src-tauri\target\release\_up_'
 $receiverBundle = Join-Path $repoRoot 'receivers\AirPlayServer'
 
+function Normalize-UpdaterEnvironment {
+  if (-not [string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD)) {
+    $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD = $env:TAURI_SIGNING_PRIVATE_KEY_PASSWORD.Trim()
+  }
+}
+
 function Invoke-Step {
   param(
     [string]$Command,
@@ -64,6 +70,14 @@ function Invoke-Step {
   }
 }
 
+function Assert-UpdaterReleaseConfig {
+  Normalize-UpdaterEnvironment
+
+  if ([string]::IsNullOrWhiteSpace($env:TAURI_SIGNING_PRIVATE_KEY)) {
+    throw "TAURI_SIGNING_PRIVATE_KEY is required for release builds so Tauri can sign updater artifacts."
+  }
+}
+
 function Invoke-Prep {
   if ($RuntimeSource -eq 'fetch') {
     Invoke-Step 'bun run fetch:airplay-runtime'
@@ -76,10 +90,12 @@ function Invoke-Prep {
 }
 
 function Invoke-InstallerBuild {
+  Assert-UpdaterReleaseConfig
   Invoke-Step 'bunx tauri build --bundles nsis,msi' -RustToolchain $releaseRustToolchain
 }
 
 function Invoke-PortableBuild {
+  Assert-UpdaterReleaseConfig
   Invoke-Step 'bunx tauri build --no-bundle' -RustToolchain $releaseRustToolchain
 
   if (-not (Test-Path $releaseExe)) {

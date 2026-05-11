@@ -64,6 +64,7 @@ type ConsoleViewProps = {
   settingsModal: ReactNode;
   technicalDetails: ReactNode;
   trustedDevicesCount: number;
+  updateBanner: ReactNode;
   zoom: ZoomLevel;
   zoomIndex: number;
   zoomMaxIndex: number;
@@ -123,6 +124,7 @@ export function ConsoleView({
   settingsModal,
   technicalDetails,
   trustedDevicesCount,
+  updateBanner,
   zoom,
   zoomIndex,
   zoomMaxIndex,
@@ -251,6 +253,7 @@ export function ConsoleView({
                 </div>
               </div>
             )}
+            {updateBanner}
             <div className="flex items-start gap-2.5">
               <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-xl border border-white/8 bg-[#1a1b1e] text-white/55">
                 <Icon name="phone" size={14} />

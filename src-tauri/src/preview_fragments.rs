@@ -101,7 +101,9 @@ impl LivePreviewBuffer {
         let parsed_payload = parse_h264_payload(&payload);
 
         if self.init_segment.is_none() {
-            if let Some((track, init_segment)) = track_config_from_parameter_sets(parsed_payload.parameter_sets.as_ref()) {
+            if let Some((track, init_segment)) =
+                track_config_from_parameter_sets(parsed_payload.parameter_sets.as_ref())
+            {
                 self.track = Some(track);
                 self.init_segment = Some(init_segment);
                 init_segment_became_available = true;
@@ -128,7 +130,8 @@ impl LivePreviewBuffer {
         };
 
         let effective_is_keyframe = is_keyframe || parsed_payload.contains_idr;
-        let requires_random_access = self.next_sequence_number == 1 && self.pending_samples.is_empty();
+        let requires_random_access =
+            self.next_sequence_number == 1 && self.pending_samples.is_empty();
         if requires_random_access && !effective_is_keyframe {
             return Ok(PreviewPushResult {
                 init_segment_became_available,
@@ -152,7 +155,8 @@ impl LivePreviewBuffer {
             },
         };
 
-        let should_flush_before_push = effective_is_keyframe && self.pending_samples.len() >= MIN_SEGMENT_SAMPLES;
+        let should_flush_before_push =
+            effective_is_keyframe && self.pending_samples.len() >= MIN_SEGMENT_SAMPLES;
         if should_flush_before_push {
             if self.flush_pending_segment()? {
                 emitted_segment = self.last_emitted_segment_descriptor();
@@ -370,10 +374,7 @@ fn build_avcc(sps: &[u8], pps: &[u8]) -> Vec<u8> {
 }
 
 fn build_init_segment(track: &AvcTrackConfig, avcc: &[u8]) -> Vec<u8> {
-    concat_bytes(&[
-        ftyp_box(),
-        moov_box(track, avcc),
-    ])
+    concat_bytes(&[ftyp_box(), moov_box(track, avcc)])
 }
 
 fn build_media_segment(
@@ -393,7 +394,12 @@ fn build_media_segment(
         .flat_map(|sample| sample.payload.iter().copied())
         .collect::<Vec<_>>();
     let mdat = boxed(*b"mdat", mdat_payload.clone());
-    let moof = moof_box(sequence_number, base_decode_time, samples, 8 + estimate_moof_size(samples.len()));
+    let moof = moof_box(
+        sequence_number,
+        base_decode_time,
+        samples,
+        8 + estimate_moof_size(samples.len()),
+    );
 
     Ok(QueuedPreviewSegment {
         descriptor: FragmentedMp4SegmentDescriptor {
@@ -402,7 +408,10 @@ fn build_media_segment(
             first_sample_index: first_sample.descriptor.sample_index,
             last_sample_index: last_sample.descriptor.sample_index,
             decode_time: base_decode_time,
-            duration: samples.iter().map(|sample| sample.descriptor.timing.duration).sum(),
+            duration: samples
+                .iter()
+                .map(|sample| sample.descriptor.timing.duration)
+                .sum(),
             starts_with_keyframe: first_sample.descriptor.is_keyframe,
         },
         bytes: concat_bytes(&[moof, mdat]),
@@ -430,11 +439,7 @@ fn ftyp_box() -> Vec<u8> {
 fn moov_box(track: &AvcTrackConfig, avcc: &[u8]) -> Vec<u8> {
     boxed(
         *b"moov",
-        concat_bytes(&[
-            mvhd_box(track.timescale),
-            trak_box(track, avcc),
-            mvex_box(),
-        ]),
+        concat_bytes(&[mvhd_box(track.timescale), trak_box(track, avcc), mvex_box()]),
     )
 }
 
@@ -449,15 +454,9 @@ fn mvhd_box(timescale: u32) -> Vec<u8> {
     payload.extend_from_slice(&0_u16.to_be_bytes());
     payload.extend_from_slice(&[0; 8]);
     payload.extend_from_slice(&[
-        0x00, 0x01, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x01, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x40, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x40, 0x00, 0x00, 0x00,
     ]);
     payload.extend_from_slice(&[0; 24]);
     payload.extend_from_slice(&2_u32.to_be_bytes());
@@ -465,7 +464,10 @@ fn mvhd_box(timescale: u32) -> Vec<u8> {
 }
 
 fn trak_box(track: &AvcTrackConfig, avcc: &[u8]) -> Vec<u8> {
-    boxed(*b"trak", concat_bytes(&[tkhd_box(track), mdia_box(track, avcc)]))
+    boxed(
+        *b"trak",
+        concat_bytes(&[tkhd_box(track), mdia_box(track, avcc)]),
+    )
 }
 
 fn tkhd_box(track: &AvcTrackConfig) -> Vec<u8> {
@@ -481,15 +483,9 @@ fn tkhd_box(track: &AvcTrackConfig) -> Vec<u8> {
     payload.extend_from_slice(&0_u16.to_be_bytes());
     payload.extend_from_slice(&0_u16.to_be_bytes());
     payload.extend_from_slice(&[
-        0x00, 0x01, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x01, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x00, 0x00, 0x00, 0x00,
-        0x40, 0x00, 0x00, 0x00,
+        0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x00, 0x00, 0x40, 0x00, 0x00, 0x00,
     ]);
     payload.extend_from_slice(&((track.width as u32) << 16).to_be_bytes());
     payload.extend_from_slice(&((track.height as u32) << 16).to_be_bytes());
@@ -530,11 +526,7 @@ fn hdlr_box(handler_type: [u8; 4], name: &[u8]) -> Vec<u8> {
 fn minf_box(track: &AvcTrackConfig, avcc: &[u8]) -> Vec<u8> {
     boxed(
         *b"minf",
-        concat_bytes(&[
-            vmhd_box(),
-            dinf_box(),
-            stbl_box(track, avcc),
-        ]),
+        concat_bytes(&[vmhd_box(), dinf_box(), stbl_box(track, avcc)]),
     )
 }
 
@@ -682,7 +674,8 @@ fn trun_box(samples: &[EncodedAccessUnit], data_offset: i32) -> Vec<u8> {
             .descriptor
             .timing
             .presentation_timestamp
-            .saturating_sub(sample.descriptor.timing.decode_timestamp) as u32;
+            .saturating_sub(sample.descriptor.timing.decode_timestamp)
+            as u32;
         payload.extend_from_slice(&composition_offset.to_be_bytes());
     }
 
@@ -864,7 +857,8 @@ fn parse_sps_dimensions(sps: &[u8]) -> Option<(u16, u16)> {
         (0, 0, 0, 0)
     };
 
-    let frame_height_in_mbs = (2 - u32::from(frame_mbs_only_flag)) * (pic_height_in_map_units_minus1 + 1);
+    let frame_height_in_mbs =
+        (2 - u32::from(frame_mbs_only_flag)) * (pic_height_in_map_units_minus1 + 1);
     let mut width = (pic_width_in_mbs_minus1 + 1) * 16;
     let mut height = frame_height_in_mbs * 16;
 
@@ -892,7 +886,11 @@ fn skip_scaling_list(reader: &mut BitReader, size: usize) -> Option<()> {
             next_scale = (last_scale + delta_scale + 256) % 256;
         }
 
-        last_scale = if next_scale == 0 { last_scale } else { next_scale };
+        last_scale = if next_scale == 0 {
+            last_scale
+        } else {
+            next_scale
+        };
     }
 
     Some(())
@@ -903,8 +901,8 @@ mod tests {
     use super::{extract_parameter_sets, parse_h264_payload, LivePreviewBuffer};
 
     const SAMPLE_SPS: [u8; 28] = [
-        0x67, 0x42, 0xC0, 0x1E, 0xDA, 0x02, 0x80, 0xBF, 0xE5, 0xC0, 0x5A, 0x80, 0x80, 0x80,
-        0xA0, 0x00, 0x00, 0x03, 0x00, 0x20, 0x00, 0x00, 0x07, 0x91, 0xE2, 0x85, 0x49, 0x01,
+        0x67, 0x42, 0xC0, 0x1E, 0xDA, 0x02, 0x80, 0xBF, 0xE5, 0xC0, 0x5A, 0x80, 0x80, 0x80, 0xA0,
+        0x00, 0x00, 0x03, 0x00, 0x20, 0x00, 0x00, 0x07, 0x91, 0xE2, 0x85, 0x49, 0x01,
     ];
     const SAMPLE_PPS: [u8; 4] = [0x68, 0xCE, 0x0F, 0xC8];
     const SAMPLE_IDR: [u8; 5] = [0x65, 0x88, 0x84, 0x21, 0xA0];
@@ -954,7 +952,14 @@ mod tests {
 
         for index in 1..16 {
             let result = buffer
-                .push_access_unit(index, avcc_sample(), index == 15, index as u64 * 3_000, index as u64 * 3_000, 3_000)
+                .push_access_unit(
+                    index,
+                    avcc_sample(),
+                    index == 15,
+                    index as u64 * 3_000,
+                    index as u64 * 3_000,
+                    3_000,
+                )
                 .expect("push sample");
 
             if index == 15 {
@@ -969,7 +974,8 @@ mod tests {
 
     #[test]
     fn extracts_parameter_sets_from_annex_b_sample() {
-        let (sps, pps) = extract_parameter_sets(&annex_b_parameter_sets()).expect("annex b parameter sets");
+        let (sps, pps) =
+            extract_parameter_sets(&annex_b_parameter_sets()).expect("annex b parameter sets");
 
         assert_eq!(sps, SAMPLE_SPS);
         assert_eq!(pps, SAMPLE_PPS);
@@ -982,7 +988,10 @@ mod tests {
         assert!(parsed.parameter_sets.is_none());
         assert!(parsed.contains_idr);
         let sample_payload = parsed.sample_payload.expect("sample payload");
-        assert_eq!(u32::from_be_bytes(sample_payload[0..4].try_into().expect("length prefix")), SAMPLE_IDR.len() as u32);
+        assert_eq!(
+            u32::from_be_bytes(sample_payload[0..4].try_into().expect("length prefix")),
+            SAMPLE_IDR.len() as u32
+        );
         assert_eq!(&sample_payload[4..], &SAMPLE_IDR);
     }
 

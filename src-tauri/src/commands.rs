@@ -1,39 +1,49 @@
-use crate::models::{
-    BonjourStatusSnapshot, CommandResult, ConnectionHistoryEntry, DiagnosticsExport,
-    PairingEntryMode, PairingPhase, PairingSnapshot,
-    PreviewDiagnosticsSnapshot, PreviewMediaSegmentPayload, PreviewStreamDescriptor,
-    PreviewTelemetry, ReceiverRuntimeSnapshot, RemuxBlueprintSnapshot, SaveRecordingRequest,
-    SaveScreenshotRequest, SavedScreenshot, SessionSnapshot, SessionStatus, TrustedDevice,
-};
 use crate::history::{
     export_diagnostics_value, get_connection_history as get_saved_connection_history,
     now_unix_timestamp,
 };
+use crate::models::{
+    AppUpdateInfo, BonjourStatusSnapshot, CommandResult, ConnectionHistoryEntry, DiagnosticsExport,
+    PairingEntryMode, PairingPhase, PairingSnapshot, PreviewDiagnosticsSnapshot,
+    PreviewMediaSegmentPayload, PreviewStreamDescriptor, PreviewTelemetry, ReceiverRuntimeSnapshot,
+    RemuxBlueprintSnapshot, SaveRecordingRequest, SaveScreenshotRequest, SavedScreenshot,
+    SessionSnapshot, SessionStatus, TrustedDevice,
+};
 use crate::runtime::{
     bonjour_blocking_message, emit_pairing_status, emit_preview_diagnostics, emit_receiver_runtime,
     emit_runtime_error, emit_session_status, emit_state_updates, ensure_bonjour_ready,
-    ensure_sidecar_runtime, query_bonjour_status, resolve_capture_directory,
-    send_sidecar_command, AppState,
+    ensure_sidecar_runtime, query_bonjour_status, resolve_capture_directory, send_sidecar_command,
+    AppState,
 };
 use crate::sidecar::ReceiverSidecarSpec;
 use crate::state::{
     clear_pairing, clear_session_identity, prepare_live_transport, reset_fixture_transport,
-    reset_preview, resume_local_session_approval,
-    set_receiver_runtime_state, sync_preview_diagnostics,
+    reset_preview, resume_local_session_approval, set_receiver_runtime_state,
+    sync_preview_diagnostics,
 };
 use crate::trust::{
     apply_current_device_trust, forget_trusted_device as forget_trusted_device_from_registry,
-    get_trusted_devices as get_trusted_devices_from_registry,
-    note_known_device,
+    get_trusted_devices as get_trusted_devices_from_registry, note_known_device,
     rename_trusted_device as rename_trusted_device_in_registry,
     reset_trusted_devices as reset_trusted_devices_from_registry,
     set_trusted_device_blocked as set_trusted_device_blocked_in_registry, trust_device,
 };
+use crate::updater_config::{updater_is_configured, UPDATER_ENDPOINT};
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 use serde_json::json;
 use std::fs;
 use std::process::Command;
 use tauri::{AppHandle, State};
+use tauri_plugin_updater::UpdaterExt;
+use url::Url;
+
+fn ensure_updater_is_configured() -> CommandResult<()> {
+    if !updater_is_configured() {
+        return Err(String::from("Updater is not configured for this build."));
+    }
+
+    Ok(())
+}
 
 fn pairing_device_policy(app: &AppHandle) -> CommandResult<(Vec<String>, Vec<String>)> {
     let devices = get_trusted_devices_from_registry(app)?;
@@ -51,17 +61,23 @@ fn pairing_device_policy(app: &AppHandle) -> CommandResult<(Vec<String>, Vec<Str
     Ok((trusted_device_ids, blocked_device_ids))
 }
 
-fn stop_session_inner(app: &AppHandle, state: &State<'_, AppState>) -> CommandResult<SessionSnapshot> {
+fn stop_session_inner(
+    app: &AppHandle,
+    state: &State<'_, AppState>,
+) -> CommandResult<SessionSnapshot> {
     let active_session_id = {
         let guard = state.inner.lock().map_err(|error| error.to_string())?;
         guard.active_session_id.clone()
     };
 
     if let Some(session_id) = active_session_id {
-        let _ = send_sidecar_command(&state.sidecar, json!({
-            "name": "stop_session",
-            "session_id": session_id,
-        }));
+        let _ = send_sidecar_command(
+            &state.sidecar,
+            json!({
+                "name": "stop_session",
+                "session_id": session_id,
+            }),
+        );
     }
 
     let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics) = {
@@ -132,22 +148,25 @@ pub(crate) fn take_preview_media_segment(
 ) -> CommandResult<Option<PreviewMediaSegmentPayload>> {
     let (payload, receiver_runtime, preview_diagnostics) = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
-        let payload = guard.live_preview_buffer.take_next_segment().map(|segment| {
-            guard.preview_diagnostics.delivered_segments += 1;
-            guard.preview_diagnostics.last_delivered_sequence_number =
-                Some(segment.descriptor.sequence_number);
-            guard.preview_diagnostics.last_delivered_first_sample_index =
-                Some(segment.descriptor.first_sample_index);
-            guard.preview_diagnostics.last_delivered_last_sample_index =
-                Some(segment.descriptor.last_sample_index);
+        let payload = guard
+            .live_preview_buffer
+            .take_next_segment()
+            .map(|segment| {
+                guard.preview_diagnostics.delivered_segments += 1;
+                guard.preview_diagnostics.last_delivered_sequence_number =
+                    Some(segment.descriptor.sequence_number);
+                guard.preview_diagnostics.last_delivered_first_sample_index =
+                    Some(segment.descriptor.first_sample_index);
+                guard.preview_diagnostics.last_delivered_last_sample_index =
+                    Some(segment.descriptor.last_sample_index);
 
-            PreviewMediaSegmentPayload {
-                sequence_number: segment.descriptor.sequence_number,
-                first_sample_index: segment.descriptor.first_sample_index,
-                last_sample_index: segment.descriptor.last_sample_index,
-                bytes: segment.bytes,
-            }
-        });
+                PreviewMediaSegmentPayload {
+                    sequence_number: segment.descriptor.sequence_number,
+                    first_sample_index: segment.descriptor.first_sample_index,
+                    last_sample_index: segment.descriptor.last_sample_index,
+                    bytes: segment.bytes,
+                }
+            });
         guard.receiver_runtime.queued_segments = guard.live_preview_buffer.queued_segment_count();
         sync_preview_diagnostics(&mut guard);
         (
@@ -195,6 +214,61 @@ pub(crate) fn get_preview_diagnostics(
 }
 
 #[tauri::command]
+pub(crate) async fn check_for_app_update(app: AppHandle) -> CommandResult<Option<AppUpdateInfo>> {
+    ensure_updater_is_configured()?;
+    let endpoint = Url::parse(UPDATER_ENDPOINT).map_err(|error| error.to_string())?;
+    let update = app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|error| error.to_string())?
+        .build()
+        .map_err(|error| error.to_string())?
+        .check()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    Ok(update.map(|update| AppUpdateInfo {
+        version: update.version,
+        current_version: app.package_info().version.to_string(),
+        notes: update.body,
+        pub_date: update.date.map(|value| value.to_string()),
+    }))
+}
+
+#[tauri::command]
+pub(crate) async fn install_app_update(app: AppHandle) -> CommandResult<Option<AppUpdateInfo>> {
+    ensure_updater_is_configured()?;
+    let endpoint = Url::parse(UPDATER_ENDPOINT).map_err(|error| error.to_string())?;
+    let update = app
+        .updater_builder()
+        .endpoints(vec![endpoint])
+        .map_err(|error| error.to_string())?
+        .build()
+        .map_err(|error| error.to_string())?
+        .check()
+        .await
+        .map_err(|error| error.to_string())?;
+
+    let Some(update) = update else {
+        return Ok(None);
+    };
+
+    let info = AppUpdateInfo {
+        version: update.version.clone(),
+        current_version: app.package_info().version.to_string(),
+        notes: update.body.clone(),
+        pub_date: update.date.map(|value| value.to_string()),
+    };
+
+    update
+        .download_and_install(|_, _| {}, || {})
+        .await
+        .map_err(|error| error.to_string())?;
+
+    Ok(Some(info))
+}
+
+#[tauri::command]
 pub(crate) fn start_session(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -207,10 +281,23 @@ pub(crate) fn start_session(
         return Err(error);
     }
 
-    let sidecar_was_running = state.sidecar.lock().map_err(|error| error.to_string())?.is_some();
+    let sidecar_was_running = state
+        .sidecar
+        .lock()
+        .map_err(|error| error.to_string())?
+        .is_some();
     let (trusted_device_ids, blocked_device_ids) = pairing_device_policy(&app)?;
 
-    let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics, session_id, stream_id, should_start) = {
+    let (
+        snapshot,
+        preview,
+        preview_stream,
+        receiver_runtime,
+        preview_diagnostics,
+        session_id,
+        stream_id,
+        should_start,
+    ) = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
 
         let should_start = guard.snapshot.status == SessionStatus::Idle;
@@ -301,16 +388,31 @@ pub(crate) fn reconnect_session(
     };
 
     if let Some(session_id) = active_session_id {
-        let _ = send_sidecar_command(&state.sidecar, json!({
-            "name": "stop_session",
-            "session_id": session_id,
-        }));
+        let _ = send_sidecar_command(
+            &state.sidecar,
+            json!({
+                "name": "stop_session",
+                "session_id": session_id,
+            }),
+        );
     }
 
-    let sidecar_was_running = state.sidecar.lock().map_err(|error| error.to_string())?.is_some();
+    let sidecar_was_running = state
+        .sidecar
+        .lock()
+        .map_err(|error| error.to_string())?
+        .is_some();
     let (trusted_device_ids, blocked_device_ids) = pairing_device_policy(&app)?;
 
-    let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics, session_id, stream_id) = {
+    let (
+        snapshot,
+        preview,
+        preview_stream,
+        receiver_runtime,
+        preview_diagnostics,
+        session_id,
+        stream_id,
+    ) = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
 
         guard.sequence += 1;
@@ -378,16 +480,25 @@ pub(crate) fn reconnect_session(
 }
 
 #[tauri::command]
-pub(crate) fn stop_session(app: AppHandle, state: State<'_, AppState>) -> CommandResult<SessionSnapshot> {
+pub(crate) fn stop_session(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CommandResult<SessionSnapshot> {
     stop_session_inner(&app, &state)
 }
 
 #[tauri::command]
-pub(crate) fn take_screenshot(app: AppHandle, state: State<'_, AppState>) -> CommandResult<SessionSnapshot> {
+pub(crate) fn take_screenshot(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CommandResult<SessionSnapshot> {
     let snapshot = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
 
-        if !matches!(guard.snapshot.status, SessionStatus::Mirroring | SessionStatus::Recording) {
+        if !matches!(
+            guard.snapshot.status,
+            SessionStatus::Mirroring | SessionStatus::Recording
+        ) {
             return Err(String::from("session is not ready for screenshots"));
         }
 
@@ -408,7 +519,8 @@ pub(crate) fn save_screenshot(
         .decode(request.png_base64.as_bytes())
         .map_err(|error| error.to_string())?;
 
-    let directory = resolve_capture_directory(&app, request.location, request.custom_directory.as_deref())?;
+    let directory =
+        resolve_capture_directory(&app, request.location, request.custom_directory.as_deref())?;
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
 
     let file_path = directory.join(&request.file_name);
@@ -429,7 +541,8 @@ pub(crate) fn save_recording(
         .decode(request.media_base64.as_bytes())
         .map_err(|error| error.to_string())?;
 
-    let directory = resolve_capture_directory(&app, request.location, request.custom_directory.as_deref())?;
+    let directory =
+        resolve_capture_directory(&app, request.location, request.custom_directory.as_deref())?;
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
 
     let file_path = directory.join(&request.file_name);
@@ -442,7 +555,10 @@ pub(crate) fn save_recording(
 }
 
 #[tauri::command]
-pub(crate) fn start_recording(app: AppHandle, state: State<'_, AppState>) -> CommandResult<SessionSnapshot> {
+pub(crate) fn start_recording(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CommandResult<SessionSnapshot> {
     let snapshot = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
 
@@ -463,7 +579,10 @@ pub(crate) fn start_recording(app: AppHandle, state: State<'_, AppState>) -> Com
 }
 
 #[tauri::command]
-pub(crate) fn stop_recording(app: AppHandle, state: State<'_, AppState>) -> CommandResult<SessionSnapshot> {
+pub(crate) fn stop_recording(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CommandResult<SessionSnapshot> {
     let snapshot = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
 
@@ -509,9 +628,20 @@ pub(crate) fn trust_current_device(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> CommandResult<Vec<TrustedDevice>> {
-    let (device_name, device_id, device_model, device_os_name, device_os_version, device_os_build_version, device_source_version) = {
+    let (
+        device_name,
+        device_id,
+        device_model,
+        device_os_name,
+        device_os_version,
+        device_os_build_version,
+        device_source_version,
+    ) = {
         let guard = state.inner.lock().map_err(|error| error.to_string())?;
-        if matches!(guard.snapshot.status, SessionStatus::Idle | SessionStatus::Discovering) {
+        if matches!(
+            guard.snapshot.status,
+            SessionStatus::Idle | SessionStatus::Discovering
+        ) {
             return Err(String::from("connect an iPhone first before trusting it"));
         }
         (
@@ -584,19 +714,46 @@ pub(crate) fn confirm_pairing_trust(
                 apply_current_device_trust(&mut guard.snapshot, &trusted_devices);
             }
 
+            let should_confirm_sidecar = guard
+                .snapshot
+                .receiver_capabilities
+                .iter()
+                .any(|capability| capability == "pairing-trust-control");
+            let should_request_keyframe = guard
+                .snapshot
+                .receiver_capabilities
+                .iter()
+                .any(|capability| capability == "keyframe-request");
+            let session_id = guard.active_session_id.clone();
+            let stream_id = guard.receiver_runtime.stream_id.clone();
+
             resume_local_session_approval(&mut guard);
             Some((
                 guard.pairing.clone(),
                 guard.snapshot.clone(),
                 guard.receiver_runtime.clone(),
                 guard.preview_diagnostics.clone(),
+                session_id,
+                stream_id,
+                should_confirm_sidecar,
+                should_request_keyframe,
             ))
         } else {
             None
         }
     };
 
-    if let Some((pairing, snapshot, receiver_runtime, preview_diagnostics)) = local_resume_state {
+    if let Some((
+        pairing,
+        snapshot,
+        receiver_runtime,
+        preview_diagnostics,
+        session_id,
+        stream_id,
+        should_confirm_sidecar,
+        should_request_keyframe,
+    )) = local_resume_state
+    {
         emit_pairing_status(&app, &pairing)?;
         emit_state_updates(
             &app,
@@ -606,6 +763,28 @@ pub(crate) fn confirm_pairing_trust(
             Some(receiver_runtime),
             Some(preview_diagnostics),
         )?;
+
+        if should_confirm_sidecar {
+            let _ = send_sidecar_command(
+                &state.sidecar,
+                json!({
+                    "name": "confirm_pairing_trust",
+                    "session_id": session_id,
+                    "remember_device": remember_device,
+                }),
+            );
+        }
+
+        if should_request_keyframe {
+            let _ = send_sidecar_command(
+                &state.sidecar,
+                json!({
+                    "name": "request_keyframe",
+                    "stream_id": stream_id,
+                    "reason": "local_session_approved",
+                }),
+            );
+        }
 
         return Ok(pairing);
     }
@@ -627,7 +806,9 @@ pub(crate) fn confirm_pairing_trust(
     let (pairing, session_id) = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
         if !guard.pairing.can_trust {
-            return Err(String::from("there is no trust confirmation waiting right now"));
+            return Err(String::from(
+                "there is no trust confirmation waiting right now",
+            ));
         }
 
         guard.remember_pairing_approval = remember_device;
@@ -636,10 +817,7 @@ pub(crate) fn confirm_pairing_trust(
         guard.pairing.entry_mode = PairingEntryMode::ConfirmOnly;
         guard.pairing.failure_message = None;
 
-        (
-            guard.pairing.clone(),
-            guard.active_session_id.clone(),
-        )
+        (guard.pairing.clone(), guard.active_session_id.clone())
     };
 
     emit_pairing_status(&app, &pairing)?;
@@ -715,7 +893,8 @@ pub(crate) fn rename_trusted_device(
     device_key: String,
     nickname: Option<String>,
 ) -> CommandResult<Vec<TrustedDevice>> {
-    let trusted_devices = rename_trusted_device_in_registry(&app, &device_key, nickname.as_deref())?;
+    let trusted_devices =
+        rename_trusted_device_in_registry(&app, &device_key, nickname.as_deref())?;
 
     let snapshot = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
@@ -735,7 +914,8 @@ pub(crate) fn set_trusted_device_blocked(
     blocked: bool,
     reason: Option<String>,
 ) -> CommandResult<Vec<TrustedDevice>> {
-    let trusted_devices = set_trusted_device_blocked_in_registry(&app, &device_key, blocked, reason.as_deref())?;
+    let trusted_devices =
+        set_trusted_device_blocked_in_registry(&app, &device_key, blocked, reason.as_deref())?;
 
     let snapshot = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
@@ -776,7 +956,9 @@ pub(crate) fn open_windows_services() -> CommandResult<()> {
     }
 
     #[allow(unreachable_code)]
-    Err(String::from("Windows Services is only available on Windows."))
+    Err(String::from(
+        "Windows Services is only available on Windows.",
+    ))
 }
 
 #[tauri::command]
@@ -784,14 +966,23 @@ pub(crate) fn open_windows_firewall() -> CommandResult<()> {
     #[cfg(windows)]
     {
         Command::new("cmd")
-            .args(["/C", "start", "", "control.exe", "/name", "Microsoft.WindowsFirewall"])
+            .args([
+                "/C",
+                "start",
+                "",
+                "control.exe",
+                "/name",
+                "Microsoft.WindowsFirewall",
+            ])
             .spawn()
             .map_err(|error| error.to_string())?;
         return Ok(());
     }
 
     #[allow(unreachable_code)]
-    Err(String::from("Windows Firewall is only available on Windows."))
+    Err(String::from(
+        "Windows Firewall is only available on Windows.",
+    ))
 }
 
 #[tauri::command]

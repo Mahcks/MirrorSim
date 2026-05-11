@@ -26,6 +26,7 @@ import { usePreferencesState } from "@/features/mirrorsim/hooks/usePreferencesSt
 import { useWindowMode } from "@/features/mirrorsim/hooks/useWindowMode";
 import { usePreviewRuntime } from "./features/mirrorsim/hooks/usePreviewRuntime";
 import type {
+  AppUpdateInfo,
   AppMode,
   Capture,
   ConnectionHistoryEntry,
@@ -42,9 +43,38 @@ import type {
   ReceiverRuntimeSnapshot,
 } from "./receiverContract";
 
+function getDevUpdateOverride(): AppUpdateInfo | null {
+  const version = import.meta.env.VITE_DEV_UPDATER_VERSION?.trim();
+  if (!version) {
+    return null;
+  }
+
+  return {
+    version,
+    currentVersion: import.meta.env.VITE_DEV_UPDATER_CURRENT_VERSION?.trim() || "0.1.0",
+    notes: import.meta.env.VITE_DEV_UPDATER_NOTES?.trim() || "This is a local dev-only updater preview.",
+    pubDate: import.meta.env.VITE_DEV_UPDATER_PUB_DATE?.trim() || new Date().toISOString(),
+  };
+}
+
+function scheduleAfterFirstPaint(callback: () => void, delayMs = 0) {
+  let timeoutId: number | null = null;
+  const frameId = window.requestAnimationFrame(() => {
+    timeoutId = window.setTimeout(callback, delayMs);
+  });
+
+  return () => {
+    window.cancelAnimationFrame(frameId);
+    if (timeoutId !== null) {
+      window.clearTimeout(timeoutId);
+    }
+  };
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
+  const devUpdatePreview = getDevUpdateOverride();
   const [appMode, setAppMode] = useState<AppMode>("minimal");
   const [orientation, setOrientation] = useState<Orientation>("portrait");
   const [zoom, setZoom] = useState<ZoomLevel>(1);
@@ -57,6 +87,9 @@ export default function App() {
   const [trustedDevices, setTrustedDevices] = useState<TrustedDevice[]>([]);
   const [connectionHistory, setConnectionHistory] = useState<ConnectionHistoryEntry[]>([]);
   const [lastDiagnosticsExport, setLastDiagnosticsExport] = useState<DiagnosticsExport | null>(null);
+  const [availableUpdate, setAvailableUpdate] = useState<AppUpdateInfo | null>(null);
+  const [updateState, setUpdateState] = useState<"idle" | "checking" | "available" | "installing" | "disabled">("idle");
+  const [updateError, setUpdateError] = useState<string | null>(null);
   const [screenshotFlashActive, setScreenshotFlashActive] = useState(false);
   const [reconnectUiState, setReconnectUiState] = useState<{ attempt: number; phase: "scheduled" | "retrying" } | null>(null);
   const [reconnectNextRetryAt, setReconnectNextRetryAt] = useState<number | null>(null);
@@ -66,6 +99,7 @@ export default function App() {
   const autoReconnectInFlightRef = useRef(false);
   const startupPreferencesAppliedRef = useRef(false);
   const autoDiscoveryAttemptedRef = useRef(false);
+  const updateCheckAttemptedRef = useRef(false);
 
   const {
     preferencesReady,
@@ -279,6 +313,8 @@ export default function App() {
   const bufferedAhead = Math.max(0, videoDiag.bufferedEnd - videoDiag.currentTime);
   const previewPreset = PREVIEW_QUALITY_PRESETS[appPreferences.previewQualityPreset];
   const reconnectCountdownSeconds = reconnectNextRetryAt === null ? null : Math.max(0, Math.ceil((reconnectNextRetryAt - Date.now()) / 1000));
+  const releasePageUrl = "https://github.com/Mahcks/MirrorSim/releases/latest";
+  const shouldShowUpdateBadge = updateState === "available" || updateState === "installing";
   const zoomIndex = ZOOM_LEVELS.indexOf(zoom);
   const controlButtonClass =
     "inline-flex h-8 w-8 items-center justify-center rounded-[5px] text-white/55 transition hover:bg-[#1a1b1e] hover:text-white disabled:cursor-default disabled:opacity-30";
@@ -407,8 +443,63 @@ export default function App() {
   }
 
   useEffect(() => {
-    void Promise.all([refreshTrustedDevices(), refreshConnectionHistory()]).catch((error) => setCommandError(fmtError(error)));
+    return scheduleAfterFirstPaint(() => {
+      void Promise.all([refreshTrustedDevices(), refreshConnectionHistory()]).catch((error) => setCommandError(fmtError(error)));
+    }, 120);
   }, []);
+
+  useEffect(() => {
+    if (import.meta.env.DEV && devUpdatePreview) {
+      setAvailableUpdate(devUpdatePreview);
+      setUpdateState("available");
+      setUpdateError(null);
+      return;
+    }
+
+    if (import.meta.env.DEV || updateCheckAttemptedRef.current) {
+      return;
+    }
+
+    updateCheckAttemptedRef.current = true;
+    let cancelled = false;
+    const cancelScheduledCheck = scheduleAfterFirstPaint(() => {
+      if (cancelled) {
+        return;
+      }
+
+      setUpdateState("checking");
+      setUpdateError(null);
+
+      void invoke<AppUpdateInfo | null>("check_for_app_update")
+        .then((update) => {
+          if (cancelled) {
+            return;
+          }
+
+          setAvailableUpdate(update);
+          setUpdateState(update ? "available" : "idle");
+        })
+        .catch((error) => {
+          if (cancelled) {
+            return;
+          }
+
+          const message = fmtError(error);
+          if (/not configured/i.test(message)) {
+            setUpdateState("disabled");
+            return;
+          }
+
+          setUpdateState("idle");
+          setUpdateError(message);
+        });
+    }, 900);
+
+    return () => {
+      cancelled = true;
+      cancelScheduledCheck();
+    };
+  }, [devUpdatePreview]);
 
     useEffect(() => {
       if (!session.currentDeviceKey || !session.currentDeviceTrusted) {
@@ -740,6 +831,27 @@ export default function App() {
     }
   }
 
+  async function installAvailableUpdate() {
+    if (!availableUpdate || updateState === "installing") {
+      return;
+    }
+
+    if (import.meta.env.DEV && devUpdatePreview) {
+      setUpdateError("Updater install is disabled in local preview mode. Publish a GitHub Release with latest.json to test the real flow.");
+      return;
+    }
+
+    setUpdateState("installing");
+    setUpdateError(null);
+
+    try {
+      await invoke<AppUpdateInfo | null>("install_app_update");
+    } catch (error) {
+      setUpdateState("available");
+      setUpdateError(fmtError(error));
+    }
+  }
+
   async function startSessionFlow(command: "start_session" | "reconnect_session", source: "manual" | "auto") {
     shouldMaintainConnectionRef.current = true;
     if (source === "manual") {
@@ -830,6 +942,63 @@ export default function App() {
   }
 
   const latestSavedCapture = [...captures].reverse().find((capture) => capture.type === "screenshot" && capture.filePath);
+  const updateHeadline = availableUpdate
+    ? import.meta.env.DEV && devUpdatePreview
+      ? `Preview update ${availableUpdate.version}`
+      : `Update ${availableUpdate.version} is ready`
+    : null;
+  const updateDetail = availableUpdate?.notes?.split(/\r?\n/).map((line) => line.trim()).find(Boolean)
+    ?? (availableUpdate
+      ? import.meta.env.DEV && devUpdatePreview
+        ? `This is a local updater UI preview. Publish a GitHub Release before testing a real install.`
+        : `You're on ${availableUpdate.currentVersion}. Install the latest MirrorSim release from GitHub Releases.`
+      : null);
+  const updatePublishedLabel = availableUpdate?.pubDate
+    ? new Date(availableUpdate.pubDate).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
+    : null;
+
+  function renderUpdateBanner() {
+    if (!availableUpdate) {
+      return null;
+    }
+
+    return (
+      <div className="rounded-[8px] border border-amber-400/20 bg-amber-500/10 p-2.5 text-amber-100">
+        <div className="min-w-0">
+          <div className="text-[11px] font-medium text-amber-100">{updateHeadline}</div>
+          <p className="mt-1 text-[11px] leading-4 text-amber-100/80">{updateDetail}</p>
+          {updatePublishedLabel && (
+            <div className="mt-1 text-[10px] text-amber-100/65">Published {updatePublishedLabel}</div>
+          )}
+          {updateError && (
+            <div className="mt-1 text-[10px] text-amber-100/80">{updateError}</div>
+          )}
+        </div>
+        <div className="mt-2 grid grid-cols-2 gap-1.5">
+          <button
+            type="button"
+            className="inline-flex min-w-0 items-center justify-center rounded-[5px] border border-white/10 bg-black/20 px-2.5 py-1 text-[11px] font-medium text-inherit transition hover:border-white/20 disabled:cursor-default disabled:opacity-40"
+            onClick={() => void installAvailableUpdate()}
+            disabled={updateState === "installing" || Boolean(import.meta.env.DEV && devUpdatePreview)}
+          >
+            {import.meta.env.DEV && devUpdatePreview
+              ? "Preview only"
+              : updateState === "installing"
+                ? "Installing..."
+                : "Install update"}
+          </button>
+          <button
+            type="button"
+            className="inline-flex min-w-0 items-center justify-center rounded-[5px] border border-white/10 bg-black/20 px-2.5 py-1 text-[11px] font-medium text-inherit transition hover:border-white/20"
+            onClick={() => void openUrl(releasePageUrl).catch((error) => setCommandError(fmtError(error)))}
+          >
+            View release
+          </button>
+        </div>
+      </div>
+    );
+  }
+
   function renderSettingsModal(embedded = false) {
     return (
     <SettingsModal
@@ -867,17 +1036,21 @@ export default function App() {
     );
   }
 
-  const settingsModal = renderSettingsModal();
-  const pairingModal = (
+  function renderPairingModal(embedded = false) {
+    return (
     <PairingModal
       pairing={pairing}
       approvalActionSupported={approvalActionSupported}
       rememberTrustByDefault={appPreferences.receiverAccessMode === "remember-trusted"}
       commandPending={commandPending}
+      embedded={embedded}
       onConfirmTrust={() => void confirmPairingTrust(appPreferences.receiverAccessMode === "remember-trusted")}
       onCancel={() => void cancelPairing()}
     />
-  );
+    );
+  }
+
+  const settingsModal = renderSettingsModal();
 
   const diagnosticsItems: Array<[string, string]> = [
     ["State", ss],
@@ -918,6 +1091,7 @@ export default function App() {
       previewDimClass={previewDimClass}
       previewVideoStyle={previewVideoStyle}
       tone={tone}
+      overlay={renderPairingModal(true)}
       setVideoEl={setVideoEl}
     />
   );
@@ -944,7 +1118,7 @@ export default function App() {
       previewDimClass={previewDimClass}
       previewVideoStyle={previewVideoStyle}
       tone={tone}
-      overlay={renderSettingsModal(true)}
+      overlay={settingsOpen ? renderSettingsModal(true) : renderPairingModal(true)}
       setVideoEl={setVideoEl}
       onContextMenu={(event) => {
         event.preventDefault();
@@ -1013,11 +1187,11 @@ export default function App() {
           settingsModal={settingsModal}
           technicalDetails={renderTechnicalDetails()}
           trustedDevicesCount={trustedDevices.length}
+          updateBanner={renderUpdateBanner()}
           zoom={zoom}
           zoomIndex={zoomIndex}
           zoomMaxIndex={ZOOM_LEVELS.length - 1}
         />
-        {pairingModal}
       </>
     );
   }
@@ -1084,11 +1258,11 @@ export default function App() {
         orientation={orientation}
         reconnectBadge={renderReconnectBadge(true)}
         settingsModal={null}
+        showConsoleBadge={shouldShowUpdateBadge}
         shellWidth={MINIMAL_SHELL_WIDTH[orientation]}
         titlebarStateDotClass={cn("h-1.5 w-1.5 rounded-full", titlebarStateDotClass)}
         titlebarStateLabel={titlebarStateLabel}
       />
-      {pairingModal}
     </>
   );
 }

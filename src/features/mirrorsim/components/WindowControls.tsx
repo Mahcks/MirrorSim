@@ -7,11 +7,16 @@ import { Icon } from "./Icon";
 export function WindowControls() {
   const win = getCurrentWindow();
 
+  function stopTitlebarDrag(event: MouseEvent<HTMLButtonElement | HTMLDivElement>) {
+    event.stopPropagation();
+  }
+
   return (
-    <div className="flex shrink-0 items-center">
+    <div className="flex shrink-0 items-center" onMouseDown={stopTitlebarDrag} onDoubleClick={stopTitlebarDrag}>
       <button
         className="inline-flex h-7 w-8 items-center justify-center text-white/48 transition hover:bg-white/6 hover:text-white"
         aria-label="Minimize"
+        onMouseDown={stopTitlebarDrag}
         onClick={() => void win.minimize()}
       >
         <Icon name="minimize" size={11} />
@@ -19,6 +24,7 @@ export function WindowControls() {
       <button
         className="inline-flex h-7 w-8 items-center justify-center text-white/48 transition hover:bg-white/6 hover:text-white"
         aria-label="Maximize"
+        onMouseDown={stopTitlebarDrag}
         onClick={() => void win.toggleMaximize()}
       >
         <Icon name="maximize" size={10} />
@@ -26,6 +32,7 @@ export function WindowControls() {
       <button
         className="inline-flex h-7 w-9 items-center justify-center text-white/48 transition hover:bg-[#c42b1c] hover:text-white"
         aria-label="Close"
+        onMouseDown={stopTitlebarDrag}
         onClick={() => void win.close()}
       >
         <Icon name="close" size={11} />

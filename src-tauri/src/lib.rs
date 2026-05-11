@@ -7,25 +7,25 @@ mod runtime;
 mod sidecar;
 mod state;
 mod trust;
+mod updater_config;
 
 use crate::commands::{
-    cancel_pairing, confirm_pairing_trust, forget_trusted_device, get_bonjour_status,
-    get_connection_history,
-    get_pairing_snapshot, get_preview_diagnostics, get_preview_init_segment,
-    get_preview_stream_descriptor, get_preview_telemetry, get_receiver_runtime,
-    get_receiver_sidecar_spec, get_remux_blueprint, get_session_snapshot,
-    get_trusted_devices, open_windows_firewall, open_windows_services, reconnect_session,
-    refresh_receiver_readiness, rename_trusted_device, reset_trusted_devices,
-    save_recording, save_screenshot, set_trusted_device_blocked, start_recording,
-    start_session, stop_recording, stop_session,
-    take_preview_media_segment, take_screenshot, trust_current_device,
-    export_diagnostics_report,
+    cancel_pairing, check_for_app_update, confirm_pairing_trust, export_diagnostics_report,
+    forget_trusted_device, get_bonjour_status, get_connection_history, get_pairing_snapshot,
+    get_preview_diagnostics, get_preview_init_segment, get_preview_stream_descriptor,
+    get_preview_telemetry, get_receiver_runtime, get_receiver_sidecar_spec, get_remux_blueprint,
+    get_session_snapshot, get_trusted_devices, install_app_update, open_windows_firewall,
+    open_windows_services, reconnect_session, refresh_receiver_readiness, rename_trusted_device,
+    reset_trusted_devices, save_recording, save_screenshot, set_trusted_device_blocked,
+    start_recording, start_session, stop_recording, stop_session, take_preview_media_segment,
+    take_screenshot, trust_current_device,
 };
 use crate::runtime::AppState;
+use crate::updater_config::{updater_is_configured, UPDATER_PUBKEY};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .manage(AppState::default())
         .invoke_handler(tauri::generate_handler![
             get_session_snapshot,
@@ -38,9 +38,11 @@ pub fn run() {
             get_receiver_runtime,
             get_preview_diagnostics,
             get_bonjour_status,
+            check_for_app_update,
             get_pairing_snapshot,
             get_trusted_devices,
             get_connection_history,
+            install_app_update,
             start_session,
             reconnect_session,
             refresh_receiver_readiness,
@@ -63,7 +65,17 @@ pub fn run() {
         ])
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(tauri_plugin_store::Builder::new().build())
+        .plugin(tauri_plugin_store::Builder::new().build());
+
+    if updater_is_configured() {
+        builder = builder.plugin(
+            tauri_plugin_updater::Builder::new()
+                .pubkey(UPDATER_PUBKEY.trim())
+                .build(),
+        );
+    }
+
+    builder
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }

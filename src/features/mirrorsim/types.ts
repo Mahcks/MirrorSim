@@ -98,6 +98,13 @@ export type DiagnosticsExport = {
   entryCount: number;
 };
 
+export type AppUpdateInfo = {
+  version: string;
+  currentVersion: string;
+  notes: string | null;
+  pubDate: string | null;
+};
+
 export type PreviewTelemetry = {
   frameNumber: number;
   fps: number;

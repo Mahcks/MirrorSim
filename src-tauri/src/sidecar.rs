@@ -149,10 +149,25 @@ mod tests {
         let spec = ReceiverSidecarSpec::direct_receiver_boundary();
 
         assert_eq!(spec.protocol_version, "0.4.0");
-        assert_eq!(spec.launch.transport, SidecarProcessTransport::StdioJsonLines);
-        assert!(spec.events.iter().any(|event| event.name == "video_access_unit"));
-        assert!(spec.commands.iter().any(|command| command.name == "request_keyframe"));
-        assert!(spec.events.iter().any(|event| event.name == "pairing_state_changed"));
-        assert!(spec.commands.iter().any(|command| command.name == "confirm_pairing_trust"));
+        assert_eq!(
+            spec.launch.transport,
+            SidecarProcessTransport::StdioJsonLines
+        );
+        assert!(spec
+            .events
+            .iter()
+            .any(|event| event.name == "video_access_unit"));
+        assert!(spec
+            .commands
+            .iter()
+            .any(|command| command.name == "request_keyframe"));
+        assert!(spec
+            .events
+            .iter()
+            .any(|event| event.name == "pairing_state_changed"));
+        assert!(spec
+            .commands
+            .iter()
+            .any(|command| command.name == "confirm_pairing_trust"));
     }
 }

@@ -5,11 +5,12 @@ type PairingModalProps = {
   approvalActionSupported: boolean;
   rememberTrustByDefault: boolean;
   commandPending: boolean;
+  embedded?: boolean;
   onConfirmTrust: () => void;
   onCancel: () => void;
 };
 
-export function PairingModal({ pairing, approvalActionSupported, rememberTrustByDefault, commandPending, onConfirmTrust, onCancel }: PairingModalProps) {
+export function PairingModal({ pairing, approvalActionSupported, rememberTrustByDefault, commandPending, embedded = false, onConfirmTrust, onCancel }: PairingModalProps) {
   if (pairing.phase === "idle" || pairing.phase === "paired") {
     return null;
   }
@@ -43,17 +44,27 @@ export function PairingModal({ pairing, approvalActionSupported, rememberTrustBy
           : "The receiver rejected the pairing request.");
 
   return (
-    <div className="fixed inset-0 z-260 flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
-      <div className="w-full max-w-100 rounded-3xl border border-white/10 bg-[#17191d] p-5 shadow-[0_28px_96px_rgba(0,0,0,0.58)]">
-        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-white/35">Pairing</div>
-        <h2 className="mt-2 text-xl font-semibold tracking-[-0.03em] text-white">{title}</h2>
+    <div
+      className={embedded
+        ? "absolute inset-0 z-40 flex items-center justify-center bg-black/65 p-5 backdrop-blur-sm"
+        : "fixed inset-0 z-260 flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm"
+      }
+    >
+      <div
+        className={embedded
+          ? "w-full max-w-70 rounded-[24px] border border-white/10 bg-[#17191d] p-4 shadow-[0_24px_72px_rgba(0,0,0,0.52)]"
+          : "w-full max-w-100 rounded-3xl border border-white/10 bg-[#17191d] p-5 shadow-[0_28px_96px_rgba(0,0,0,0.58)]"
+        }
+      >
+        <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/35">Pairing</div>
+        <h2 className={embedded ? "mt-2 text-[16px] font-semibold tracking-[-0.03em] text-white" : "mt-2 text-xl font-semibold tracking-[-0.03em] text-white"}>{title}</h2>
         {(pairing.deviceName || pairing.deviceId) && (
-          <div className="mt-2 text-sm text-white/55">
+          <div className={embedded ? "mt-2 text-[12px] text-white/55" : "mt-2 text-sm text-white/55"}>
             {pairing.deviceName ?? "Unknown iPhone"}
             {pairing.deviceId ? <span className="ml-2 text-white/30">{pairing.deviceId}</span> : null}
           </div>
         )}
-        <p className="mt-3 text-sm leading-6 text-white/55">{description}</p>
+        <p className={embedded ? "mt-3 text-[12px] leading-5 text-white/55" : "mt-3 text-sm leading-6 text-white/55"}>{description}</p>
 
         {pairing.phase === "pin-required" && pairing.entryMode === "enter-on-device" && pairing.displayPin && (
           <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-center">
@@ -65,7 +76,7 @@ export function PairingModal({ pairing, approvalActionSupported, rememberTrustBy
         <div className="mt-5 flex flex-wrap justify-end gap-2">
           <button
             type="button"
-            className="inline-flex items-center rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-sm font-medium text-white/70 transition hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-40"
+            className="inline-flex items-center rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-[12px] font-medium text-white/70 transition hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-40"
             onClick={onCancel}
             disabled={commandPending && pairing.phase === "verifying"}
           >
@@ -74,7 +85,7 @@ export function PairingModal({ pairing, approvalActionSupported, rememberTrustBy
           {pairing.phase === "awaiting-trust" && pairing.canTrust && (
             <button
               type="button"
-              className="inline-flex items-center rounded-xl border border-emerald-400/20 bg-emerald-500/12 px-3 py-2 text-sm font-medium text-emerald-200 transition hover:bg-emerald-500/18 disabled:cursor-default disabled:opacity-40"
+              className="inline-flex items-center rounded-xl border border-emerald-400/20 bg-emerald-500/12 px-3 py-2 text-[12px] font-medium text-emerald-200 transition hover:bg-emerald-500/18 disabled:cursor-default disabled:opacity-40"
               onClick={onConfirmTrust}
               disabled={!approvalActionSupported || commandPending}
             >

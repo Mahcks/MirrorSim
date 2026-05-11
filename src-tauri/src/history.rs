@@ -23,7 +23,10 @@ pub(crate) fn now_unix_timestamp() -> u64 {
 }
 
 fn connection_history_path(app: &AppHandle) -> CommandResult<PathBuf> {
-    let app_data_dir = app.path().app_data_dir().map_err(|error| error.to_string())?;
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
     Ok(app_data_dir.join(CONNECTION_HISTORY_FILE))
 }
 
@@ -47,7 +50,10 @@ fn save_registry(app: &AppHandle, registry: &ConnectionHistoryRegistry) -> Comma
     fs::write(file_path, payload).map_err(|error| error.to_string())
 }
 
-pub(crate) fn append_history_entry(app: &AppHandle, mut entry: ConnectionHistoryEntry) -> CommandResult<()> {
+pub(crate) fn append_history_entry(
+    app: &AppHandle,
+    mut entry: ConnectionHistoryEntry,
+) -> CommandResult<()> {
     let mut registry = load_registry(app)?;
     if entry.id.trim().is_empty() {
         entry.id = format!("event-{}-{}", entry.occurred_at, registry.entries.len() + 1);
@@ -62,13 +68,23 @@ pub(crate) fn append_history_entry(app: &AppHandle, mut entry: ConnectionHistory
     save_registry(app, &registry)
 }
 
-pub(crate) fn get_connection_history(app: &AppHandle) -> CommandResult<Vec<ConnectionHistoryEntry>> {
+pub(crate) fn get_connection_history(
+    app: &AppHandle,
+) -> CommandResult<Vec<ConnectionHistoryEntry>> {
     let mut entries = load_registry(app)?.entries;
-    entries.sort_by(|left, right| right.occurred_at.cmp(&left.occurred_at).then_with(|| right.id.cmp(&left.id)));
+    entries.sort_by(|left, right| {
+        right
+            .occurred_at
+            .cmp(&left.occurred_at)
+            .then_with(|| right.id.cmp(&left.id))
+    });
     Ok(entries)
 }
 
-pub(crate) fn export_diagnostics_value(app: &AppHandle, report: &Value) -> CommandResult<DiagnosticsExport> {
+pub(crate) fn export_diagnostics_value(
+    app: &AppHandle,
+    report: &Value,
+) -> CommandResult<DiagnosticsExport> {
     let exported_at = now_unix_timestamp();
     let base_dir = app
         .path()
