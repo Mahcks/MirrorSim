@@ -11,7 +11,7 @@ type PairingModalProps = {
 };
 
 export function PairingModal({ pairing, approvalActionSupported, rememberTrustByDefault, commandPending, embedded = false, onConfirmTrust, onCancel }: PairingModalProps) {
-  if (pairing.phase === "idle" || pairing.phase === "paired") {
+  if (pairing.phase === "idle" || pairing.phase === "paired" || pairing.phase === "verifying") {
     return null;
   }
 
@@ -20,9 +20,7 @@ export function PairingModal({ pairing, approvalActionSupported, rememberTrustBy
       ? "AirPlay Verification Required"
       : pairing.phase === "awaiting-trust"
         ? "Trust This iPhone"
-        : pairing.phase === "verifying"
-          ? "Verifying Pairing"
-          : "Pairing Failed";
+        : "Pairing Failed";
 
   const description =
     ((pairing.phase === "pin-required")
@@ -39,9 +37,7 @@ export function PairingModal({ pairing, approvalActionSupported, rememberTrustBy
         ? rememberTrustByDefault
           ? "Approve this pairing request and MirrorSim will remember this iPhone on this PC."
           : "Approve this pairing request for this session only. You can remember the iPhone later from Device Trust."
-        : pairing.phase === "verifying"
-          ? "MirrorSim is waiting for the receiver to finish pairing."
-          : "The receiver rejected the pairing request.");
+        : "The receiver rejected the pairing request.");
 
   return (
     <div
@@ -78,7 +74,7 @@ export function PairingModal({ pairing, approvalActionSupported, rememberTrustBy
             type="button"
             className="inline-flex items-center rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-[12px] font-medium text-white/70 transition hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-40"
             onClick={onCancel}
-            disabled={commandPending && pairing.phase === "verifying"}
+            disabled={commandPending}
           >
             {pairing.phase === "failed" ? "Dismiss" : "Cancel"}
           </button>

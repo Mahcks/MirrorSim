@@ -205,7 +205,7 @@ export default function App() {
     : session.receiverCapabilities.length > 0
       ? `${session.receiverCapabilities.length} receiver features`
       : null;
-  const pairingNeedsAttention = pairing.phase !== "idle" && pairing.phase !== "paired";
+  const pairingNeedsAttention = pairing.phase !== "idle" && pairing.phase !== "paired" && pairing.phase !== "verifying";
   const sessionHeadline = bonjourNeedsAttention
     ? bonjourStatus.status === "missing"
       ? "Bonjour is required"
