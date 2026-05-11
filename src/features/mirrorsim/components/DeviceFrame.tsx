@@ -127,10 +127,14 @@ export function DeviceFrame({
                   <>
                     <span className="absolute inset-0 animate-ping rounded-full border border-white/10" />
                     <span className="absolute inset-0.75 rounded-full border border-white/8 bg-white/4" />
-                    <Icon name="phone" size={14} className="relative text-white/30" />
+                    <span className="relative text-white/30">
+                      <Icon name="phone" size={14} />
+                    </span>
                   </>
                 ) : (
-                  <Icon name="phone" size={24} className="text-white/18" />
+                  <span className="text-white/18">
+                    <Icon name="phone" size={24} />
+                  </span>
                 )}
               </div>
               <h3 className="text-[14px] font-semibold leading-tight tracking-[-0.022em] text-white/82">
@@ -149,7 +153,7 @@ export function DeviceFrame({
                   ))}
                 </ol>
               )}
-              {(!isLive || bonjourNeedsAttention) && (
+              {(isIdle || !isLive || bonjourNeedsAttention) && (
                 <button
                   type="button"
                   className="mt-5 h-7.5 rounded-lg border border-white/10 bg-white/5 px-4 text-[11px] font-medium tracking-[-0.01em] text-white/58 transition hover:border-white/16 hover:bg-white/8 hover:text-white/82 disabled:cursor-default disabled:opacity-25"

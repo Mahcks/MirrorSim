@@ -1,6 +1,7 @@
 export type AppMode = "console" | "minimal";
 export type Orientation = "portrait" | "landscape";
 export type PreviewQualityPreset = "quality" | "balanced" | "speed";
+export type ReceiverAccessMode = "ask" | "remember-trusted" | "known-only";
 export type SessionState = "idle" | "discovering" | "connecting" | "mirroring" | "recording";
 export type SessionCommand =
   | "get_session_snapshot"
@@ -11,11 +12,23 @@ export type SessionCommand =
   | "get_preview_diagnostics"
   | "get_receiver_runtime"
   | "get_bonjour_status"
+  | "get_pairing_snapshot"
+  | "get_trusted_devices"
+  | "get_connection_history"
   | "refresh_receiver_readiness"
   | "start_session"
   | "reconnect_session"
   | "stop_session"
+  | "confirm_pairing_trust"
+  | "cancel_pairing"
+  | "trust_current_device"
+  | "forget_trusted_device"
+  | "rename_trusted_device"
+  | "set_trusted_device_blocked"
+  | "reset_trusted_devices"
   | "open_windows_services"
+  | "open_windows_firewall"
+  | "export_diagnostics_report"
   | "take_screenshot"
   | "start_recording"
   | "stop_recording";
@@ -24,9 +37,65 @@ export type SessionSnapshot = {
   status: SessionState;
   captureCount: number;
   deviceName: string;
+  currentDeviceId: string | null;
+  currentDeviceModel: string | null;
+  currentDeviceOsName: string | null;
+  currentDeviceOsVersion: string | null;
+  currentDeviceOsBuildVersion: string | null;
+  currentDeviceSourceVersion: string | null;
+  currentDeviceKey: string | null;
+  currentDeviceNickname: string | null;
+  currentDeviceKnown: boolean;
+  currentDeviceTrusted: boolean;
+  currentDeviceBlocked: boolean;
+  currentDeviceBlockedReason: string | null;
   receiverId: string | null;
   receiverProtocolVersion: string | null;
   receiverCapabilities: string[];
+};
+
+export type TrustedDevice = {
+  key: string;
+  deviceId: string | null;
+  displayName: string;
+  model: string | null;
+  osName: string | null;
+  osVersion: string | null;
+  osBuildVersion: string | null;
+  sourceVersion: string | null;
+  nickname: string | null;
+  firstSeenAt: number;
+  lastSeenAt: number;
+  trustedAt: number | null;
+  lastSuccessfulConnectionAt: number | null;
+  lastPairingAt: number | null;
+  pendingPairing: boolean;
+  isBlocked: boolean;
+  blockedReason: string | null;
+  lastFailureAt: number | null;
+  lastFailureReason: string | null;
+};
+
+export type ConnectionHistoryEntry = {
+  id: string;
+  occurredAt: number;
+  event: string;
+  status: string;
+  message: string;
+  deviceName: string | null;
+  deviceId: string | null;
+  deviceModel: string | null;
+  deviceOsName: string | null;
+  deviceOsVersion: string | null;
+  deviceKey: string | null;
+  receiverName: string | null;
+};
+
+export type DiagnosticsExport = {
+  fileName: string;
+  filePath: string;
+  exportedAt: number;
+  entryCount: number;
 };
 
 export type PreviewTelemetry = {
@@ -78,6 +147,7 @@ export type RecordingSettings = {
 export type AppPreferences = {
   launchMode: AppMode;
   previewQualityPreset: PreviewQualityPreset;
+  receiverAccessMode: ReceiverAccessMode;
   useOpaqueWindowBackground: boolean;
   rememberLastMode: boolean;
   rememberLastOrientation: boolean;
@@ -87,6 +157,7 @@ export type AppPreferences = {
   autoStartDiscovery: boolean;
   autoReconnectOnDrop: boolean;
   openDiagnosticsOnError: boolean;
+  receiverDisplayName: string;
   lastMode: AppMode;
   lastOrientation: Orientation;
 };

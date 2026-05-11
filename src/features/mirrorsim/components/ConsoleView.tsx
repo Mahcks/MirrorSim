@@ -21,6 +21,8 @@ type ConsoleViewProps = {
   canRecord: boolean;
   commandPending: boolean;
   commandError: string | null;
+  currentDeviceTrusted: boolean;
+  currentDeviceVisible: boolean;
   deviceFrame: ReactNode;
   diagExpanded: boolean;
   diagnosticsItems: Array<[string, string]>;
@@ -43,6 +45,7 @@ type ConsoleViewProps = {
   onRetryConnection: () => void;
   onRotate: () => void;
   onStartWindowDrag: (event: MouseEvent<HTMLElement>) => void | Promise<void>;
+  onTrustCurrentDevice: () => void;
   onToggleDiagnostics: () => void;
   onToggleFullscreen: () => void;
   orientation: Orientation;
@@ -60,6 +63,7 @@ type ConsoleViewProps = {
   sessionSupportingText: string;
   settingsModal: ReactNode;
   technicalDetails: ReactNode;
+  trustedDevicesCount: number;
   zoom: ZoomLevel;
   zoomIndex: number;
   zoomMaxIndex: number;
@@ -76,6 +80,8 @@ export function ConsoleView({
   canCapture,
   canRecord,
   commandPending,
+  currentDeviceTrusted,
+  currentDeviceVisible,
   deviceFrame,
   diagExpanded,
   diagnosticsItems,
@@ -98,6 +104,7 @@ export function ConsoleView({
   onRetryConnection,
   onRotate,
   onStartWindowDrag,
+  onTrustCurrentDevice,
   onToggleDiagnostics,
   onToggleFullscreen,
   orientation,
@@ -115,6 +122,7 @@ export function ConsoleView({
   sessionSupportingText,
   settingsModal,
   technicalDetails,
+  trustedDevicesCount,
   zoom,
   zoomIndex,
   zoomMaxIndex,
@@ -276,7 +284,33 @@ export function ConsoleView({
                   Try again
                 </button>
               )}
+              {currentDeviceVisible && !currentDeviceTrusted && (
+                <button
+                  type="button"
+                  className="inline-flex items-center rounded-xl border border-emerald-400/20 bg-emerald-500/10 px-3 py-1.5 text-[11px] font-medium text-emerald-200 transition hover:bg-emerald-500/15 disabled:cursor-default disabled:opacity-40"
+                  onClick={onTrustCurrentDevice}
+                  disabled={commandPending}
+                >
+                  Remember This iPhone
+                </button>
+              )}
+              {(currentDeviceVisible || trustedDevicesCount > 0) && (
+                <button
+                  type="button"
+                  className="inline-flex items-center rounded-xl border border-white/7 bg-[#1a1b1e] px-3 py-1.5 text-[11px] font-medium text-white/55 transition hover:border-white/12 hover:text-white"
+                  onClick={onOpenSettings}
+                >
+                  {trustedDevicesCount > 0 ? `Trusted Devices (${trustedDevicesCount})` : "Trusted Devices"}
+                </button>
+              )}
             </div>
+            {currentDeviceVisible && (
+              <div className="mt-2 text-[11px] text-white/38">
+                {currentDeviceTrusted
+                  ? "This connected iPhone is trusted on this PC."
+                  : "Trust this iPhone to keep a remembered relationship on this PC."}
+              </div>
+            )}
             {technicalDetails}
           </div>
 

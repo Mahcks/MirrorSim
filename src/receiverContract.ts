@@ -1,8 +1,11 @@
 export const PREVIEW_STREAM_EVENT = "preview-stream";
 export const RECEIVER_RUNTIME_EVENT = "receiver-runtime";
 export const PREVIEW_DIAGNOSTICS_EVENT = "preview-diagnostics";
+export const PAIRING_STATUS_EVENT = "pairing-status";
 
 export type BonjourStatus = "ready" | "missing" | "stopped" | "unknown";
+export type PairingPhase = "idle" | "pin-required" | "awaiting-trust" | "verifying" | "paired" | "failed";
+export type PairingEntryMode = "none" | "enter-on-device" | "enter-in-app" | "confirm-only";
 
 export type ReceiverRuntimeState = "idle" | "priming" | "ready" | "streaming";
 export type ReceiverTransport = "fixture" | "airplayserver";
@@ -51,6 +54,17 @@ export type PreviewDiagnosticsSnapshot = {
   lastDeliveredLastSampleIndex: number | null;
 };
 
+export type PairingSnapshot = {
+  phase: PairingPhase;
+  entryMode: PairingEntryMode;
+  deviceName: string | null;
+  deviceId: string | null;
+  displayPin: string | null;
+  prompt: string | null;
+  failureMessage: string | null;
+  canTrust: boolean;
+};
+
 export const initialReceiverRuntime: ReceiverRuntimeSnapshot = {
   state: "idle",
   transport: "fixture",
@@ -82,4 +96,15 @@ export const initialBonjourStatus: BonjourStatusSnapshot = {
   status: "unknown",
   serviceName: "Bonjour Service",
   detail: "Checking Bonjour availability...",
+};
+
+export const initialPairingStatus: PairingSnapshot = {
+  phase: "idle",
+  entryMode: "none",
+  deviceName: null,
+  deviceId: null,
+  displayPin: null,
+  prompt: null,
+  failureMessage: null,
+  canTrust: false,
 };

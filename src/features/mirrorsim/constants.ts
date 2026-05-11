@@ -90,6 +90,7 @@ export const defaultRecordingSettings: RecordingSettings = {
 export const defaultAppPreferences: AppPreferences = {
   launchMode: "minimal",
   previewQualityPreset: "balanced",
+  receiverAccessMode: "ask",
   useOpaqueWindowBackground: false,
   rememberLastMode: true,
   rememberLastOrientation: true,
@@ -99,6 +100,7 @@ export const defaultAppPreferences: AppPreferences = {
   autoStartDiscovery: false,
   autoReconnectOnDrop: true,
   openDiagnosticsOnError: true,
+  receiverDisplayName: "MirrorSim",
   lastMode: "minimal",
   lastOrientation: "portrait",
 };

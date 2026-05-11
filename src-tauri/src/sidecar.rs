@@ -57,7 +57,7 @@ pub struct ReceiverSidecarSpec {
 impl ReceiverSidecarSpec {
     pub fn direct_receiver_boundary() -> Self {
         Self {
-            protocol_version: String::from("0.1.0"),
+            protocol_version: String::from("0.4.0"),
             launch: SidecarLaunchSpec {
                 executable: String::from("receivers/AirPlayServer/MirrorSimAdapter.exe"),
                 args: vec![],
@@ -68,7 +68,7 @@ impl ReceiverSidecarSpec {
             commands: vec![
                 SidecarCommandSpec {
                     name: String::from("start_session"),
-                    payload_shape: String::from("{ sessionId, deviceHint?, expectedStreamId }"),
+                    payload_shape: String::from("{ sessionId, deviceHint?, expectedStreamId, receiverName?, trustedDeviceIds[], blockedDeviceIds[] }"),
                     description: String::from("Start discovery or attach to a sender and begin a mirrored session."),
                 },
                 SidecarCommandSpec {
@@ -77,9 +77,19 @@ impl ReceiverSidecarSpec {
                     description: String::from("Stop the active mirrored session and release network resources."),
                 },
                 SidecarCommandSpec {
+                    name: String::from("confirm_pairing_trust"),
+                    payload_shape: String::from("{ sessionId, rememberDevice }"),
+                    description: String::from("Approve the current sender so the receiver can finish the native setup flow."),
+                },
+                SidecarCommandSpec {
+                    name: String::from("cancel_pairing"),
+                    payload_shape: String::from("{ sessionId }"),
+                    description: String::from("Cancel the current pairing or trust challenge without closing the whole receiver runtime."),
+                },
+                SidecarCommandSpec {
                     name: String::from("request_keyframe"),
                     payload_shape: String::from("{ streamId, reason }"),
-                    description: String::from("Ask the sender or receiver pipeline for a clean recovery point after discontinuity."),
+                    description: String::from("Optionally ask the receiver for a clean recovery point after discontinuity. Only send this when the receiver advertises the keyframe-request capability."),
                 },
                 SidecarCommandSpec {
                     name: String::from("shutdown"),
@@ -95,8 +105,13 @@ impl ReceiverSidecarSpec {
                 },
                 SidecarEventSpec {
                     name: String::from("session_started"),
-                    payload_shape: String::from("{ sessionId, streamId, deviceName }"),
+                    payload_shape: String::from("{ sessionId, streamId, deviceName, deviceId?, deviceModel?, deviceOsName?, deviceOsVersion?, deviceOsBuildVersion?, deviceSourceVersion? }"),
                     description: String::from("Confirms that the receiver established a mirrored session and assigned a stream id."),
+                },
+                SidecarEventSpec {
+                    name: String::from("pairing_state_changed"),
+                    payload_shape: String::from("{ phase, entryMode?, deviceName?, deviceId?, displayPin?, prompt?, failureMessage?, canTrust? }"),
+                    description: String::from("Reports PIN prompts, trust confirmation requests, verification progress, and pairing failures from the receiver runtime."),
                 },
                 SidecarEventSpec {
                     name: String::from("video_access_unit"),
@@ -133,9 +148,11 @@ mod tests {
     fn direct_receiver_boundary_prefers_stdio_jsonl() {
         let spec = ReceiverSidecarSpec::direct_receiver_boundary();
 
-        assert_eq!(spec.protocol_version, "0.1.0");
+        assert_eq!(spec.protocol_version, "0.4.0");
         assert_eq!(spec.launch.transport, SidecarProcessTransport::StdioJsonLines);
         assert!(spec.events.iter().any(|event| event.name == "video_access_unit"));
         assert!(spec.commands.iter().any(|command| command.name == "request_keyframe"));
+        assert!(spec.events.iter().any(|event| event.name == "pairing_state_changed"));
+        assert!(spec.commands.iter().any(|command| command.name == "confirm_pairing_trust"));
     }
 }

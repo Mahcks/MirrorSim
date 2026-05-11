@@ -1,5 +1,6 @@
 use crate::models::{
-    PreviewDeliveryMode, PreviewDiagnosticsSnapshot, PreviewStreamDescriptor, PreviewTelemetry,
+    PairingEntryMode, PairingPhase, PairingSnapshot, PreviewDeliveryMode,
+    PreviewDiagnosticsSnapshot, PreviewStreamDescriptor, PreviewTelemetry,
     ReceiverRuntimeSnapshot, ReceiverRuntimeState, ReceiverTransport, SessionSnapshot,
     SessionStatus,
 };
@@ -11,7 +12,12 @@ const IDLE_DEVICE_NAME: &str = "Waiting for iPhone";
 pub(crate) struct SessionStore {
     pub(crate) sequence: u64,
     pub(crate) active_session_id: Option<String>,
+    pub(crate) require_local_session_approval: bool,
+    pub(crate) require_known_device: bool,
+    pub(crate) pending_local_session_approval: bool,
+    pub(crate) remember_pairing_approval: bool,
     pub(crate) snapshot: SessionSnapshot,
+    pub(crate) pairing: PairingSnapshot,
     pub(crate) preview: PreviewTelemetry,
     pub(crate) preview_stream: PreviewStreamDescriptor,
     pub(crate) live_preview_buffer: LivePreviewBuffer,
@@ -28,13 +34,39 @@ impl Default for SessionStore {
         Self {
             sequence: 0,
             active_session_id: None,
+            require_local_session_approval: false,
+            require_known_device: false,
+            pending_local_session_approval: false,
+            remember_pairing_approval: false,
             snapshot: SessionSnapshot {
                 status: SessionStatus::Idle,
                 capture_count: 0,
                 device_name: String::from(IDLE_DEVICE_NAME),
+                current_device_id: None,
+                current_device_model: None,
+                current_device_os_name: None,
+                current_device_os_version: None,
+                current_device_os_build_version: None,
+                current_device_source_version: None,
+                current_device_key: None,
+                current_device_nickname: None,
+                current_device_known: false,
+                current_device_trusted: false,
+                current_device_blocked: false,
+                current_device_blocked_reason: None,
                 receiver_id: None,
                 receiver_protocol_version: None,
                 receiver_capabilities: Vec::new(),
+            },
+            pairing: PairingSnapshot {
+                phase: PairingPhase::Idle,
+                entry_mode: PairingEntryMode::None,
+                device_name: None,
+                device_id: None,
+                display_pin: None,
+                prompt: None,
+                failure_message: None,
+                can_trust: false,
             },
             preview: PreviewTelemetry {
                 frame_number: 0,
@@ -153,9 +185,58 @@ pub(crate) fn reset_preview(store: &mut SessionStore) {
 
 pub(crate) fn clear_session_identity(store: &mut SessionStore) {
     store.snapshot.device_name = String::from(IDLE_DEVICE_NAME);
+    store.snapshot.current_device_id = None;
+    store.snapshot.current_device_model = None;
+    store.snapshot.current_device_os_name = None;
+    store.snapshot.current_device_os_version = None;
+    store.snapshot.current_device_os_build_version = None;
+    store.snapshot.current_device_source_version = None;
+    store.snapshot.current_device_key = None;
+    store.snapshot.current_device_nickname = None;
+    store.snapshot.current_device_trusted = false;
+    store.snapshot.current_device_blocked = false;
+    store.snapshot.current_device_blocked_reason = None;
     store.snapshot.receiver_id = None;
     store.snapshot.receiver_protocol_version = None;
     store.snapshot.receiver_capabilities.clear();
+}
+
+pub(crate) fn clear_pairing(store: &mut SessionStore) {
+    store.pending_local_session_approval = false;
+    store.remember_pairing_approval = false;
+    store.pairing = PairingSnapshot {
+        phase: PairingPhase::Idle,
+        entry_mode: PairingEntryMode::None,
+        device_name: None,
+        device_id: None,
+        display_pin: None,
+        prompt: None,
+        failure_message: None,
+        can_trust: false,
+    };
+}
+
+pub(crate) fn resume_local_session_approval(store: &mut SessionStore) {
+    store.pending_local_session_approval = false;
+
+    if store.live_preview_buffer.queued_segment_count() > 0 {
+        if store.snapshot.status != SessionStatus::Recording {
+            store.snapshot.status = SessionStatus::Mirroring;
+        }
+        store.receiver_runtime.state = ReceiverRuntimeState::Streaming;
+        store.receiver_runtime.queued_segments = store.live_preview_buffer.queued_segment_count();
+        store.receiver_runtime.last_error = None;
+    } else {
+        store.snapshot.status = SessionStatus::Connecting;
+        store.receiver_runtime.state = ReceiverRuntimeState::Ready;
+        store.receiver_runtime.queued_segments = store.live_preview_buffer.queued_segment_count();
+        store.receiver_runtime.last_error = Some(String::from(
+            "receiver approved; waiting for the first decodable video frame from the iPhone",
+        ));
+    }
+
+    sync_preview_diagnostics(store);
+    clear_pairing(store);
 }
 
 pub(crate) fn reset_fixture_transport(store: &mut SessionStore) {
@@ -213,4 +294,64 @@ pub(crate) fn preview_bitrate_kbps(size_bytes: usize, duration: u32, timescale: 
 
 pub(crate) fn preview_activity(size_bytes: usize) -> f32 {
     ((size_bytes as f32 / 16_000.0).clamp(0.15, 1.0) * 10.0).round() / 10.0
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{prepare_live_transport, resume_local_session_approval, SessionStore};
+    use crate::models::{PairingEntryMode, PairingPhase, ReceiverRuntimeState, SessionStatus};
+
+    const SAMPLE_SPS: [u8; 28] = [
+        0x67, 0x42, 0xC0, 0x1E, 0xDA, 0x02, 0x80, 0xBF, 0xE5, 0xC0, 0x5A, 0x80, 0x80, 0x80,
+        0xA0, 0x00, 0x00, 0x03, 0x00, 0x20, 0x00, 0x00, 0x07, 0x91, 0xE2, 0x85, 0x49, 0x01,
+    ];
+    const SAMPLE_PPS: [u8; 4] = [0x68, 0xCE, 0x0F, 0xC8];
+    const SAMPLE_IDR: [u8; 5] = [0x65, 0x88, 0x84, 0x21, 0xA0];
+
+    fn avcc_sample() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        for nal in [&SAMPLE_SPS[..], &SAMPLE_PPS[..], &SAMPLE_IDR[..]] {
+            bytes.extend_from_slice(&(nal.len() as u32).to_be_bytes());
+            bytes.extend_from_slice(nal);
+        }
+        bytes
+    }
+
+    #[test]
+    fn ask_mode_allow_starts_preview_when_video_was_buffered() {
+        let mut store = SessionStore::default();
+        prepare_live_transport(&mut store, String::from("airplay-stream-0001"));
+
+        store.snapshot.status = SessionStatus::Connecting;
+        store.require_local_session_approval = true;
+        store.pending_local_session_approval = true;
+        store.pairing.phase = PairingPhase::AwaitingTrust;
+        store.pairing.entry_mode = PairingEntryMode::ConfirmOnly;
+        store.pairing.can_trust = true;
+
+        for index in 0..16u32 {
+            store
+                .live_preview_buffer
+                .push_access_unit(
+                    index,
+                    avcc_sample(),
+                    index == 0 || index == 15,
+                    index as u64 * 3_000,
+                    index as u64 * 3_000,
+                    3_000,
+                )
+                .expect("buffer sample while approval is pending");
+        }
+
+        assert!(store.live_preview_buffer.queued_segment_count() > 0);
+        assert!(matches!(store.snapshot.status, SessionStatus::Connecting));
+
+        resume_local_session_approval(&mut store);
+
+        assert!(matches!(store.snapshot.status, SessionStatus::Mirroring));
+        assert!(matches!(store.receiver_runtime.state, ReceiverRuntimeState::Streaming));
+        assert!(store.live_preview_buffer.queued_segment_count() > 0);
+        assert!(matches!(store.pairing.phase, PairingPhase::Idle));
+        assert!(!store.pending_local_session_approval);
+    }
 }

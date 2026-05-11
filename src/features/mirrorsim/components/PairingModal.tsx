@@ -1,0 +1,88 @@
+import type { PairingSnapshot } from "@/receiverContract";
+
+type PairingModalProps = {
+  pairing: PairingSnapshot;
+  approvalActionSupported: boolean;
+  rememberTrustByDefault: boolean;
+  commandPending: boolean;
+  onConfirmTrust: () => void;
+  onCancel: () => void;
+};
+
+export function PairingModal({ pairing, approvalActionSupported, rememberTrustByDefault, commandPending, onConfirmTrust, onCancel }: PairingModalProps) {
+  if (pairing.phase === "idle" || pairing.phase === "paired") {
+    return null;
+  }
+
+  const title =
+    pairing.phase === "pin-required"
+      ? "AirPlay Verification Required"
+      : pairing.phase === "awaiting-trust"
+        ? "Trust This iPhone"
+        : pairing.phase === "verifying"
+          ? "Verifying Pairing"
+          : "Pairing Failed";
+
+  const description =
+    ((pairing.phase === "pin-required")
+      || (pairing.phase === "awaiting-trust" && !approvalActionSupported)
+      ? pairing.phase === "pin-required"
+        ? "MirrorSim no longer collects AirPlay PIN codes in-app. If this sender requires a code, finish that verification on the sender or cancel and use device trust instead."
+        : "This receiver can identify the device, but it cannot wait for trust approval inside MirrorSim yet."
+      : null)
+    ?? pairing.failureMessage
+    ?? pairing.prompt
+    ?? (pairing.phase === "pin-required"
+      ? "This sender is asking for AirPlay verification outside MirrorSim."
+      : pairing.phase === "awaiting-trust"
+        ? rememberTrustByDefault
+          ? "Approve this pairing request and MirrorSim will remember this iPhone on this PC."
+          : "Approve this pairing request for this session only. You can remember the iPhone later from Device Trust."
+        : pairing.phase === "verifying"
+          ? "MirrorSim is waiting for the receiver to finish pairing."
+          : "The receiver rejected the pairing request.");
+
+  return (
+    <div className="fixed inset-0 z-260 flex items-center justify-center bg-black/55 p-4 backdrop-blur-sm">
+      <div className="w-full max-w-100 rounded-3xl border border-white/10 bg-[#17191d] p-5 shadow-[0_28px_96px_rgba(0,0,0,0.58)]">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-white/35">Pairing</div>
+        <h2 className="mt-2 text-xl font-semibold tracking-[-0.03em] text-white">{title}</h2>
+        {(pairing.deviceName || pairing.deviceId) && (
+          <div className="mt-2 text-sm text-white/55">
+            {pairing.deviceName ?? "Unknown iPhone"}
+            {pairing.deviceId ? <span className="ml-2 text-white/30">{pairing.deviceId}</span> : null}
+          </div>
+        )}
+        <p className="mt-3 text-sm leading-6 text-white/55">{description}</p>
+
+        {pairing.phase === "pin-required" && pairing.entryMode === "enter-on-device" && pairing.displayPin && (
+          <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-center">
+            <div className="text-[11px] uppercase tracking-[0.12em] text-white/30">Verification Code</div>
+            <div className="mt-1 text-3xl font-semibold tracking-[0.28em] text-white">{pairing.displayPin}</div>
+          </div>
+        )}
+
+        <div className="mt-5 flex flex-wrap justify-end gap-2">
+          <button
+            type="button"
+            className="inline-flex items-center rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-sm font-medium text-white/70 transition hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-40"
+            onClick={onCancel}
+            disabled={commandPending && pairing.phase === "verifying"}
+          >
+            {pairing.phase === "failed" ? "Dismiss" : "Cancel"}
+          </button>
+          {pairing.phase === "awaiting-trust" && pairing.canTrust && (
+            <button
+              type="button"
+              className="inline-flex items-center rounded-xl border border-emerald-400/20 bg-emerald-500/12 px-3 py-2 text-sm font-medium text-emerald-200 transition hover:bg-emerald-500/18 disabled:cursor-default disabled:opacity-40"
+              onClick={onConfirmTrust}
+              disabled={!approvalActionSupported || commandPending}
+            >
+              {rememberTrustByDefault ? "Allow And Remember" : "Allow This Session"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

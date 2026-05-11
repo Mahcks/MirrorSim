@@ -27,15 +27,134 @@ pub(crate) enum ReceiverRuntimeState {
     Streaming,
 }
 
+#[derive(Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum PairingPhase {
+    #[default]
+    Idle,
+    PinRequired,
+    AwaitingTrust,
+    Verifying,
+    Paired,
+    Failed,
+}
+
+#[derive(Clone, Copy, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub(crate) enum PairingEntryMode {
+    #[default]
+    None,
+    EnterOnDevice,
+    EnterInApp,
+    ConfirmOnly,
+}
+
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SessionSnapshot {
     pub(crate) status: SessionStatus,
     pub(crate) capture_count: u32,
     pub(crate) device_name: String,
+    pub(crate) current_device_id: Option<String>,
+    pub(crate) current_device_model: Option<String>,
+    pub(crate) current_device_os_name: Option<String>,
+    pub(crate) current_device_os_version: Option<String>,
+    pub(crate) current_device_os_build_version: Option<String>,
+    pub(crate) current_device_source_version: Option<String>,
+    pub(crate) current_device_key: Option<String>,
+    pub(crate) current_device_nickname: Option<String>,
+    pub(crate) current_device_known: bool,
+    pub(crate) current_device_trusted: bool,
+    pub(crate) current_device_blocked: bool,
+    pub(crate) current_device_blocked_reason: Option<String>,
     pub(crate) receiver_id: Option<String>,
     pub(crate) receiver_protocol_version: Option<String>,
     pub(crate) receiver_capabilities: Vec<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct TrustedDevice {
+    pub(crate) key: String,
+    #[serde(default)]
+    pub(crate) device_id: Option<String>,
+    pub(crate) display_name: String,
+    #[serde(default)]
+    pub(crate) model: Option<String>,
+    #[serde(default)]
+    pub(crate) os_name: Option<String>,
+    #[serde(default)]
+    pub(crate) os_version: Option<String>,
+    #[serde(default)]
+    pub(crate) os_build_version: Option<String>,
+    #[serde(default)]
+    pub(crate) source_version: Option<String>,
+    #[serde(default)]
+    pub(crate) nickname: Option<String>,
+    pub(crate) first_seen_at: u64,
+    pub(crate) last_seen_at: u64,
+    #[serde(default)]
+    pub(crate) trusted_at: Option<u64>,
+    #[serde(default)]
+    pub(crate) last_successful_connection_at: Option<u64>,
+    #[serde(default)]
+    pub(crate) last_pairing_at: Option<u64>,
+    #[serde(default)]
+    pub(crate) pending_pairing: bool,
+    #[serde(default)]
+    pub(crate) is_blocked: bool,
+    #[serde(default)]
+    pub(crate) blocked_reason: Option<String>,
+    #[serde(default)]
+    pub(crate) last_failure_at: Option<u64>,
+    #[serde(default)]
+    pub(crate) last_failure_reason: Option<String>,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ConnectionHistoryEntry {
+    pub(crate) id: String,
+    pub(crate) occurred_at: u64,
+    pub(crate) event: String,
+    pub(crate) status: String,
+    pub(crate) message: String,
+    #[serde(default)]
+    pub(crate) device_name: Option<String>,
+    #[serde(default)]
+    pub(crate) device_id: Option<String>,
+    #[serde(default)]
+    pub(crate) device_model: Option<String>,
+    #[serde(default)]
+    pub(crate) device_os_name: Option<String>,
+    #[serde(default)]
+    pub(crate) device_os_version: Option<String>,
+    #[serde(default)]
+    pub(crate) device_key: Option<String>,
+    #[serde(default)]
+    pub(crate) receiver_name: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct DiagnosticsExport {
+    pub(crate) file_name: String,
+    pub(crate) file_path: String,
+    pub(crate) exported_at: u64,
+    pub(crate) entry_count: usize,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PairingSnapshot {
+    pub(crate) phase: PairingPhase,
+    pub(crate) entry_mode: PairingEntryMode,
+    pub(crate) device_name: Option<String>,
+    pub(crate) device_id: Option<String>,
+    pub(crate) display_pin: Option<String>,
+    pub(crate) prompt: Option<String>,
+    pub(crate) failure_message: Option<String>,
+    pub(crate) can_trust: bool,
 }
 
 #[derive(Clone, Serialize)]
@@ -143,6 +262,35 @@ pub(crate) enum SidecarEvent {
         session_id: String,
         stream_id: String,
         device_name: String,
+        #[serde(default)]
+        device_id: Option<String>,
+        #[serde(default)]
+        device_model: Option<String>,
+        #[serde(default)]
+        device_os_name: Option<String>,
+        #[serde(default)]
+        device_os_version: Option<String>,
+        #[serde(default)]
+        device_os_build_version: Option<String>,
+        #[serde(default)]
+        device_source_version: Option<String>,
+    },
+    PairingStateChanged {
+        phase: PairingPhase,
+        #[serde(default)]
+        entry_mode: PairingEntryMode,
+        #[serde(default)]
+        device_name: Option<String>,
+        #[serde(default)]
+        device_id: Option<String>,
+        #[serde(default)]
+        display_pin: Option<String>,
+        #[serde(default)]
+        prompt: Option<String>,
+        #[serde(default)]
+        failure_message: Option<String>,
+        #[serde(default)]
+        can_trust: bool,
     },
     VideoAccessUnit {
         stream_id: String,

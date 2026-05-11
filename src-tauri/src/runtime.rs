@@ -1,14 +1,21 @@
+use crate::history::{append_history_entry, now_unix_timestamp};
 use crate::models::{
-    BonjourStatusKind, BonjourStatusSnapshot, CommandResult, PreviewDiagnosticsSnapshot,
-    PreviewStreamDescriptor, PreviewTelemetry, ReceiverRuntimeSnapshot, ReceiverRuntimeState,
-    ReceiverTransport, ScreenshotSaveLocation, SessionSnapshot, SessionStatus, SidecarEvent,
+    BonjourStatusKind, BonjourStatusSnapshot, CommandResult, ConnectionHistoryEntry,
+    PairingPhase, PairingSnapshot,
+    PreviewDiagnosticsSnapshot, PreviewStreamDescriptor, PreviewTelemetry,
+    ReceiverRuntimeSnapshot, ReceiverRuntimeState, ReceiverTransport, ScreenshotSaveLocation,
+    SessionSnapshot, SessionStatus, SidecarEvent,
 };
 use crate::sidecar::ReceiverSidecarSpec;
 use crate::state::{
     clear_session_identity, prepare_live_transport, preview_bitrate_kbps,
     preview_fps_from_duration, preview_activity, refresh_live_preview_descriptor,
-    reset_fixture_transport, reset_preview,
+    reset_fixture_transport, reset_preview, clear_pairing,
     set_receiver_runtime_state, sync_preview_diagnostics, SessionStore,
+};
+use crate::trust::{
+    apply_current_device_trust, get_trusted_devices, note_device_connected,
+    note_device_failure, note_known_device, note_pairing_state, trust_device,
 };
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 use serde_json::json;
@@ -29,6 +36,8 @@ const PREVIEW_TELEMETRY_EVENT: &str = "preview-telemetry";
 const PREVIEW_STREAM_EVENT: &str = "preview-stream";
 const RECEIVER_RUNTIME_EVENT: &str = "receiver-runtime";
 const PREVIEW_DIAGNOSTICS_EVENT: &str = "preview-diagnostics";
+const PAIRING_STATUS_EVENT: &str = "pairing-status";
+const KEYFRAME_REQUEST_CAPABILITY: &str = "keyframe-request";
 
 pub(crate) struct SidecarRuntime {
     child: Child,
@@ -129,6 +138,11 @@ pub(crate) fn emit_preview_diagnostics(
     preview_diagnostics: &PreviewDiagnosticsSnapshot,
 ) -> CommandResult<()> {
     app.emit(PREVIEW_DIAGNOSTICS_EVENT, preview_diagnostics.clone())
+        .map_err(|error| error.to_string())
+}
+
+pub(crate) fn emit_pairing_status(app: &AppHandle, pairing: &PairingSnapshot) -> CommandResult<()> {
+    app.emit(PAIRING_STATUS_EVENT, pairing.clone())
         .map_err(|error| error.to_string())
 }
 
@@ -244,6 +258,7 @@ pub(crate) fn emit_runtime_error(
             guard.snapshot.status = SessionStatus::Idle;
             guard.active_session_id = None;
             clear_session_identity(&mut guard);
+            clear_pairing(&mut guard);
             reset_preview(&mut guard);
             reset_fixture_transport(&mut guard);
             set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Idle);
@@ -356,12 +371,15 @@ fn handle_sidecar_event(
     event: SidecarEvent,
 ) -> CommandResult<()> {
     let mut request_keyframe: Option<(String, String)> = None;
+    let mut stop_session_request: Option<String> = None;
+    let mut history_entries: Vec<ConnectionHistoryEntry> = Vec::new();
 
-    let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics) = {
+    let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics, pairing) = {
         let mut guard = store.lock().map_err(|error| error.to_string())?;
         let mut emit_snapshot = false;
         let mut emit_preview = false;
         let mut emit_preview_stream = false;
+        let mut emit_pairing = false;
 
         match event {
             SidecarEvent::ReceiverReady {
@@ -391,17 +409,239 @@ fn handle_sidecar_event(
                 session_id,
                 stream_id,
                 device_name,
+                device_id,
+                device_model,
+                device_os_name,
+                device_os_version,
+                device_os_build_version,
+                device_source_version,
             } => {
+                let trusted_devices = note_device_connected(
+                    app,
+                    &device_name,
+                    device_id.as_deref(),
+                    device_model.as_deref(),
+                    device_os_name.as_deref(),
+                    device_os_version.as_deref(),
+                    device_os_build_version.as_deref(),
+                    device_source_version.as_deref(),
+                )?;
                 guard.active_session_id = Some(session_id);
-                guard.snapshot.device_name = device_name;
+                guard.snapshot.device_name = device_name.clone();
+                guard.snapshot.current_device_id = device_id.clone();
+                guard.snapshot.current_device_model = device_model.clone();
+                guard.snapshot.current_device_os_name = device_os_name.clone();
+                guard.snapshot.current_device_os_version = device_os_version.clone();
+                guard.snapshot.current_device_os_build_version = device_os_build_version.clone();
+                guard.snapshot.current_device_source_version = device_source_version.clone();
+                apply_current_device_trust(&mut guard.snapshot, &trusted_devices);
+                clear_pairing(&mut guard);
                 guard.snapshot.status = SessionStatus::Connecting;
                 prepare_live_transport(&mut guard, stream_id);
                 set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Ready);
-                guard.receiver_runtime.last_error = Some(String::from(
-                    "receiver connected; waiting for the first H.264 frame from the iPhone",
-                ));
+
+                let (history_status, history_message) = if guard.snapshot.current_device_blocked {
+                    guard.pairing.phase = PairingPhase::Failed;
+                    guard.pairing.entry_mode = crate::models::PairingEntryMode::ConfirmOnly;
+                    guard.pairing.device_name = Some(device_name.clone());
+                    guard.pairing.device_id = device_id.clone();
+                    guard.pairing.prompt = None;
+                    guard.pairing.display_pin = None;
+                    guard.pairing.failure_message = Some(
+                        guard
+                            .snapshot
+                            .current_device_blocked_reason
+                            .clone()
+                            .unwrap_or_else(|| String::from("This iPhone is blocked on this PC.")),
+                    );
+                    guard.pairing.can_trust = false;
+                    guard.receiver_runtime.last_error = guard.pairing.failure_message.clone();
+                    stop_session_request = guard.active_session_id.clone();
+                    emit_pairing = true;
+                    (
+                        String::from("warning"),
+                        format!("{} was rejected because this iPhone is blocked on this PC.", device_name),
+                    )
+                } else if guard.require_known_device && !guard.snapshot.current_device_known {
+                    guard.pairing.phase = PairingPhase::Failed;
+                    guard.pairing.entry_mode = crate::models::PairingEntryMode::ConfirmOnly;
+                    guard.pairing.device_name = Some(device_name.clone());
+                    guard.pairing.device_id = device_id.clone();
+                    guard.pairing.prompt = None;
+                    guard.pairing.display_pin = None;
+                    guard.pairing.failure_message = Some(String::from(
+                        "This iPhone is not known on this PC yet. Start MirrorSim in Ask or Remember mode once to approve it first.",
+                    ));
+                    guard.pairing.can_trust = false;
+                    guard.receiver_runtime.last_error = guard.pairing.failure_message.clone();
+                    stop_session_request = guard.active_session_id.clone();
+                    emit_pairing = true;
+                    (
+                        String::from("warning"),
+                        format!("{} was rejected because it is not known on this PC yet.", device_name),
+                    )
+                } else if guard.require_local_session_approval && !guard.snapshot.current_device_trusted {
+                    guard.pending_local_session_approval = true;
+                    guard.pairing.phase = PairingPhase::AwaitingTrust;
+                    guard.pairing.entry_mode = crate::models::PairingEntryMode::ConfirmOnly;
+                    guard.pairing.device_name = Some(device_name.clone());
+                    guard.pairing.device_id = device_id.clone();
+                    guard.pairing.display_pin = None;
+                    guard.pairing.failure_message = None;
+                    guard.pairing.prompt = Some(String::from(
+                        "Approve this iPhone for the current session. MirrorSim will ask again next time unless you remember it.",
+                    ));
+                    guard.pairing.can_trust = true;
+                    guard.receiver_runtime.last_error = Some(String::from(
+                        "receiver connected; waiting for local approval before MirrorSim starts streaming",
+                    ));
+                    emit_pairing = true;
+                    (
+                        String::from("info"),
+                        format!("{} connected and is waiting for local approval.", device_name),
+                    )
+                } else {
+                    guard.receiver_runtime.last_error = Some(String::from(
+                        "receiver connected; waiting for the first H.264 frame from the iPhone",
+                    ));
+                    emit_pairing = true;
+                    (
+                        String::from("success"),
+                        format!("{} connected to MirrorSim.", device_name),
+                    )
+                };
+
                 emit_snapshot = true;
                 emit_preview_stream = true;
+
+                history_entries.push(ConnectionHistoryEntry {
+                    id: String::new(),
+                    occurred_at: now_unix_timestamp(),
+                    event: String::from("session-started"),
+                    status: history_status,
+                    message: history_message,
+                    device_name: Some(device_name),
+                    device_id: device_id,
+                    device_model: device_model,
+                    device_os_name: device_os_name,
+                    device_os_version: device_os_version,
+                    device_key: guard.snapshot.current_device_key.clone(),
+                    receiver_name: guard.snapshot.receiver_id.clone(),
+                });
+            }
+            SidecarEvent::PairingStateChanged {
+                phase,
+                entry_mode,
+                device_name,
+                device_id,
+                display_pin,
+                prompt,
+                failure_message,
+                can_trust,
+            } => {
+                let awaiting_trust_confirmation = guard.pairing.can_trust
+                    || matches!(guard.pairing.phase, PairingPhase::AwaitingTrust);
+
+                if let Some(device_name) = device_name {
+                    guard.snapshot.device_name = device_name.clone();
+                    guard.pairing.device_name = Some(device_name);
+                    emit_snapshot = true;
+                }
+
+                if let Some(device_id) = device_id {
+                    guard.snapshot.current_device_id = Some(device_id.clone());
+                    guard.pairing.device_id = Some(device_id);
+                    let trusted_devices = get_trusted_devices(app)?;
+                    apply_current_device_trust(&mut guard.snapshot, &trusted_devices);
+                    emit_snapshot = true;
+                }
+
+                guard.pairing.phase = phase;
+                guard.pairing.entry_mode = entry_mode;
+                guard.pairing.display_pin = display_pin;
+                guard.pairing.prompt = prompt;
+                guard.pairing.failure_message = failure_message;
+                guard.pairing.can_trust = can_trust;
+
+                if !guard.snapshot.device_name.is_empty() {
+                    let trusted_devices = note_pairing_state(
+                        app,
+                        &guard.snapshot.device_name,
+                        guard.snapshot.current_device_id.as_deref(),
+                        guard.snapshot.current_device_model.as_deref(),
+                        guard.snapshot.current_device_os_name.as_deref(),
+                        guard.snapshot.current_device_os_version.as_deref(),
+                        guard.snapshot.current_device_os_build_version.as_deref(),
+                        guard.snapshot.current_device_source_version.as_deref(),
+                        matches!(phase, PairingPhase::PinRequired | PairingPhase::AwaitingTrust | PairingPhase::Verifying),
+                        guard.pairing.failure_message.as_deref(),
+                    )?;
+                    apply_current_device_trust(&mut guard.snapshot, &trusted_devices);
+                    emit_snapshot = true;
+                }
+
+                if matches!(phase, PairingPhase::Paired) {
+                    guard.pairing.display_pin = None;
+                    guard.pairing.prompt = None;
+                    guard.pairing.failure_message = None;
+                    guard.pairing.can_trust = false;
+
+                    if awaiting_trust_confirmation && !guard.snapshot.device_name.is_empty() {
+                        let trusted_devices = if guard.remember_pairing_approval {
+                            trust_device(
+                                app,
+                                &guard.snapshot.device_name,
+                                guard.snapshot.current_device_id.as_deref(),
+                                guard.snapshot.current_device_model.as_deref(),
+                                guard.snapshot.current_device_os_name.as_deref(),
+                                guard.snapshot.current_device_os_version.as_deref(),
+                                guard.snapshot.current_device_os_build_version.as_deref(),
+                                guard.snapshot.current_device_source_version.as_deref(),
+                            )?
+                        } else {
+                            note_known_device(
+                                app,
+                                &guard.snapshot.device_name,
+                                guard.snapshot.current_device_id.as_deref(),
+                                guard.snapshot.current_device_model.as_deref(),
+                                guard.snapshot.current_device_os_name.as_deref(),
+                                guard.snapshot.current_device_os_version.as_deref(),
+                                guard.snapshot.current_device_os_build_version.as_deref(),
+                                guard.snapshot.current_device_source_version.as_deref(),
+                            )?
+                        };
+                        apply_current_device_trust(&mut guard.snapshot, &trusted_devices);
+                        emit_snapshot = true;
+                    }
+                }
+
+                history_entries.push(ConnectionHistoryEntry {
+                    id: String::new(),
+                    occurred_at: now_unix_timestamp(),
+                    event: format!("pairing-{}", serde_variant_name(&phase)),
+                    status: if matches!(phase, PairingPhase::Failed) {
+                        String::from("error")
+                    } else if matches!(phase, PairingPhase::Paired) {
+                        String::from("success")
+                    } else {
+                        String::from("info")
+                    },
+                    message: guard
+                        .pairing
+                        .failure_message
+                        .clone()
+                        .or_else(|| guard.pairing.prompt.clone())
+                        .unwrap_or_else(|| format!("Pairing moved to {}.", serde_variant_name(&phase))),
+                    device_name: Some(guard.snapshot.device_name.clone()),
+                    device_id: guard.snapshot.current_device_id.clone(),
+                    device_model: guard.snapshot.current_device_model.clone(),
+                    device_os_name: guard.snapshot.current_device_os_name.clone(),
+                    device_os_version: guard.snapshot.current_device_os_version.clone(),
+                    device_key: guard.snapshot.current_device_key.clone(),
+                    receiver_name: guard.snapshot.receiver_id.clone(),
+                });
+
+                emit_pairing = true;
             }
             SidecarEvent::VideoAccessUnit {
                 stream_id,
@@ -412,6 +652,8 @@ fn handle_sidecar_event(
                 duration,
                 payload_base64,
             } => {
+                let waiting_for_local_approval = guard.pending_local_session_approval;
+
                 if guard.receiver_runtime.stream_id != stream_id {
                     prepare_live_transport(&mut guard, stream_id.clone());
                     emit_preview_stream = true;
@@ -449,7 +691,18 @@ fn handle_sidecar_event(
                     guard.preview_diagnostics.last_queued_duration = Some(segment.duration);
                 }
 
-                if !push_result.sample_enqueued {
+                if waiting_for_local_approval {
+                    guard.snapshot.status = SessionStatus::Connecting;
+                    guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
+                    guard.receiver_runtime.stream_id = stream_id;
+                    guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
+                    guard.receiver_runtime.queued_segments =
+                        guard.live_preview_buffer.queued_segment_count();
+                    guard.receiver_runtime.last_error = Some(String::from(
+                        "waiting for local approval before MirrorSim starts streaming",
+                    ));
+                    emit_snapshot = true;
+                } else if !push_result.sample_enqueued {
                     guard.snapshot.status = SessionStatus::Connecting;
                     guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
                     guard.receiver_runtime.stream_id = stream_id;
@@ -507,8 +760,30 @@ fn handle_sidecar_event(
                     reset_preview(&mut guard);
                     emit_preview = true;
                     emit_preview_stream = true;
-                    request_keyframe = Some((stream_id, reason));
+                    if guard
+                        .snapshot
+                        .receiver_capabilities
+                        .iter()
+                        .any(|capability| capability == KEYFRAME_REQUEST_CAPABILITY)
+                    {
+                        request_keyframe = Some((stream_id, reason.clone()));
+                    }
                 }
+
+                history_entries.push(ConnectionHistoryEntry {
+                    id: String::new(),
+                    occurred_at: now_unix_timestamp(),
+                    event: String::from("stream-discontinuity"),
+                    status: String::from("warning"),
+                    message: format!("Stream discontinuity: {}", reason),
+                    device_name: Some(guard.snapshot.device_name.clone()),
+                    device_id: guard.snapshot.current_device_id.clone(),
+                    device_model: guard.snapshot.current_device_model.clone(),
+                    device_os_name: guard.snapshot.current_device_os_name.clone(),
+                    device_os_version: guard.snapshot.current_device_os_version.clone(),
+                    device_key: guard.snapshot.current_device_key.clone(),
+                    receiver_name: guard.snapshot.receiver_id.clone(),
+                });
 
                 sync_preview_diagnostics(&mut guard);
             }
@@ -517,7 +792,41 @@ fn handle_sidecar_event(
                 message,
                 recoverable,
             } => {
+                let snapshot = guard.snapshot.clone();
                 drop(guard);
+
+                if !matches!(snapshot.status, SessionStatus::Idle) {
+                    let _ = note_device_failure(
+                        app,
+                        &snapshot.device_name,
+                        snapshot.current_device_id.as_deref(),
+                        snapshot.current_device_model.as_deref(),
+                        snapshot.current_device_os_name.as_deref(),
+                        snapshot.current_device_os_version.as_deref(),
+                        snapshot.current_device_os_build_version.as_deref(),
+                        snapshot.current_device_source_version.as_deref(),
+                        &message,
+                    );
+                }
+
+                let _ = append_history_entry(
+                    app,
+                    ConnectionHistoryEntry {
+                        id: String::new(),
+                        occurred_at: now_unix_timestamp(),
+                        event: String::from("receiver-error"),
+                        status: if recoverable { String::from("warning") } else { String::from("error") },
+                        message: format!("{}: {}", code, message),
+                        device_name: Some(snapshot.device_name),
+                        device_id: snapshot.current_device_id,
+                        device_model: snapshot.current_device_model,
+                        device_os_name: snapshot.current_device_os_name,
+                        device_os_version: snapshot.current_device_os_version,
+                        device_key: snapshot.current_device_key,
+                        receiver_name: snapshot.receiver_id,
+                    },
+                );
+
                 return emit_runtime_error(app, store, format!("{}: {}", code, message), recoverable);
             }
         }
@@ -528,10 +837,14 @@ fn handle_sidecar_event(
             emit_preview_stream.then(|| guard.preview_stream.clone()),
             Some(guard.receiver_runtime.clone()),
             Some(guard.preview_diagnostics.clone()),
+            emit_pairing.then(|| guard.pairing.clone()),
         )
     };
 
     emit_state_updates(app, snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics)?;
+    if let Some(pairing) = pairing.as_ref() {
+        emit_pairing_status(app, pairing)?;
+    }
 
     if let Some((stream_id, reason)) = request_keyframe {
         let _ = send_sidecar_command(
@@ -544,7 +857,32 @@ fn handle_sidecar_event(
         );
     }
 
+    if let Some(session_id) = stop_session_request {
+        let _ = send_sidecar_command(
+            sidecar,
+            json!({
+                "name": "stop_session",
+                "session_id": session_id,
+            }),
+        );
+    }
+
+    for entry in history_entries {
+        let _ = append_history_entry(app, entry);
+    }
+
     Ok(())
+}
+
+fn serde_variant_name(phase: &PairingPhase) -> &'static str {
+    match phase {
+        PairingPhase::Idle => "idle",
+        PairingPhase::PinRequired => "pin-required",
+        PairingPhase::AwaitingTrust => "awaiting-trust",
+        PairingPhase::Verifying => "verifying",
+        PairingPhase::Paired => "paired",
+        PairingPhase::Failed => "failed",
+    }
 }
 
 fn spawn_sidecar_stdout_loop(
