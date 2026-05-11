@@ -242,20 +242,20 @@ export function SettingsModal({
   return (
     <div
       className={embedded
-        ? "absolute inset-0 z-40 flex items-stretch justify-stretch bg-black/65 p-2.5 backdrop-blur-sm"
+        ? "absolute inset-0 z-40 flex items-stretch justify-stretch bg-black/65 px-4 pb-4 pt-12 backdrop-blur-sm"
         : "fixed inset-0 z-240 flex items-start justify-center overflow-y-auto bg-black/60 p-4 backdrop-blur-sm sm:items-center"
       }
       onMouseDown={onClose}
     >
       <div
         className={embedded
-          ? "flex h-full w-full flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[#17191d] shadow-[0_24px_72px_rgba(0,0,0,0.52)]"
+          ? "flex h-full w-full flex-col overflow-hidden rounded-[22px] border border-white/10 bg-[#17191d] shadow-[0_24px_72px_rgba(0,0,0,0.52)]"
           : "flex max-h-[calc(100dvh-2rem)] w-full max-w-115 flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[#17191d] shadow-[0_24px_72px_rgba(0,0,0,0.52)]"
         }
         onMouseDown={(event) => event.stopPropagation()}
       >
         {/* Header */}
-        <div className="flex shrink-0 items-center justify-between gap-4 border-b border-white/7 px-5 py-4">
+        <div className={embedded ? "flex shrink-0 items-center justify-between gap-3 border-b border-white/7 px-4 py-3" : "flex shrink-0 items-center justify-between gap-4 border-b border-white/7 px-5 py-4"}>
           <h2 className="text-[15px] font-semibold tracking-tight text-white">Preferences</h2>
           <button type="button" className={btn} onClick={onClose}>
             Close
@@ -263,7 +263,7 @@ export function SettingsModal({
         </div>
 
         {/* Scrollable content */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-5 pb-6">
+        <div className={embedded ? "min-h-0 flex-1 overflow-y-auto px-4 pb-5" : "min-h-0 flex-1 overflow-y-auto px-5 pb-6"}>
 
           {/* ── General ── */}
           <div className={`${sectionHeader} pt-5 pb-2`}>General</div>

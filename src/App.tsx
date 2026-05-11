@@ -321,7 +321,7 @@ export default function App() {
   const sideButtonClass =
     "inline-flex h-9 w-9 items-center justify-center rounded-[8px] text-white/55 transition hover:bg-[#1a1b1e] hover:text-white disabled:cursor-default disabled:opacity-30";
   const minimalFloatingButtonClass =
-    "inline-flex h-7 w-7 items-center justify-center rounded-lg text-white/65 transition hover:bg-white/8 hover:text-white disabled:cursor-default disabled:opacity-30";
+    "inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-white/65 transition hover:bg-white/8 hover:text-white disabled:cursor-default disabled:opacity-30";
   const panelSurfaceClass =
     "border-white/7 bg-[#131416]";
   const previewDimClass =
@@ -883,7 +883,7 @@ export default function App() {
   }
 
   function openScreenshotSettings() {
-    setSettingsOpen(true);
+    setSettingsOpen((value) => !value);
   }
 
   function doPrimary() {
@@ -1184,6 +1184,7 @@ export default function App() {
           sessionHeadline={sessionHeadline}
           sessionSecondaryLabel={sessionSecondaryLabel}
           sessionSupportingText={sessionSupportingText}
+          settingsOpen={settingsOpen}
           settingsModal={settingsModal}
           technicalDetails={renderTechnicalDetails()}
           trustedDevicesCount={trustedDevices.length}
@@ -1257,6 +1258,7 @@ export default function App() {
         onStartWindowDrag={startWindowDrag}
         orientation={orientation}
         reconnectBadge={renderReconnectBadge(true)}
+        settingsOpen={settingsOpen}
         settingsModal={null}
         showConsoleBadge={shouldShowUpdateBadge}
         shellWidth={MINIMAL_SHELL_WIDTH[orientation]}

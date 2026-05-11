@@ -1,5 +1,6 @@
 import type { MouseEvent, ReactNode, RefObject } from "react";
 
+import { cn } from "@/lib/utils";
 import type { Orientation } from "@/features/mirrorsim/types";
 
 import { Icon } from "./Icon";
@@ -23,6 +24,7 @@ type MinimalViewProps = {
   onStartWindowDrag: (event: MouseEvent<HTMLElement>) => void | Promise<void>;
   orientation: Orientation;
   reconnectBadge: ReactNode;
+  settingsOpen: boolean;
   settingsModal: ReactNode;
   showConsoleBadge: boolean;
   shellWidth: number;
@@ -47,6 +49,7 @@ export function MinimalView({
   onRotate,
   onStartWindowDrag,
   reconnectBadge,
+  settingsOpen,
   settingsModal,
   showConsoleBadge,
   shellWidth,
@@ -57,7 +60,7 @@ export function MinimalView({
     <div className="flex h-screen w-screen flex-col items-center overflow-hidden bg-transparent text-white">
       <div ref={minimalShellRef} className="inline-flex flex-col" style={{ width: shellWidth }}>
         <div
-          className="flex h-10 w-full shrink-0 items-center justify-between border-b border-white/8 bg-[#17191d] px-2"
+          className="flex h-10 w-full shrink-0 cursor-grab items-center justify-between border-b border-white/8 bg-[#17191d] px-2 active:cursor-grabbing"
           onMouseDown={(event) => void onStartWindowDrag(event)}
         >
           <div className="flex items-center gap-2">
@@ -68,7 +71,7 @@ export function MinimalView({
               {reconnectBadge}
             </div>
           </div>
-          <div className="flex items-center gap-0.5" onMouseDown={(event) => event.stopPropagation()}>
+          <div className="flex cursor-default items-center gap-0.5" onMouseDown={(event) => event.stopPropagation()}>
             <button
               type="button"
               className={minimalFloatingButtonClass}
@@ -90,7 +93,13 @@ export function MinimalView({
             <button type="button" className={minimalFloatingButtonClass} onClick={onRotate} title="Rotate device">
               <Icon name="rotate" size={14} />
             </button>
-            <button type="button" className={minimalFloatingButtonClass} onClick={onOpenSettings} title="Preferences">
+            <button
+              type="button"
+              className={cn(minimalFloatingButtonClass, settingsOpen && "bg-cyan-400/12 text-cyan-200 hover:bg-cyan-400/18 hover:text-cyan-100")}
+              onClick={onOpenSettings}
+              title={settingsOpen ? "Close Preferences" : "Open Preferences"}
+              aria-pressed={settingsOpen}
+            >
               <Icon name="settings" size={14} />
             </button>
             <button type="button" className={minimalFloatingButtonClass} onClick={onFit} title="Fit window to phone">
@@ -99,7 +108,7 @@ export function MinimalView({
             <div className="relative">
               <button
                 type="button"
-                className="inline-flex h-7 w-7 items-center justify-center text-cyan-300 transition hover:text-white"
+                className="inline-flex h-7 w-7 cursor-pointer items-center justify-center text-cyan-300 transition hover:text-white"
                 onClick={onGoConsole}
                 title="Switch to Console (Ctrl+M)"
               >

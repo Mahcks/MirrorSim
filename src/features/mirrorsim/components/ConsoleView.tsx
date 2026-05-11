@@ -61,6 +61,7 @@ type ConsoleViewProps = {
   sessionHeadline: string;
   sessionSecondaryLabel: string;
   sessionSupportingText: string;
+  settingsOpen: boolean;
   settingsModal: ReactNode;
   technicalDetails: ReactNode;
   trustedDevicesCount: number;
@@ -121,6 +122,7 @@ export function ConsoleView({
   sessionHeadline,
   sessionSecondaryLabel,
   sessionSupportingText,
+  settingsOpen,
   settingsModal,
   technicalDetails,
   trustedDevicesCount,
@@ -300,8 +302,12 @@ export function ConsoleView({
               {(currentDeviceVisible || trustedDevicesCount > 0) && (
                 <button
                   type="button"
-                  className="inline-flex items-center rounded-xl border border-white/7 bg-[#1a1b1e] px-3 py-1.5 text-[11px] font-medium text-white/55 transition hover:border-white/12 hover:text-white"
+                  className={cn(
+                    "inline-flex items-center rounded-xl border border-white/7 bg-[#1a1b1e] px-3 py-1.5 text-[11px] font-medium text-white/55 transition hover:border-white/12 hover:text-white",
+                    settingsOpen && "border-cyan-300/20 bg-cyan-400/10 text-cyan-200",
+                  )}
                   onClick={onOpenSettings}
+                  aria-pressed={settingsOpen}
                 >
                   {trustedDevicesCount > 0 ? `Trusted Devices (${trustedDevicesCount})` : "Trusted Devices"}
                 </button>
@@ -428,7 +434,13 @@ export function ConsoleView({
           </button>
         </div>
         <div className="flex items-center gap-px">
-          <button type="button" className={controlButtonClass} title="Settings" onClick={onOpenSettings}>
+          <button
+            type="button"
+            className={cn(controlButtonClass, settingsOpen && "bg-cyan-400/12 text-cyan-200 hover:bg-cyan-400/18 hover:text-cyan-100")}
+            title={settingsOpen ? "Close Preferences" : "Open Preferences"}
+            onClick={onOpenSettings}
+            aria-pressed={settingsOpen}
+          >
             <Icon name="settings" size={15} />
           </button>
         </div>
@@ -466,10 +478,14 @@ export function ConsoleView({
             <span className="truncate">{idleTelemetryHint}</span>
             <button
               type="button"
-              className="shrink-0 rounded-full border border-white/8 bg-white/5 px-2.5 py-1 text-[10px] font-medium text-white/65 transition hover:border-white/14 hover:bg-white/10 hover:text-white"
+              className={cn(
+                "shrink-0 rounded-full border border-white/8 bg-white/5 px-2.5 py-1 text-[10px] font-medium text-white/65 transition hover:border-white/14 hover:bg-white/10 hover:text-white",
+                settingsOpen && "border-cyan-300/20 bg-cyan-400/10 text-cyan-200",
+              )}
               onClick={onOpenSettings}
+              aria-pressed={settingsOpen}
             >
-              Preferences
+              {settingsOpen ? "Close Preferences" : "Preferences"}
             </button>
           </div>
         )}
