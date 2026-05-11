@@ -6,6 +6,15 @@ It gives you a focused iPhone preview instead of a noisy receiver window: Minima
 
 > MirrorSim includes a bundled AirPlay receiver runtime built from a fork of [AirPlayServer by xenos1337](https://github.com/xenos1337/AirPlayServer). MirrorSim provides the desktop app, UI, capture tools, diagnostics, and release packaging around that receiver layer.
 
+<p align="center">
+  <img src="docs/images/map-minimal-landscape.png" alt="MirrorSim Minimal mode mirroring Apple Maps in landscape orientation" width="720">
+</p>
+
+<p align="center">
+  <img src="docs/images/map-minimal-vertical.png" alt="MirrorSim Minimal mode mirroring Apple Maps in portrait orientation" width="280">
+  <img src="docs/images/map-console-preview.png" alt="MirrorSim Console mode with live iPhone preview and controls" width="420">
+</p>
+
 ---
 
 ## Highlights
