@@ -149,7 +149,7 @@ export function ConsoleView({
             type="button"
             className="inline-flex h-7 w-7 items-center justify-center text-cyan-300 transition hover:text-white"
             onClick={onGoMinimal}
-            title="Switch to Minimal view (⌘M)"
+            title="Switch to phone view (Ctrl+M)"
           >
             <Icon name="phone" size={14} />
           </button>
@@ -173,7 +173,7 @@ export function ConsoleView({
               className={sideButtonClass}
               onClick={onCapture}
               disabled={!canCapture || commandPending}
-              title="Screenshot (⌘S)"
+              title="Screenshot (Ctrl+S)"
             >
               <Icon name="camera" />
             </button>
@@ -182,7 +182,7 @@ export function ConsoleView({
               className={cn(sideButtonClass, isRec && "bg-red-500/15 text-red-300")}
               onClick={onRecordToggle}
               disabled={!canRecord || commandPending}
-              title="Toggle recording (⌘R)"
+              title="Record (Ctrl+R)"
             >
               <Icon name="record" />
             </button>
@@ -212,7 +212,7 @@ export function ConsoleView({
             {bonjourNeedsAttention && (
               <div className={cn("rounded-[8px] border p-2.5", bonjourToneClass)}>
                 <div className="text-[11px] font-medium">
-                  {bonjourStatus.status === "missing" ? "Bonjour is required for discovery" : "Bonjour service is not running"}
+                  {bonjourStatus.status === "missing" ? "Bonjour is not installed" : "Bonjour service isn't running"}
                 </div>
                 <p className="mt-1 text-[11px] leading-4 text-inherit/80">{bonjourStatus.detail}</p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
@@ -273,7 +273,7 @@ export function ConsoleView({
                   disabled={commandPending}
                 >
                   <Icon name="reconnect" size={12} />
-                  Retry connection
+                  Try again
                 </button>
               )}
             </div>
@@ -363,7 +363,7 @@ export function ConsoleView({
             <Icon name="camera" size={15} />
           </button>
           <div className="mx-1.5 h-4 w-px bg-white/7" />
-          <button type="button" className={controlButtonClass} onClick={onToggleFullscreen} title="Fullscreen (⌘F)">
+          <button type="button" className={controlButtonClass} onClick={onToggleFullscreen} title="Fullscreen (Ctrl+F)">
             <Icon name="fullscreen" size={15} />
           </button>
           <button
@@ -371,7 +371,7 @@ export function ConsoleView({
             className={controlButtonClass}
             onClick={() => onAdjustZoom(-1)}
             disabled={zoomIndex === 0}
-            title="Zoom out"
+            title="Zoom Out"
           >
             <Icon name="zoom-out" size={15} />
           </button>
@@ -381,7 +381,7 @@ export function ConsoleView({
             className={controlButtonClass}
             onClick={() => onAdjustZoom(1)}
             disabled={zoomIndex === zoomMaxIndex}
-            title="Zoom in"
+            title="Zoom In"
           >
             <Icon name="zoom-in" size={15} />
           </button>

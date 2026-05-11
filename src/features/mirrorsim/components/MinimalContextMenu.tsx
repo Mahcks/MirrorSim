@@ -108,7 +108,7 @@ export function MinimalContextMenu({
         }}
         disabled={!latestSavedCapture?.filePath}
       >
-        Open in Explorer
+        Show in File Explorer
       </button>
       <div className="my-1 h-px bg-white/7" />
       <button
@@ -163,7 +163,7 @@ export function MinimalContextMenu({
           onClose();
         }}
       >
-        Switch to Console View
+        Switch to Console
       </button>
       <div className="my-1 h-px bg-white/7" />
       <button

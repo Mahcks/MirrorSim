@@ -72,7 +72,7 @@ export function MinimalView({
               className={minimalFloatingButtonClass}
               onClick={onCapture}
               disabled={!canCapture || commandPending}
-              title="Screenshot (⌘S)"
+              title="Screenshot (Ctrl+S)"
             >
               <Icon name="camera" size={14} />
             </button>
@@ -81,24 +81,24 @@ export function MinimalView({
               className={`${minimalFloatingButtonClass}${isRec ? " bg-red-500/15 text-red-300 hover:bg-red-500/20" : ""}`}
               onClick={onRecordToggle}
               disabled={!canRecord || commandPending}
-              title="Toggle recording (⌘R)"
+              title="Record (Ctrl+R)"
             >
               <Icon name="record" size={14} />
             </button>
             <button type="button" className={minimalFloatingButtonClass} onClick={onRotate} title="Rotate device">
               <Icon name="rotate" size={14} />
             </button>
-            <button type="button" className={minimalFloatingButtonClass} onClick={onOpenSettings} title="Screenshot settings">
+            <button type="button" className={minimalFloatingButtonClass} onClick={onOpenSettings} title="Preferences">
               <Icon name="settings" size={14} />
             </button>
-            <button type="button" className={minimalFloatingButtonClass} onClick={onFit} title="Snap window to fit phone">
+            <button type="button" className={minimalFloatingButtonClass} onClick={onFit} title="Fit window to phone">
               <Icon name="compress" size={14} />
             </button>
             <button
               type="button"
               className="inline-flex h-7 w-7 items-center justify-center text-cyan-300 transition hover:text-white"
               onClick={onGoConsole}
-              title="Switch to Console view (⌘M)"
+              title="Switch to Console (Ctrl+M)"
             >
               <Icon name="console" size={12} />
             </button>

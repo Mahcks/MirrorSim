@@ -50,7 +50,7 @@ export function SettingsModal({
         <div className="flex items-start justify-between gap-4">
           <div>
             <h2 className="text-lg font-semibold tracking-[-0.02em] text-white">Preferences</h2>
-            <p className="mt-1 text-sm text-white/45">Control launch behavior, captures, connection defaults, and diagnostics.</p>
+            <p className="mt-1 text-sm text-white/45">Customize how MirrorSim looks, captures, and connects.</p>
           </div>
           <button
             type="button"
@@ -64,7 +64,7 @@ export function SettingsModal({
         <div className="mt-5 min-h-0 flex-1 space-y-4 overflow-y-auto pr-1">
           <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
             <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-white/35">General</div>
-            <label className="mt-3 block text-xs font-medium uppercase tracking-[0.06em] text-white/35">Launch Mode</label>
+            <label className="mt-3 block text-xs font-medium uppercase tracking-[0.06em] text-white/35">Default View</label>
             <select
               className="mt-2 w-full rounded-xl border border-white/10 bg-[#111315] px-3 py-2 text-sm text-white outline-none"
               value={appPreferences.launchMode}
@@ -83,7 +83,7 @@ export function SettingsModal({
               <option value="balanced">Balanced</option>
               <option value="speed">Fast speed</option>
             </select>
-            <p className="mt-2 text-xs text-white/35">{previewPresetDescription} Incoming AirPlay bitrate and frame rate still follow the sender stream.</p>
+            <p className="mt-2 text-xs text-white/35">{previewPresetDescription} This only affects what you see in the app — your iPhone's actual stream quality is unchanged.</p>
             <label className="mt-3 flex items-center justify-between gap-4 text-sm text-white/80">
               <span>Use solid dark window background</span>
               <input
@@ -167,7 +167,7 @@ export function SettingsModal({
           </div>
 
           <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-            <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-white/35">Disk Save</div>
+            <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-white/35">Save Location</div>
             <label className="mt-3 block text-xs font-medium uppercase tracking-[0.06em] text-white/35">Default Folder</label>
             <select
               className="mt-2 w-full rounded-xl border border-white/10 bg-[#111315] px-3 py-2 text-sm text-white outline-none"
@@ -288,16 +288,16 @@ export function SettingsModal({
                 onChange={(event) => setRecordingSetting("autoReveal", event.target.checked)}
               />
             </label>
-            <p className="mt-2 text-xs text-white/35">MirrorSim records the live preview to a WebM file with the same framing you see in the app.</p>
+            <p className="mt-2 text-xs text-white/35">Recordings capture exactly what you see in the app window.</p>
             <div className="mt-3 rounded-xl border border-white/8 bg-black/15 px-3 py-2 text-xs leading-5 text-white/55">
-              Preview quality is controlled from General. Saved screenshots always capture the full current frame, while live session bitrate and frame rate still come from the active AirPlay stream.
+              Screenshots always save the full current frame. Recording quality follows your Preview Quality setting in General.
             </div>
           </div>
 
           <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
             <div className="text-[11px] font-semibold uppercase tracking-[0.08em] text-white/35">Connection</div>
             <label className="mt-3 flex items-center justify-between gap-4 text-sm text-white/80">
-              <span>Auto-start device discovery on launch</span>
+              <span>Start searching when the app opens</span>
               <input
                 type="checkbox"
                 className="h-4 w-4 rounded border-white/15 bg-transparent"
@@ -305,7 +305,7 @@ export function SettingsModal({
                 onChange={(event) => setAppPreference("autoStartDiscovery", event.target.checked)}
               />
             </label>
-            <p className="mt-2 text-xs text-white/35">When enabled, MirrorSim immediately begins discovery if it launches idle.</p>
+            <p className="mt-2 text-xs text-white/35">MirrorSim will look for your iPhone automatically as soon as it opens.</p>
             <label className="mt-3 flex items-center justify-between gap-4 text-sm text-white/80">
               <span>Auto-reconnect after connection drops</span>
               <input
@@ -315,7 +315,7 @@ export function SettingsModal({
                 onChange={(event) => setAppPreference("autoReconnectOnDrop", event.target.checked)}
               />
             </label>
-            <p className="mt-2 text-xs text-white/35">Retries reconnect automatically with short backoff after unexpected receiver disconnects or sidecar exits.</p>
+            <p className="mt-2 text-xs text-white/35">If the connection drops unexpectedly, MirrorSim will try to reconnect on its own.</p>
           </div>
 
           <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
