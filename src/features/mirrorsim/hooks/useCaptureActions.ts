@@ -1,0 +1,417 @@
+import { useEffect, useRef, useState, type Dispatch, type SetStateAction } from "react";
+
+import { invoke } from "@tauri-apps/api/core";
+import { open } from "@tauri-apps/plugin-dialog";
+import { revealItemInDir } from "@tauri-apps/plugin-opener";
+
+import {
+  buildRecordingFileName,
+  buildScreenshotFileName,
+  fmtError,
+  uint8ArrayToBase64,
+} from "@/features/mirrorsim/helpers";
+import type {
+  AppPreferences,
+  Capture,
+  RecordingSettings,
+  SavedCaptureFile,
+  ScreenshotCaptureOverrides,
+  ScreenshotSaveLocation,
+  ScreenshotSettings,
+  SessionSnapshot,
+} from "@/features/mirrorsim/types";
+
+type UseCaptureActionsArgs = {
+  appPreferences: AppPreferences;
+  canCapture: boolean;
+  canRecord: boolean;
+  isRec: boolean;
+  recordingSettings: RecordingSettings;
+  screenshotSettings: ScreenshotSettings;
+  setCaptures: Dispatch<SetStateAction<Capture[]>>;
+  setCommandError: Dispatch<SetStateAction<string | null>>;
+  setCommandPending: Dispatch<SetStateAction<boolean>>;
+  setRecordingSettings: Dispatch<SetStateAction<RecordingSettings>>;
+  setScreenshotFlashActive: Dispatch<SetStateAction<boolean>>;
+  setScreenshotSettings: Dispatch<SetStateAction<ScreenshotSettings>>;
+  setSession: Dispatch<SetStateAction<SessionSnapshot>>;
+  videoEl: HTMLVideoElement | null;
+};
+
+export function useCaptureActions({
+  appPreferences,
+  canCapture,
+  canRecord,
+  isRec,
+  recordingSettings,
+  screenshotSettings,
+  setCaptures,
+  setCommandError,
+  setCommandPending,
+  setRecordingSettings,
+  setScreenshotFlashActive,
+  setScreenshotSettings,
+  setSession,
+  videoEl,
+}: UseCaptureActionsArgs) {
+  const [recElapsed, setRecElapsed] = useState(0);
+  const recStartRef = useRef<number | null>(null);
+  const recordingStreamRef = useRef<MediaStream | null>(null);
+  const recordingChunksRef = useRef<Blob[]>([]);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+
+  useEffect(() => {
+    if (!isRec) {
+      recStartRef.current = null;
+      setRecElapsed(0);
+      return;
+    }
+
+    if (recStartRef.current === null) {
+      recStartRef.current = Date.now();
+    }
+
+    const startedAt = recStartRef.current;
+    const intervalId = window.setInterval(() => setRecElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    return () => window.clearInterval(intervalId);
+  }, [isRec]);
+
+  async function captureVideoFrameBlob(): Promise<Blob> {
+    if (!videoEl || videoEl.readyState < 2 || videoEl.videoWidth === 0 || videoEl.videoHeight === 0) {
+      throw new Error("Live preview is not ready for screenshots yet.");
+    }
+
+    const canvas = document.createElement("canvas");
+    canvas.width = videoEl.videoWidth;
+    canvas.height = videoEl.videoHeight;
+
+    const context = canvas.getContext("2d");
+    if (!context) {
+      throw new Error("Could not create screenshot canvas.");
+    }
+
+    context.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, "image/png");
+    });
+
+    if (!blob) {
+      throw new Error("Could not encode screenshot image.");
+    }
+
+    return blob;
+  }
+
+  async function copyScreenshotToClipboard(blob: Blob) {
+    const ClipboardItemCtor = window.ClipboardItem;
+    if (!navigator.clipboard?.write || !ClipboardItemCtor) {
+      throw new Error("Image clipboard is not available in this environment.");
+    }
+
+    await navigator.clipboard.write([
+      new ClipboardItemCtor({
+        [blob.type]: blob,
+      }),
+    ]);
+  }
+
+  async function saveScreenshotToDisk(
+    blob: Blob,
+    fileName: string,
+    location: ScreenshotSaveLocation,
+    customDirectory?: string,
+  ) {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const pngBase64 = uint8ArrayToBase64(bytes);
+
+    return invoke<SavedCaptureFile>("save_screenshot", {
+      request: {
+        fileName,
+        pngBase64,
+        location,
+        customDirectory: location === "custom" ? customDirectory ?? null : null,
+      },
+    });
+  }
+
+  async function saveRecordingToDisk(
+    blob: Blob,
+    fileName: string,
+    location: ScreenshotSaveLocation,
+    customDirectory?: string,
+  ) {
+    const bytes = new Uint8Array(await blob.arrayBuffer());
+    const mediaBase64 = uint8ArrayToBase64(bytes);
+
+    return invoke<SavedCaptureFile>("save_recording", {
+      request: {
+        fileName,
+        mediaBase64,
+        location,
+        customDirectory: location === "custom" ? customDirectory ?? null : null,
+      },
+    });
+  }
+
+  async function chooseScreenshotFolder() {
+    const selection = await open({
+      directory: true,
+      multiple: false,
+      defaultPath: screenshotSettings.customSavePath || undefined,
+      title: "Choose Screenshot Folder",
+    });
+
+    if (typeof selection !== "string") {
+      return;
+    }
+
+    setScreenshotSettings((previous) => ({
+      ...previous,
+      saveLocation: "custom",
+      customSavePath: selection,
+    }));
+    setCommandError(null);
+  }
+
+  async function chooseRecordingFolder() {
+    const selection = await open({
+      directory: true,
+      multiple: false,
+      defaultPath: recordingSettings.customSavePath || undefined,
+      title: "Choose Recording Folder",
+    });
+
+    if (typeof selection !== "string") {
+      return;
+    }
+
+    setRecordingSettings((previous) => ({
+      ...previous,
+      saveLocation: "custom",
+      customSavePath: selection,
+    }));
+    setCommandError(null);
+  }
+
+  function getRecordingMimeType() {
+    const candidates = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+
+    for (const candidate of candidates) {
+      if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(candidate)) {
+        return candidate;
+      }
+    }
+
+    return "";
+  }
+
+  async function startLocalRecording() {
+    if (!videoEl || videoEl.readyState < 2 || videoEl.videoWidth === 0 || videoEl.videoHeight === 0) {
+      throw new Error("Live preview is not ready for recording yet.");
+    }
+
+    if (typeof MediaRecorder === "undefined") {
+      throw new Error("Recording is not available in this environment.");
+    }
+
+    const previewVideo = videoEl as HTMLVideoElement & { captureStream?: () => MediaStream };
+    const previewCaptureStream = typeof previewVideo.captureStream === "function" ? previewVideo.captureStream() : null;
+    if (!previewCaptureStream) {
+      throw new Error("The preview surface cannot be captured for recording here.");
+    }
+
+    const mimeType = getRecordingMimeType();
+    const mediaRecorder = mimeType
+      ? new MediaRecorder(previewCaptureStream, { mimeType })
+      : new MediaRecorder(previewCaptureStream);
+
+    recordingChunksRef.current = [];
+    mediaRecorder.addEventListener("dataavailable", (event) => {
+      if (event.data.size > 0) {
+        recordingChunksRef.current.push(event.data);
+      }
+    });
+
+    mediaRecorder.start(1000);
+    mediaRecorderRef.current = mediaRecorder;
+    recordingStreamRef.current = previewCaptureStream;
+  }
+
+  async function stopLocalRecording() {
+    const mediaRecorder = mediaRecorderRef.current;
+    if (!mediaRecorder) {
+      throw new Error("Recording was not started in the preview surface.");
+    }
+
+    const stoppedBlob = await new Promise<Blob>((resolve, reject) => {
+      const handleStop = () => {
+        cleanup();
+        resolve(new Blob(recordingChunksRef.current, { type: mediaRecorder.mimeType || "video/webm" }));
+      };
+      const handleError = () => {
+        cleanup();
+        reject(new Error("The recording session failed to finalize."));
+      };
+      const cleanup = () => {
+        mediaRecorder.removeEventListener("stop", handleStop);
+        mediaRecorder.removeEventListener("error", handleError);
+      };
+
+      mediaRecorder.addEventListener("stop", handleStop, { once: true });
+      mediaRecorder.addEventListener("error", handleError, { once: true });
+      mediaRecorder.stop();
+    });
+
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    recordingStreamRef.current = null;
+    mediaRecorderRef.current = null;
+
+    return stoppedBlob;
+  }
+
+  async function revealCaptureInExplorer(capture: Capture | undefined) {
+    if (!capture?.filePath) {
+      throw new Error("There is no saved screenshot to reveal yet.");
+    }
+
+    await revealItemInDir(capture.filePath);
+  }
+
+  async function doCapture(overrides: ScreenshotCaptureOverrides = {}) {
+    if (!canCapture) {
+      return;
+    }
+
+    const captureSettings: ScreenshotSettings = {
+      ...screenshotSettings,
+      ...overrides,
+    };
+
+    if (!captureSettings.saveToDisk && !captureSettings.copyToClipboard) {
+      setCommandError("Enable disk save or clipboard copy in Screenshot Settings first.");
+      return;
+    }
+
+    if (captureSettings.saveToDisk && captureSettings.saveLocation === "custom" && !captureSettings.customSavePath.trim()) {
+      setCommandError("Enter a custom screenshot folder before using the custom save location.");
+      return;
+    }
+
+    setCommandPending(true);
+    setCommandError(null);
+
+    try {
+      const now = new Date();
+      const fileName = buildScreenshotFileName(captureSettings, now);
+      const screenshotBlob = await captureVideoFrameBlob();
+      let savedScreenshot: SavedCaptureFile | null = null;
+
+      if (captureSettings.saveToDisk) {
+        savedScreenshot = await saveScreenshotToDisk(
+          screenshotBlob,
+          fileName,
+          captureSettings.saveLocation,
+          captureSettings.customSavePath,
+        );
+      }
+
+      if (captureSettings.copyToClipboard) {
+        await copyScreenshotToClipboard(screenshotBlob);
+      }
+
+      setSession(await invoke<SessionSnapshot>("take_screenshot"));
+      if (appPreferences.screenshotFlashEnabled) {
+        setScreenshotFlashActive(true);
+      }
+
+      if (savedScreenshot?.filePath && appPreferences.autoRevealSavedCaptures) {
+        await revealItemInDir(savedScreenshot.filePath);
+      }
+
+      setCaptures((previous) => [
+        ...previous,
+        {
+          id: crypto.randomUUID(),
+          type: "screenshot",
+          name: savedScreenshot?.fileName ?? fileName,
+          addedAt: Date.now(),
+          filePath: savedScreenshot?.filePath,
+        },
+      ]);
+    } catch (error) {
+      setCommandError(fmtError(error));
+    } finally {
+      setCommandPending(false);
+    }
+  }
+
+  async function doRecordToggle() {
+    if (!canRecord) {
+      return;
+    }
+
+    setCommandPending(true);
+    setCommandError(null);
+
+    try {
+      if (isRec) {
+        const elapsed = recElapsed;
+        const recordedBlob = await stopLocalRecording();
+        setSession(await invoke<SessionSnapshot>("stop_recording"));
+
+        const now = new Date();
+        const fileName = buildRecordingFileName(recordingSettings, now);
+        const savedRecording = await saveRecordingToDisk(
+          recordedBlob,
+          fileName,
+          recordingSettings.saveLocation,
+          recordingSettings.customSavePath,
+        );
+
+        if (recordingSettings.autoReveal || appPreferences.autoRevealSavedCaptures) {
+          await revealItemInDir(savedRecording.filePath);
+        }
+
+        setCaptures((previous) => [
+          ...previous,
+          {
+            id: crypto.randomUUID(),
+            type: "recording",
+            name: savedRecording.fileName,
+            duration: elapsed,
+            addedAt: Date.now(),
+            filePath: savedRecording.filePath,
+          },
+        ]);
+      } else {
+        if (recordingSettings.saveLocation === "custom" && !recordingSettings.customSavePath.trim()) {
+          throw new Error("Choose a recording folder before saving to a custom location.");
+        }
+
+        await startLocalRecording();
+        setSession(await invoke<SessionSnapshot>("start_recording"));
+      }
+    } catch (error) {
+      if (!isRec && mediaRecorderRef.current) {
+        mediaRecorderRef.current.stop();
+      }
+      recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+      recordingStreamRef.current = null;
+      mediaRecorderRef.current = null;
+      recordingChunksRef.current = [];
+      setCommandError(fmtError(error));
+    } finally {
+      setCommandPending(false);
+    }
+  }
+
+  return {
+    recElapsed,
+    chooseScreenshotFolder,
+    chooseRecordingFolder,
+    revealCaptureInExplorer,
+    doCapture,
+    doRecordToggle,
+  };
+}

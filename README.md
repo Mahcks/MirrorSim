@@ -15,7 +15,7 @@ It is intended for demos, product previews, app capture, QA, and content creatio
 - Clean Apple-style device presentation
 - Pixel-perfect screenshots
 - Local recording to `.webm`
-- Adjustable quality and scaling presets
+- Adjustable preview quality and scaling presets
 - Built-in diagnostics when sessions misbehave
 
 ---
@@ -96,11 +96,13 @@ You can change the save location in the app preferences.
 
 ## Quality Presets
 
-| Preset | FPS | Scaling | Best for |
-|--------|-----|---------|----------|
-| Good quality | 30 | Lanczos | Sharper image on slower systems |
-| Balanced | 60 | Bilinear | Default everyday mode |
-| Fast speed | 60 | Nearest-neighbor | Lowest latency |
+MirrorSim exposes these as preview presets in Preferences. They tune the desktop preview surface and how aggressively the app catches up to the live edge. The underlying AirPlay bitrate and frame rate still come from the sender stream.
+
+| Preset | Preview tuning | Scaling | Best for |
+|--------|----------------|---------|----------|
+| Good quality | Slightly deeper live buffer for steadier playback | Smooth filtering | Sharper image during demos or review |
+| Balanced | Default catch-up behavior | Smooth filtering | Everyday use |
+| Fast speed | Most aggressive live-edge catch-up | Nearest-neighbor | Lowest-latency preview on slower systems |
 
 ---
 
@@ -148,7 +150,7 @@ Use the `*:fetch` release commands when you want local release validation to use
 - `release:portable` builds `release/portable/MirrorSim-portable-v<version>.zip`
 - `release:all` builds both installer and portable outputs
 
-This repo is pinned to Rust `1.88.0` for release builds.
+Normal development uses your installed stable Rust toolchain. Release packaging is still pinned to Rust `1.88.0` through the release script and CI.
 
 For GitHub Releases, `.github/workflows/release.yml` expects `receivers/runtime-manifest.json` to point at a real downloadable runtime zip and checksum.
 

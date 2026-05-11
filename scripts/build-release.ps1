@@ -8,6 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+$releaseRustToolchain = '1.88.0-x86_64-pc-windows-msvc'
 $packageJsonPath = Join-Path $repoRoot 'package.json'
 $packageJson = Get-Content -Raw $packageJsonPath | ConvertFrom-Json
 $version = $packageJson.version
@@ -27,11 +28,22 @@ $receiverBundle = Join-Path $repoRoot 'receivers\AirPlayServer'
 function Invoke-Step {
   param(
     [string]$Command,
-    [string]$WorkingDirectory = $repoRoot
+    [string]$WorkingDirectory = $repoRoot,
+    [string]$RustToolchain
   )
 
   Push-Location $WorkingDirectory
   try {
+    $previousRustToolchain = $null
+    $hadRustToolchain = Test-Path Env:RUSTUP_TOOLCHAIN
+    if ($hadRustToolchain) {
+      $previousRustToolchain = $env:RUSTUP_TOOLCHAIN
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($RustToolchain)) {
+      $env:RUSTUP_TOOLCHAIN = $RustToolchain
+    }
+
     Write-Host "> $Command"
     Invoke-Expression $Command
     if ($LASTEXITCODE -ne 0) {
@@ -39,6 +51,15 @@ function Invoke-Step {
     }
   }
   finally {
+    if (-not [string]::IsNullOrWhiteSpace($RustToolchain)) {
+      if ($hadRustToolchain) {
+        $env:RUSTUP_TOOLCHAIN = $previousRustToolchain
+      }
+      else {
+        Remove-Item Env:RUSTUP_TOOLCHAIN -ErrorAction SilentlyContinue
+      }
+    }
+
     Pop-Location
   }
 }
@@ -55,11 +76,11 @@ function Invoke-Prep {
 }
 
 function Invoke-InstallerBuild {
-  Invoke-Step 'bunx tauri build --bundles nsis,msi'
+  Invoke-Step 'bunx tauri build --bundles nsis,msi' -RustToolchain $releaseRustToolchain
 }
 
 function Invoke-PortableBuild {
-  Invoke-Step 'bunx tauri build --no-bundle'
+  Invoke-Step 'bunx tauri build --no-bundle' -RustToolchain $releaseRustToolchain
 
   if (-not (Test-Path $releaseExe)) {
     throw "Release executable not found: $releaseExe"
@@ -122,4 +143,4 @@ switch ($Target) {
   }
 }
 
-Write-Host "Release target '$Target' completed using runtime source '$RuntimeSource'."
+Write-Host "Release target '$Target' completed using runtime source '$RuntimeSource' and Rust toolchain '$releaseRustToolchain' for packaging steps."
