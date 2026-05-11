@@ -122,6 +122,7 @@ export type VideoElementDiag = {
   videoHeight: number;
   totalVideoFrames: number;
   droppedVideoFrames: number;
+  playbackRate: number;
 };
 
 export type Capture = {

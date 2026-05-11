@@ -51,22 +51,22 @@ export const PREVIEW_QUALITY_PRESETS: Record<
     description: "Sharper scaling with a slightly deeper playback buffer.",
     imageRendering: "auto",
     filter: "saturate(1.02) contrast(1.02)",
-    catchupLeadSeconds: 0.95,
-    catchupTargetOffsetSeconds: 0.22,
+    catchupLeadSeconds: 0.45,
+    catchupTargetOffsetSeconds: 0.08,
   },
   balanced: {
     label: "Balanced",
     description: "Default live preview tuning for everyday use.",
     imageRendering: "auto",
-    catchupLeadSeconds: 0.75,
-    catchupTargetOffsetSeconds: 0.12,
+    catchupLeadSeconds: 0.35,
+    catchupTargetOffsetSeconds: 0.06,
   },
   speed: {
     label: "Fast speed",
     description: "More aggressive live-edge catch-up with crisp nearest-neighbor scaling.",
     imageRendering: "pixelated",
-    catchupLeadSeconds: 0.45,
-    catchupTargetOffsetSeconds: 0.05,
+    catchupLeadSeconds: 0.25,
+    catchupTargetOffsetSeconds: 0.04,
   },
 };
 

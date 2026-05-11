@@ -31,7 +31,7 @@ type DeviceFrameProps = {
   onContextMenu?: MouseEventHandler<HTMLDivElement>;
   onDoubleClick?: MouseEventHandler<HTMLDivElement>;
   onWheel?: WheelEventHandler<HTMLDivElement>;
-  setVideoEl: (element: HTMLVideoElement | null) => void;
+  setVideoHost: (element: HTMLDivElement | null) => void;
 };
 
 export function DeviceFrame({
@@ -59,7 +59,7 @@ export function DeviceFrame({
   onContextMenu,
   onDoubleClick,
   onWheel,
-  setVideoEl,
+  setVideoHost,
 }: DeviceFrameProps) {
   return (
     <div
@@ -106,15 +106,11 @@ export function DeviceFrame({
             {!isLive && (
               <div className="absolute inset-0 bg-[radial-gradient(ellipse_70%_40%_at_50%_22%,rgba(57,208,255,0.055),transparent),linear-gradient(180deg,#060709_0%,#08090d_55%,#060708_100%)]" />
             )}
-            <div className="absolute inset-0 overflow-hidden rounded-inherit">
-              <video
-                ref={setVideoEl}
-                className={cn("h-full w-full object-cover transition-opacity", previewDimClass)}
-                style={previewVideoStyle}
-                muted
-                playsInline
-              />
-            </div>
+            <div
+              ref={setVideoHost}
+              className={cn("absolute inset-0 overflow-hidden rounded-inherit transition-opacity", previewDimClass)}
+              style={previewVideoStyle}
+            />
             {tone !== "live" ? (
               <div
                 className={cn(

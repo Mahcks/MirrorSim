@@ -13,7 +13,7 @@ use crate::runtime::{
     bonjour_blocking_message, emit_pairing_status, emit_preview_diagnostics, emit_receiver_runtime,
     emit_runtime_error, emit_session_status, emit_state_updates, ensure_bonjour_ready,
     ensure_sidecar_runtime, query_bonjour_status, resolve_capture_directory, send_sidecar_command,
-    AppState,
+    stop_sidecar_runtime, AppState,
 };
 use crate::sidecar::ReceiverSidecarSpec;
 use crate::state::{
@@ -36,6 +36,15 @@ use std::process::Command;
 use tauri::{AppHandle, State};
 use tauri_plugin_updater::UpdaterExt;
 use url::Url;
+
+const KEYFRAME_REQUEST_CAPABILITY: &str = "keyframe-request";
+const NATIVE_RECEIVER_CAPABILITY: &str = "native-receiver-process";
+
+fn receiver_supports_keyframe_request(capabilities: &[String]) -> bool {
+    capabilities.iter().any(|capability| {
+        capability == KEYFRAME_REQUEST_CAPABILITY || capability == NATIVE_RECEIVER_CAPABILITY
+    })
+}
 
 fn ensure_updater_is_configured() -> CommandResult<()> {
     if !updater_is_configured() {
@@ -397,11 +406,7 @@ pub(crate) fn reconnect_session(
         );
     }
 
-    let sidecar_was_running = state
-        .sidecar
-        .lock()
-        .map_err(|error| error.to_string())?
-        .is_some();
+    stop_sidecar_runtime(&state.sidecar);
     let (trusted_device_ids, blocked_device_ids) = pairing_device_policy(&app)?;
 
     let (
@@ -427,13 +432,8 @@ pub(crate) fn reconnect_session(
         reset_preview(&mut guard);
         prepare_live_transport(&mut guard, stream_id.clone());
 
-        if sidecar_was_running {
-            guard.snapshot.status = SessionStatus::Connecting;
-            set_receiver_runtime_state(&mut guard, crate::models::ReceiverRuntimeState::Ready);
-        } else {
-            guard.snapshot.status = SessionStatus::Discovering;
-            set_receiver_runtime_state(&mut guard, crate::models::ReceiverRuntimeState::Priming);
-        }
+        guard.snapshot.status = SessionStatus::Discovering;
+        set_receiver_runtime_state(&mut guard, crate::models::ReceiverRuntimeState::Priming);
 
         (
             guard.snapshot.clone(),
@@ -719,11 +719,8 @@ pub(crate) fn confirm_pairing_trust(
                 .receiver_capabilities
                 .iter()
                 .any(|capability| capability == "pairing-trust-control");
-            let should_request_keyframe = guard
-                .snapshot
-                .receiver_capabilities
-                .iter()
-                .any(|capability| capability == "keyframe-request");
+            let should_request_keyframe =
+                receiver_supports_keyframe_request(&guard.snapshot.receiver_capabilities);
             let session_id = guard.active_session_id.clone();
             let stream_id = guard.receiver_runtime.stream_id.clone();
 

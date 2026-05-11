@@ -1,174 +1,276 @@
 # MirrorSim
 
-MirrorSim is a Windows app for live iPhone screen mirroring over AirPlay. It gives you a polished device frame, fast low-latency preview, screenshots, recordings, and a presentation-friendly floating mode without needing a cable.
+MirrorSim is a Windows app for mirroring an iPhone over AirPlay in a clean, presentation-ready device frame. It is built for demos, QA, product screenshots, app walkthroughs, and quick screen recordings without plugging in a cable.
 
-It is intended for demos, product previews, app capture, QA, and content creation on Windows.
+It gives you a focused iPhone preview instead of a noisy receiver window: Minimal mode for floating over your desktop, Console mode for diagnostics and controls, screenshots, local recording, trusted-device handling, auto-rotation, and live preview tuning.
 
-> MirrorSim uses a bundled AirPlay receiver runtime built on top of [AirPlayServer by xenos1337](https://github.com/xenos1337/AirPlayServer). MirrorSim provides the desktop shell, controls, capture tools, and packaging around that receiver layer.
+> MirrorSim includes a bundled AirPlay receiver runtime built from a fork of [AirPlayServer by xenos1337](https://github.com/xenos1337/AirPlayServer). MirrorSim provides the desktop app, UI, capture tools, diagnostics, and release packaging around that receiver layer.
 
 ---
 
 ## Highlights
 
-- Live iPhone mirroring over Wi-Fi
-- Minimal and Console viewing modes
-- Clean Apple-style device presentation
-- Pixel-perfect screenshots
-- Local recording to `.webm`
-- Adjustable preview quality and scaling presets
-- Built-in diagnostics when sessions misbehave
+- Live iPhone screen mirroring over Wi-Fi
+- Minimal floating device-frame mode for demos and recordings
+- Console mode with connection state, diagnostics, capture history, and controls
+- Portrait and landscape framing with automatic orientation updates
+- Screenshots to disk and/or clipboard
+- Local `.webm` screen recordings from the preview surface
+- Adjustable preview quality and live-edge catch-up presets
+- Trusted-device preferences and receiver access controls
+- Bonjour readiness checks and helpful troubleshooting actions
 
 ---
 
-## Install MirrorSim
+## Requirements
 
-MirrorSim supports two release formats:
-
-- **Installer**: best for most users
-- **Portable zip**: extract and run anywhere you want
-
-### Requirements
-
-- Windows 10 or later (x64)
+- Windows 10 or later, x64
 - [Bonjour for Windows](https://support.apple.com/kb/DL999)
 - iPhone and PC on the same Wi-Fi network
+- Windows Firewall allowing MirrorSim on the network you are using
+
+MirrorSim bundles its AirPlay receiver runtime in release builds. You do not need to install a separate receiver package.
+
+---
+
+## Install
+
+MirrorSim ships in two formats:
+
+- **Installer**: best for most users. Installs MirrorSim like a normal desktop app.
+- **Portable zip**: extract and run without a full install.
+
+Download the latest release from:
+
+```text
+https://github.com/Mahcks/MirrorSim/releases/latest
+```
 
 ### Installer
 
-1. Download the latest installer from the release page.
+1. Download the latest MirrorSim installer.
 2. Run the installer.
-3. Install Bonjour if prompted or if your device does not appear.
+3. Install Bonjour for Windows if your iPhone cannot discover MirrorSim.
 4. Launch MirrorSim from Start or the desktop shortcut.
 
 ### Portable
 
 1. Download the latest portable zip.
-2. Extract it to any folder.
-3. Install Bonjour if needed.
-4. Run `MirrorSim.exe`.
-
-MirrorSim bundles the receiver runtime inside both installer and portable releases. End users do not need to install a separate AirPlay receiver package.
+2. Extract it to a folder you control.
+3. Run `MirrorSim.exe`.
+4. Install Bonjour for Windows if your iPhone cannot discover MirrorSim.
 
 ---
 
 ## Use MirrorSim
 
 1. Launch MirrorSim.
-2. On your iPhone, open Control Center.
-3. Tap **Screen Mirroring**.
-4. Select your Windows PC.
-5. MirrorSim will open the live session inside its device frame.
+2. Click **Start**.
+3. On your iPhone, open Control Center.
+4. Tap **Screen Mirroring**.
+5. Choose the receiver name shown in MirrorSim, usually `MirrorSim`.
+6. Approve the pairing/trust prompt if MirrorSim asks for it.
 
----
-
-## Keyboard Shortcuts
-
-| Key | Action |
-|-----|--------|
-| `Ctrl+S` | Take screenshot |
-| `Ctrl+R` | Toggle recording |
-| `Ctrl+F` / `F` | Toggle fullscreen |
-| `Ctrl+M` | Toggle UI mode |
-| Double-click the device | Toggle fullscreen |
-| `F1` | Toggle diagnostics; switches to Console mode if needed |
-| `H` | Hide or show the Minimal mode toolbar |
-| `Esc` | Close Preferences or the context menu |
+The live iPhone preview appears inside the device frame. Use Minimal mode when you want the clean floating overlay, or Console mode when you want diagnostics, settings, and capture history visible.
 
 ---
 
 ## Modes
 
-**Console mode** gives you controls, connection state, capture history, and diagnostics.
+**Minimal mode** is the showcase view: just the device frame, a compact title bar, and quick controls for capture, recording, rotation, preferences, and switching back to Console.
 
-**Minimal mode** strips the app down to the framed device and a lightweight header so it works well during demos, recording, or presentations.
+**Console mode** is the control room: connection status, Bonjour state, diagnostics, capture history, recording controls, trusted devices, and troubleshooting tools.
 
 ---
 
 ## Captures
 
-By default, captures are saved under `Pictures/MirrorSim/`.
+By default, captures are saved under:
+
+```text
+Pictures/MirrorSim/
+```
+
+Default filenames:
 
 - Screenshots: `mirrorsim_screenshot_YYYYMMDD_HHMMSS.png`
 - Recordings: `mirrorsim_recording_YYYYMMDD_HHMMSS.webm`
 
-You can change the save location in the app preferences.
+Preferences let you choose whether screenshots save to disk, copy to clipboard, or both. You can also change the screenshot and recording folders.
 
 ---
 
-## Quality Presets
+## Keyboard Shortcuts
 
-MirrorSim exposes these as preview presets in Preferences. They tune the desktop preview surface and how aggressively the app catches up to the live edge. The underlying AirPlay bitrate and frame rate still come from the sender stream.
+| Shortcut | Action |
+| --- | --- |
+| `Ctrl+S` | Take screenshot |
+| `Ctrl+R` | Toggle recording |
+| `Ctrl+F` or `F` | Toggle fullscreen |
+| `Ctrl+M` | Toggle Console/Minimal mode |
+| Double-click the device | Toggle fullscreen |
+| `F1` | Toggle diagnostics, switching to Console mode if needed |
+| `H` | Hide or show the Minimal mode toolbar |
+| `Esc` | Close Preferences or the context menu |
 
-| Preset | Preview tuning | Scaling | Best for |
-|--------|----------------|---------|----------|
-| Good quality | Slightly deeper live buffer for steadier playback | Smooth filtering | Sharper image during demos or review |
-| Balanced | Default catch-up behavior | Smooth filtering | Everyday use |
-| Fast speed | Most aggressive live-edge catch-up | Nearest-neighbor | Lowest-latency preview on slower systems |
+---
+
+## Preview Presets
+
+Preview presets tune the desktop playback surface. They do not change the iPhone's AirPlay stream quality directly; they adjust scaling and how aggressively MirrorSim catches up to the live edge after small stalls or sleep/wake hiccups.
+
+| Preset | Best for | Behavior |
+| --- | --- | --- |
+| Good quality | Demos and review | Smooth scaling with a slightly steadier preview |
+| Balanced | Everyday use | A practical balance between clarity and latency |
+| Fast speed | Lowest latency | More aggressive live-edge catch-up and pixelated scaling |
+
+---
+
+## Current Limitations
+
+MirrorSim is focused on screen mirroring.
+
+- **System audio capture/playback is not currently included. It's actively being worked on**
+- DRM-protected video playback is not supported.
+- AirPlay discovery depends on Bonjour and local network/firewall conditions.
+- Sleep/wake and reconnect behavior depends partly on how iOS resumes the AirPlay sender session.
 
 ---
 
 ## Troubleshooting
 
-### iPhone does not see your PC
+### iPhone does not see MirrorSim
 
-- Make sure Bonjour is installed and the Bonjour Service is running.
-- Make sure both devices are on the same network.
+- Install Bonjour for Windows.
+- Make sure the Bonjour Service is running.
+- Put the iPhone and PC on the same Wi-Fi network.
 - Allow MirrorSim through Windows Firewall on private networks.
+- Avoid VPNs, proxies, or VM/NAT networking while testing discovery.
 
-MirrorSim will warn you in the session panel if Bonjour is missing or if the Bonjour Service is stopped, and it can open the installer link or Windows Services directly.
+MirrorSim can show Bonjour status in-app and can open the Bonjour download, Windows Services, and Windows Firewall pages for you.
 
-### Session connects but stays blank
+### Session connects but stays blank or gets delayed
 
-- Disable VPNs or proxies temporarily.
-- Avoid NAT networking if you are using a VM.
-- Open diagnostics in MirrorSim to inspect session state and runtime issues.
+- Open Console mode and expand diagnostics.
+- Watch `Buffer`, `Rate`, `Dropped`, `Queued`, `Init`, `Appended`, and `Last error`.
+- Try the **Fast speed** preset for lower latency.
+- Disconnect and reconnect the iPhone from Control Center if iOS resumes from sleep in a bad state.
+- Restart MirrorSim if the native receiver runtime has been left running from an older dev build.
+
+### Screenshots or recording are not available
+
+The preview must be live and decodable before capture works. If MirrorSim says the live preview is not ready, wait for the iPhone frame to appear or reconnect the session.
 
 ---
 
-## For Maintainers
+## Development
 
-If you are building releases yourself:
+Install dependencies:
+
+```powershell
+bun install
+```
+
+Run the frontend only:
+
+```powershell
+bun run dev
+```
+
+Run the Tauri desktop app:
+
+```powershell
+bun run tauri dev
+```
+
+Build the frontend:
+
+```powershell
+bun run build
+```
+
+Run Rust tests:
+
+```powershell
+cargo test --manifest-path src-tauri\Cargo.toml
+```
+
+### AirPlay Runtime
+
+MirrorSim expects the receiver runtime under:
+
+```text
+receivers/AirPlayServer/
+```
+
+Use the published runtime bundle:
 
 ```powershell
 bun run fetch:airplay-runtime
+```
+
+Use a local sibling AirPlayServer build:
+
+```powershell
 bun run sync:airplay-runtime
+```
+
+`sync:airplay-runtime` looks for a sibling checkout at `..\AirPlayServer` and copies the built `MirrorSimAdapter.exe` plus required DLLs into MirrorSim.
+
+Important: commands ending in `:fetch` download the runtime declared in `receivers/runtime-manifest.json`. Use those when you want to validate the published runtime. Do not use `:fetch` when you are trying to test local changes in the sibling AirPlayServer fork.
+
+---
+
+## Release Builds
+
+Release packaging is driven by `scripts/build-release.ps1`.
+
+```powershell
 bun run release:prep
-bun run release:prep:fetch
 bun run release:installer
-bun run release:installer:fetch
 bun run release:portable
-bun run release:portable:fetch
 bun run release:all
+```
+
+Published-runtime variants:
+
+```powershell
+bun run release:prep:fetch
+bun run release:installer:fetch
+bun run release:portable:fetch
 bun run release:all:fetch
 ```
 
-Use `bun run fetch:airplay-runtime` when you want MirrorSim to download the versioned runtime bundle declared in `receivers/runtime-manifest.json`.
-Use `bun run sync:airplay-runtime` when you have a local sibling AirPlayServer build and want to copy it in directly.
-Use the `*:fetch` release commands when you want local release validation to use the published runtime bundle instead of your sibling AirPlayServer checkout.
+Release packaging uses Rust `1.88.0-x86_64-pc-windows-msvc` through the release script and CI. Normal local development can use your installed stable Rust toolchain.
 
-Updater-enabled release builds require these environment variables:
+Updater-enabled release builds require:
 
-- `TAURI_SIGNING_PRIVATE_KEY`: the private key used to sign Windows updater artifacts
-- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`: optional password for the private key
+- `TAURI_SIGNING_PRIVATE_KEY`
+- `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, if your key has a password
 
-- `release:prep` syncs the bundled receiver runtime and builds the frontend
-- `release:installer` builds installer artifacts through Tauri
-- `release:portable` builds `release/portable/MirrorSim-portable-v<version>.zip`
-- `release:all` builds both installer and portable outputs
+The GitHub release workflow expects `receivers/runtime-manifest.json` to point at a downloadable AirPlay runtime zip with a matching SHA-256 checksum. The workflow also publishes `release/latest.json` for Tauri updater checks.
 
-Normal development uses your installed stable Rust toolchain. Release packaging is still pinned to Rust `1.88.0` through the release script and CI.
+---
 
-For GitHub Releases, `.github/workflows/release.yml` expects `receivers/runtime-manifest.json` to point at a real downloadable runtime zip and checksum, and it now publishes `release/latest.json` for launch-time updater checks.
+## Tech Stack
+
+- Tauri 2
+- Rust
+- React
+- TypeScript
+- Tailwind CSS
+- Bundled native AirPlay receiver runtime
 
 ---
 
 ## Credits
 
-MirrorSim depends on the work of the AirPlay reverse-engineering community.
+MirrorSim depends on work from the AirPlay reverse-engineering and open-source desktop media communities.
 
 - [AirPlayServer](https://github.com/xenos1337/AirPlayServer) by xenos1337
 - [airplay2-win](https://github.com/fingergit/airplay2-win) by fingergit
-- Bonjour, FFmpeg, SDL2, and related upstream libraries used by the bundled receiver runtime
+- Bonjour, FFmpeg, SDL2, and related libraries used by the bundled receiver runtime
 
 MirrorSim itself is licensed under MIT. The bundled AirPlay receiver runtime includes separate third-party license terms in `LICENSES/AirPlayServer-LICENSE`.
 

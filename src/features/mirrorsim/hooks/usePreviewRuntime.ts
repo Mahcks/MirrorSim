@@ -1,4 +1,4 @@
-import { useEffect, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
+import { useCallback, useEffect, useRef, useState, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -88,11 +88,34 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
     videoHeight: 0,
     totalVideoFrames: 0,
     droppedVideoFrames: 0,
+    playbackRate: 1,
   });
   const [surfaceStatus, setSurfaceStatus] = useState<MockPreviewStreamStatus>("loading");
   const [surfaceError, setSurfaceError] = useState<string | null>(null);
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
+  const persistentVideoRef = useRef<HTMLVideoElement | null>(null);
   const isLive = session.status === "mirroring" || session.status === "recording";
+
+  const setVideoHost = useCallback((host: HTMLDivElement | null) => {
+    if (!host) {
+      return;
+    }
+
+    let video = persistentVideoRef.current;
+    if (!video) {
+      video = document.createElement("video");
+      video.className = "h-full w-full object-cover";
+      video.muted = true;
+      video.playsInline = true;
+      video.preload = "auto";
+      persistentVideoRef.current = video;
+      setVideoEl(video);
+    }
+
+    if (video.parentElement !== host) {
+      host.appendChild(video);
+    }
+  }, []);
 
   useEffect(() => {
     let alive = true;
@@ -187,6 +210,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
       videoHeight: 0,
       totalVideoFrames: 0,
       droppedVideoFrames: 0,
+      playbackRate: 1,
     });
   }, [previewStream?.streamId]);
 
@@ -223,6 +247,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
         videoHeight: videoEl.videoHeight,
         totalVideoFrames: quality?.totalVideoFrames ?? 0,
         droppedVideoFrames: quality?.droppedVideoFrames ?? 0,
+        playbackRate: videoEl.playbackRate,
       });
     };
 
@@ -250,19 +275,39 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
 
   useEffect(() => {
     if (!videoEl || !isLive || surfaceStatus !== "ready") {
+      if (videoEl && videoEl.playbackRate !== 1) {
+        videoEl.playbackRate = 1;
+      }
       return;
     }
 
     const lead = videoDiag.bufferedEnd - videoDiag.currentTime;
-    if (!(!videoDiag.paused && lead > previewPreset.catchupLeadSeconds && videoDiag.readyState >= 2)) {
+    if (videoDiag.paused || videoDiag.readyState < 2) {
+      if (videoEl.playbackRate !== 1) {
+        videoEl.playbackRate = 1;
+      }
       return;
     }
 
-    const edge = Math.max(0, videoDiag.bufferedEnd - previewPreset.catchupTargetOffsetSeconds);
-    if (edge <= videoDiag.currentTime + 0.2) {
+    const targetLead = previewPreset.catchupTargetOffsetSeconds;
+    const softCatchupRate = lead > previewPreset.catchupLeadSeconds ? 1.25 : 1;
+    const mediumCatchupRate = lead > Math.max(0.9, previewPreset.catchupLeadSeconds * 2) ? 1.5 : softCatchupRate;
+    const catchupRate = lead > Math.max(1.8, previewPreset.catchupLeadSeconds * 4) ? 1.75 : mediumCatchupRate;
+    const settledRate = lead <= targetLead + 0.15 ? 1 : catchupRate;
+    if (Math.abs(videoEl.playbackRate - settledRate) > 0.01) {
+      videoEl.playbackRate = settledRate;
+    }
+
+    if (lead <= Math.max(8, previewPreset.catchupLeadSeconds * 10)) {
       return;
     }
 
+    const edge = Math.max(0, videoDiag.bufferedEnd - Math.max(1, previewPreset.catchupTargetOffsetSeconds * 4));
+    if (edge <= videoDiag.currentTime + 0.5) {
+      return;
+    }
+
+    videoEl.playbackRate = 1.25;
     videoEl.currentTime = edge;
     void videoEl.play().catch((error) => {
       setSurfaceError(fmtError(error));
@@ -289,6 +334,6 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
     surfaceError,
     setSurfaceError,
     videoEl,
-    setVideoEl,
+    setVideoHost,
   };
 }

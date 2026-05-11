@@ -132,7 +132,7 @@ export default function App() {
     surfaceStatus,
     surfaceError,
     videoEl,
-    setVideoEl,
+    setVideoHost,
   } = usePreviewRuntime({
     previewPreset: PREVIEW_QUALITY_PRESETS[appPreferences.previewQualityPreset],
     setCommandError,
@@ -1130,6 +1130,8 @@ export default function App() {
     ["Source", videoDiag.videoWidth > 0 && videoDiag.videoHeight > 0 ? `${videoDiag.videoWidth}x${videoDiag.videoHeight}` : "waiting"],
     ["Frames", String(preview.frameNumber)],
     ["Buffer", `+${bufferedAhead.toFixed(2)}s`],
+    ["Rate", `${videoDiag.playbackRate.toFixed(2)}x`],
+    ["Dropped", String(videoDiag.droppedVideoFrames)],
     ["Queued", String(previewDiag.queuedSegments)],
     ["Init", previewDiag.initSegmentReady ? "ready" : "waiting"],
     ["Appended", String(previewClientDiag.mediaAppendCount)],
@@ -1163,7 +1165,7 @@ export default function App() {
       tone={tone}
       overlay={renderPairingModal(true)}
       onDoubleClick={handleDeviceDoubleClick}
-      setVideoEl={setVideoEl}
+      setVideoHost={setVideoHost}
     />
   );
 
@@ -1191,7 +1193,7 @@ export default function App() {
       tone={tone}
       overlay={settingsOpen ? renderSettingsModal(true) : renderPairingModal(true)}
       onDoubleClick={handleDeviceDoubleClick}
-      setVideoEl={setVideoEl}
+      setVideoHost={setVideoHost}
       onContextMenu={(event) => {
         event.preventDefault();
         setContextMenu({ x: event.clientX, y: event.clientY });

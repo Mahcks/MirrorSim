@@ -5,8 +5,10 @@ use std::collections::VecDeque;
 
 const TRACK_ID: u32 = 1;
 const MIN_SEGMENT_SAMPLES: usize = 4;
+const MAX_QUEUED_SEGMENTS: usize = 45;
 const LIVE_TRACK_TIMESCALE: u32 = 1_000_000;
 const DEFAULT_PREVIEW_SAMPLE_DURATION: u32 = 16_667;
+const MAX_PREVIEW_SAMPLE_DURATION: u32 = 50_000;
 
 #[derive(Clone)]
 struct EncodedAccessUnit {
@@ -91,7 +93,7 @@ impl LivePreviewBuffer {
         &mut self,
         sample_index: u32,
         payload: Vec<u8>,
-        is_keyframe: bool,
+        _is_keyframe: bool,
         _decode_timestamp: u64,
         _presentation_timestamp: u64,
         duration: u32,
@@ -144,10 +146,10 @@ impl LivePreviewBuffer {
             }
         };
 
-        let effective_is_keyframe = is_keyframe || parsed_payload.contains_idr;
+        let is_random_access = parsed_payload.contains_idr;
         let requires_random_access =
             self.next_sequence_number == 1 && self.pending_samples.is_empty();
-        if requires_random_access && !effective_is_keyframe {
+        if requires_random_access && !is_random_access {
             return Ok(PreviewPushResult {
                 init_segment_became_available,
                 sample_enqueued: false,
@@ -155,14 +157,14 @@ impl LivePreviewBuffer {
             });
         }
 
-        let effective_duration = duration.max(DEFAULT_PREVIEW_SAMPLE_DURATION);
+        let effective_duration = normalize_preview_sample_duration(duration);
         let preview_timestamp = self.next_media_timestamp;
         self.next_media_timestamp += effective_duration as u64;
 
         let descriptor = H264AccessUnitDescriptor {
             sample_index,
             size_bytes: sample_payload.len(),
-            is_keyframe: effective_is_keyframe,
+            is_keyframe: is_random_access,
             timing: AccessUnitTiming {
                 decode_timestamp: preview_timestamp,
                 presentation_timestamp: preview_timestamp,
@@ -171,7 +173,7 @@ impl LivePreviewBuffer {
         };
 
         let should_flush_before_push =
-            effective_is_keyframe && self.pending_samples.len() >= MIN_SEGMENT_SAMPLES;
+            is_random_access && self.pending_samples.len() >= MIN_SEGMENT_SAMPLES;
         if should_flush_before_push {
             if self.flush_pending_segment()? {
                 emitted_segment = self.last_emitted_segment_descriptor();
@@ -205,9 +207,16 @@ impl LivePreviewBuffer {
         self.next_sequence_number += 1;
         self.last_emitted_segment = Some(segment.descriptor.clone());
         self.emitted_segments.push_back(segment);
+        while self.emitted_segments.len() > MAX_QUEUED_SEGMENTS {
+            self.emitted_segments.pop_front();
+        }
         self.pending_samples.clear();
         Ok(true)
     }
+}
+
+pub(crate) fn normalize_preview_sample_duration(duration: u32) -> u32 {
+    duration.clamp(DEFAULT_PREVIEW_SAMPLE_DURATION, MAX_PREVIEW_SAMPLE_DURATION)
 }
 
 fn track_config_from_parameter_sets(
@@ -913,7 +922,11 @@ fn skip_scaling_list(reader: &mut BitReader, size: usize) -> Option<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_parameter_sets, parse_h264_payload, LivePreviewBuffer};
+    use super::{
+        extract_parameter_sets, normalize_preview_sample_duration, parse_h264_payload,
+        LivePreviewBuffer, DEFAULT_PREVIEW_SAMPLE_DURATION, MAX_PREVIEW_SAMPLE_DURATION,
+        MAX_QUEUED_SEGMENTS,
+    };
 
     const SAMPLE_SPS: [u8; 28] = [
         0x67, 0x42, 0xC0, 0x1E, 0xDA, 0x02, 0x80, 0xBF, 0xE5, 0xC0, 0x5A, 0x80, 0x80, 0x80, 0xA0,
@@ -956,6 +969,14 @@ mod tests {
         let mut bytes = Vec::new();
         bytes.extend_from_slice(&[0, 0, 0, 1]);
         bytes.extend_from_slice(&SAMPLE_IDR);
+        bytes
+    }
+
+    fn avcc_non_idr_sample() -> Vec<u8> {
+        let non_idr = [0x41, 0x9A, 0x22, 0x11];
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&(non_idr.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(&non_idr);
         bytes
     }
 
@@ -1037,6 +1058,22 @@ mod tests {
     }
 
     #[test]
+    fn sidecar_keyframe_flag_without_idr_does_not_start_decoder_sequence() {
+        let mut buffer = LivePreviewBuffer::new();
+
+        buffer
+            .push_access_unit(0, annex_b_parameter_sets(), true, 0, 0, 0)
+            .expect("push parameter sets");
+        let result = buffer
+            .push_access_unit(1, avcc_non_idr_sample(), true, 0, 0, 3_000)
+            .expect("push non-idr sample");
+
+        assert!(!result.sample_enqueued);
+        assert_eq!(buffer.pending_sample_count(), 0);
+        assert_eq!(buffer.queued_segment_count(), 0);
+    }
+
+    #[test]
     fn changed_decoder_config_restarts_live_preview() {
         let mut buffer = LivePreviewBuffer::new();
 
@@ -1072,5 +1109,40 @@ mod tests {
         assert!(result.sample_enqueued);
         assert_eq!(buffer.queued_segment_count(), 0);
         assert_eq!(buffer.pending_sample_count(), 1);
+    }
+
+    #[test]
+    fn live_preview_queue_stays_near_live_edge() {
+        let mut buffer = LivePreviewBuffer::new();
+
+        for index in 0..240 {
+            buffer
+                .push_access_unit(
+                    index,
+                    avcc_sample(),
+                    index % 30 == 0,
+                    index as u64 * 3_000,
+                    index as u64 * 3_000,
+                    3_000,
+                )
+                .expect("push sample");
+        }
+
+        assert_eq!(buffer.queued_segment_count(), MAX_QUEUED_SEGMENTS);
+        let segment = buffer.take_next_segment().expect("queued media segment");
+        assert!(segment.descriptor.sequence_number > 1);
+    }
+
+    #[test]
+    fn preview_sample_duration_is_clamped_for_live_playback() {
+        assert_eq!(
+            normalize_preview_sample_duration(0),
+            DEFAULT_PREVIEW_SAMPLE_DURATION
+        );
+        assert_eq!(normalize_preview_sample_duration(33_333), 33_333);
+        assert_eq!(
+            normalize_preview_sample_duration(500_000),
+            MAX_PREVIEW_SAMPLE_DURATION
+        );
     }
 }

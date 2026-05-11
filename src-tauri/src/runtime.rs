@@ -5,6 +5,7 @@ use crate::models::{
     ReceiverRuntimeSnapshot, ReceiverRuntimeState, ReceiverTransport, ScreenshotSaveLocation,
     SessionSnapshot, SessionStatus, SidecarEvent,
 };
+use crate::preview_fragments::normalize_preview_sample_duration;
 use crate::sidecar::ReceiverSidecarSpec;
 use crate::state::{
     clear_pairing, clear_session_identity, prepare_live_transport, preview_activity,
@@ -47,6 +48,15 @@ const RECEIVER_RUNTIME_EVENT: &str = "receiver-runtime";
 const PREVIEW_DIAGNOSTICS_EVENT: &str = "preview-diagnostics";
 const PAIRING_STATUS_EVENT: &str = "pairing-status";
 const KEYFRAME_REQUEST_CAPABILITY: &str = "keyframe-request";
+const NATIVE_RECEIVER_CAPABILITY: &str = "native-receiver-process";
+const DECODER_RECOVERY_GAP_MICROS: u32 = 250_000;
+const HARD_RECEIVER_RESET_GAP_MICROS: u32 = 5_000_000;
+
+fn receiver_supports_keyframe_request(capabilities: &[String]) -> bool {
+    capabilities.iter().any(|capability| {
+        capability == KEYFRAME_REQUEST_CAPABILITY || capability == NATIVE_RECEIVER_CAPABILITY
+    })
+}
 
 #[cfg(windows)]
 struct SidecarJob {
@@ -456,6 +466,7 @@ fn handle_sidecar_event(
 ) -> CommandResult<()> {
     let mut request_keyframe: Option<(String, String)> = None;
     let mut stop_session_request: Option<String> = None;
+    let mut restart_sidecar = false;
     let mut history_entries: Vec<ConnectionHistoryEntry> = Vec::new();
 
     let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics, pairing) = {
@@ -773,103 +784,180 @@ fn handle_sidecar_event(
                 payload_base64,
             } => {
                 let waiting_for_local_approval = guard.pending_local_session_approval;
+                let previous_sample_index = guard.preview_diagnostics.last_access_unit_index;
+                let sample_index_restarted =
+                    previous_sample_index.is_some_and(|previous| sample_index <= previous);
+                let long_media_gap = duration > DECODER_RECOVERY_GAP_MICROS;
+                let hard_receiver_reset = duration > HARD_RECEIVER_RESET_GAP_MICROS;
+                let needs_decoder_recovery = guard.receiver_runtime.stream_id == stream_id
+                    && guard.receiver_runtime.transport == ReceiverTransport::Airplayserver
+                    && (sample_index_restarted || long_media_gap);
 
-                if guard.receiver_runtime.stream_id != stream_id {
-                    prepare_live_transport(&mut guard, stream_id.clone());
-                    emit_preview_stream = true;
-                }
-
-                let payload = BASE64_STANDARD
-                    .decode(payload_base64.as_bytes())
-                    .map_err(|error| format!("failed to decode receiver payload: {}", error))?;
-                let size_bytes = payload.len();
-                guard.remux_blueprint.push_access_unit(
-                    sample_index,
-                    size_bytes,
-                    keyframe,
-                    dts,
-                    pts,
-                    duration,
-                );
-                let push_result = guard.live_preview_buffer.push_access_unit(
-                    sample_index,
-                    payload,
-                    keyframe,
-                    dts,
-                    pts,
-                    duration,
-                )?;
-                guard.preview_diagnostics.last_access_unit_index = Some(sample_index);
-                guard.preview_diagnostics.last_access_unit_duration = Some(duration);
-                if push_result.init_segment_became_available {
-                    if let Some(track) = guard.live_preview_buffer.track_config() {
-                        guard.remux_blueprint.track = track.clone();
-                        guard.remux_blueprint.mime_type =
-                            format!("video/mp4; codecs=\"{}\"", track.codec);
-                        refresh_live_preview_descriptor(&mut guard);
-                        emit_preview_stream = true;
-                    }
-                }
-
-                if let Some(segment) = push_result.emitted_segment {
-                    guard.preview_diagnostics.emitted_segments += 1;
-                    guard.preview_diagnostics.last_queued_sequence_number =
-                        Some(segment.sequence_number);
-                    guard.preview_diagnostics.last_queued_first_sample_index =
-                        Some(segment.first_sample_index);
-                    guard.preview_diagnostics.last_queued_last_sample_index =
-                        Some(segment.last_sample_index);
-                    guard.preview_diagnostics.last_queued_duration = Some(segment.duration);
-                }
-
-                if waiting_for_local_approval {
-                    guard.snapshot.status = SessionStatus::Connecting;
-                    guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
-                    guard.receiver_runtime.stream_id = stream_id;
-                    guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
-                    guard.receiver_runtime.queued_segments =
-                        guard.live_preview_buffer.queued_segment_count();
+                if hard_receiver_reset {
+                    stop_session_request = guard.active_session_id.take();
+                    restart_sidecar = true;
+                    guard.require_local_session_approval = false;
+                    guard.require_known_device = false;
+                    guard.pending_local_session_approval = false;
+                    guard.snapshot.status = SessionStatus::Idle;
+                    clear_pairing(&mut guard);
+                    reset_preview(&mut guard);
+                    reset_fixture_transport(&mut guard);
+                    set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Idle);
                     guard.receiver_runtime.last_error = Some(String::from(
-                        "waiting for local approval before MirrorSim starts streaming",
+                        "receiver was reset after the iPhone slept for too long",
                     ));
-                    emit_snapshot = true;
-                } else if !push_result.sample_enqueued {
-                    guard.snapshot.status = SessionStatus::Connecting;
-                    guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
-                    guard.receiver_runtime.stream_id = stream_id;
-                    guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
-                    guard.receiver_runtime.queued_segments =
-                        guard.live_preview_buffer.queued_segment_count();
-                    guard.receiver_runtime.last_error = Some(String::from(
-                        "receiver initialized; waiting for the first decodable video frame",
-                    ));
-
-                    emit_snapshot = true;
-                } else {
-                    if guard.snapshot.status != SessionStatus::Recording {
-                        guard.snapshot.status = SessionStatus::Mirroring;
-                    }
-
-                    guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
-                    guard.receiver_runtime.stream_id = stream_id;
-                    guard.receiver_runtime.state = ReceiverRuntimeState::Streaming;
-                    guard.receiver_runtime.queued_segments =
-                        guard.live_preview_buffer.queued_segment_count();
-                    guard.receiver_runtime.last_error = None;
-
-                    guard.preview.frame_number = sample_index as u64 + 1;
-                    let preview_timescale = guard.remux_blueprint.track.timescale;
-                    guard.preview.fps = preview_fps_from_duration(duration, preview_timescale);
-                    guard.preview.bitrate_kbps =
-                        preview_bitrate_kbps(size_bytes, duration, preview_timescale);
-                    guard.preview.latency_ms = 18 + ((sample_index % 5) as u16 * 2);
-                    guard.preview.activity = preview_activity(size_bytes);
-
                     emit_snapshot = true;
                     emit_preview = true;
+                    emit_preview_stream = true;
+
+                    history_entries.push(ConnectionHistoryEntry {
+                        id: String::new(),
+                        occurred_at: now_unix_timestamp(),
+                        event: String::from("receiver-reset"),
+                        status: String::from("warning"),
+                        message: String::from(
+                            "Receiver was reset after a long iPhone sleep/wake media gap.",
+                        ),
+                        device_name: Some(guard.snapshot.device_name.clone()),
+                        device_id: guard.snapshot.current_device_id.clone(),
+                        device_model: guard.snapshot.current_device_model.clone(),
+                        device_os_name: guard.snapshot.current_device_os_name.clone(),
+                        device_os_version: guard.snapshot.current_device_os_version.clone(),
+                        device_key: guard.snapshot.current_device_key.clone(),
+                        receiver_name: guard.snapshot.receiver_id.clone(),
+                    });
+
+                    sync_preview_diagnostics(&mut guard);
+                } else if guard.receiver_runtime.stream_id != stream_id {
+                    prepare_live_transport(&mut guard, stream_id.clone());
+                    emit_preview_stream = true;
+                } else if needs_decoder_recovery {
+                    prepare_live_transport(&mut guard, stream_id.clone());
+                    guard.remux_blueprint.reset_live_preview(stream_id.clone());
+                    guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
+                    guard.receiver_runtime.queued_segments = 0;
+                    guard.receiver_runtime.last_error = Some(if sample_index_restarted {
+                        String::from("stream timeline restarted; waiting for a fresh keyframe")
+                    } else {
+                        String::from(
+                            "stream stalled after device sleep; waiting for a fresh keyframe",
+                        )
+                    });
+                    reset_preview(&mut guard);
+                    emit_preview = true;
+                    emit_preview_stream = true;
+
+                    if receiver_supports_keyframe_request(&guard.snapshot.receiver_capabilities) {
+                        request_keyframe = Some((
+                            stream_id.clone(),
+                            if sample_index_restarted {
+                                String::from("stream timeline restarted")
+                            } else {
+                                String::from("stream resumed after a long media gap")
+                            },
+                        ));
+                    }
                 }
 
-                sync_preview_diagnostics(&mut guard);
+                if !hard_receiver_reset {
+                    let payload = BASE64_STANDARD
+                        .decode(payload_base64.as_bytes())
+                        .map_err(|error| format!("failed to decode receiver payload: {}", error))?;
+                    let size_bytes = payload.len();
+                    guard.remux_blueprint.push_access_unit(
+                        sample_index,
+                        size_bytes,
+                        keyframe,
+                        dts,
+                        pts,
+                        duration,
+                    );
+                    let push_result = guard.live_preview_buffer.push_access_unit(
+                        sample_index,
+                        payload,
+                        keyframe,
+                        dts,
+                        pts,
+                        duration,
+                    )?;
+                    guard.preview_diagnostics.last_access_unit_index = Some(sample_index);
+                    guard.preview_diagnostics.last_access_unit_duration = Some(duration);
+                    if push_result.init_segment_became_available {
+                        if let Some(track) = guard.live_preview_buffer.track_config() {
+                            guard.remux_blueprint.track = track.clone();
+                            guard.remux_blueprint.mime_type =
+                                format!("video/mp4; codecs=\"{}\"", track.codec);
+                            refresh_live_preview_descriptor(&mut guard);
+                            emit_preview_stream = true;
+                        }
+                    }
+
+                    if let Some(segment) = push_result.emitted_segment {
+                        guard.preview_diagnostics.emitted_segments += 1;
+                        guard.preview_diagnostics.last_queued_sequence_number =
+                            Some(segment.sequence_number);
+                        guard.preview_diagnostics.last_queued_first_sample_index =
+                            Some(segment.first_sample_index);
+                        guard.preview_diagnostics.last_queued_last_sample_index =
+                            Some(segment.last_sample_index);
+                        guard.preview_diagnostics.last_queued_duration = Some(segment.duration);
+                    }
+
+                    if waiting_for_local_approval {
+                        guard.snapshot.status = SessionStatus::Connecting;
+                        guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
+                        guard.receiver_runtime.stream_id = stream_id;
+                        guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
+                        guard.receiver_runtime.queued_segments =
+                            guard.live_preview_buffer.queued_segment_count();
+                        guard.receiver_runtime.last_error = Some(String::from(
+                            "waiting for local approval before MirrorSim starts streaming",
+                        ));
+                        emit_snapshot = true;
+                    } else if !push_result.sample_enqueued {
+                        guard.snapshot.status = SessionStatus::Connecting;
+                        guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
+                        guard.receiver_runtime.stream_id = stream_id;
+                        guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
+                        guard.receiver_runtime.queued_segments =
+                            guard.live_preview_buffer.queued_segment_count();
+                        guard.receiver_runtime.last_error = Some(String::from(
+                            "receiver initialized; waiting for the first decodable video frame",
+                        ));
+
+                        emit_snapshot = true;
+                    } else {
+                        if guard.snapshot.status != SessionStatus::Recording {
+                            guard.snapshot.status = SessionStatus::Mirroring;
+                        }
+
+                        guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
+                        guard.receiver_runtime.stream_id = stream_id;
+                        guard.receiver_runtime.state = ReceiverRuntimeState::Streaming;
+                        guard.receiver_runtime.queued_segments =
+                            guard.live_preview_buffer.queued_segment_count();
+                        guard.receiver_runtime.last_error = None;
+
+                        guard.preview.frame_number = sample_index as u64 + 1;
+                        let preview_timescale = guard.remux_blueprint.track.timescale;
+                        let normalized_duration = normalize_preview_sample_duration(duration);
+                        guard.preview.fps =
+                            preview_fps_from_duration(normalized_duration, preview_timescale);
+                        guard.preview.bitrate_kbps = preview_bitrate_kbps(
+                            size_bytes,
+                            normalized_duration,
+                            preview_timescale,
+                        );
+                        guard.preview.latency_ms = 18 + ((sample_index % 5) as u16 * 2);
+                        guard.preview.activity = preview_activity(size_bytes);
+
+                        emit_snapshot = true;
+                        emit_preview = true;
+                    }
+
+                    sync_preview_diagnostics(&mut guard);
+                }
             }
             SidecarEvent::StreamDiscontinuity {
                 stream_id,
@@ -895,13 +983,26 @@ fn handle_sidecar_event(
                     reset_preview(&mut guard);
                     emit_preview = true;
                     emit_preview_stream = true;
-                    if guard
-                        .snapshot
-                        .receiver_capabilities
-                        .iter()
-                        .any(|capability| capability == KEYFRAME_REQUEST_CAPABILITY)
-                    {
+
+                    let can_request_keyframe =
+                        receiver_supports_keyframe_request(&guard.snapshot.receiver_capabilities);
+                    if can_request_keyframe {
                         request_keyframe = Some((stream_id, reason.clone()));
+                    } else if reason != "session_stopped" {
+                        stop_session_request = guard.active_session_id.take();
+                        restart_sidecar = true;
+                        guard.require_local_session_approval = false;
+                        guard.require_known_device = false;
+                        guard.pending_local_session_approval = false;
+                        guard.snapshot.status = SessionStatus::Idle;
+                        clear_pairing(&mut guard);
+                        reset_fixture_transport(&mut guard);
+                        set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Idle);
+                        guard.receiver_runtime.last_error = Some(format!(
+                            "receiver lost the AirPlay stream and restarted: {}",
+                            reason
+                        ));
+                        emit_snapshot = true;
                     }
                 }
 
@@ -1016,6 +1117,10 @@ fn handle_sidecar_event(
                 "session_id": session_id,
             }),
         );
+    }
+
+    if restart_sidecar {
+        stop_sidecar_runtime(sidecar);
     }
 
     for entry in history_entries {
@@ -1197,6 +1302,12 @@ pub(crate) fn send_sidecar_command(
         .ok_or_else(|| String::from("receiver sidecar is not running"))?;
 
     runtime.send_command(command)
+}
+
+pub(crate) fn stop_sidecar_runtime(sidecar: &Arc<Mutex<Option<SidecarRuntime>>>) {
+    if let Ok(mut guard) = sidecar.lock() {
+        let _ = guard.take();
+    }
 }
 
 pub(crate) fn ensure_bonjour_ready() -> CommandResult<()> {
