@@ -1,6 +1,6 @@
 [package]
 name = "mirrorsim"
-version = "0.1.1"
+version = "0.1.2"
 description = "A Windows AirPlay receiver app for mirroring iPhone in a clean, presentation-ready device frame."
 authors = ["mahcks"]
 edition = "2021"

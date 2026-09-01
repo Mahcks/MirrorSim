@@ -1,17 +1,14 @@
-# MirrorSim v0.1.1
+# MirrorSim v0.1.2
 
-MirrorSim v0.1.1 is a reliability and usability release focused on making the complete AirPlay connection flow predictable—from starting the receiver to approving, connecting, mirroring, recording, and disconnecting an iPhone.
+MirrorSim v0.1.2 is a focused connection-flow hotfix for returning to a ready state after an iPhone stops mirroring.
 
-## Highlights
+## Fixed
 
-- Clear connection stages for starting, listening, approval, verification, attachment, and live video.
-- More reliable receiver startup, shutdown, reconnection, and process cleanup.
-- Correct approval behavior across Ask Every Time, Remember Trusted Devices, and Known Devices Only modes.
-- Safer handling of rejected, blocked, and unknown devices before media begins.
-- Improved capture, screenshot, recording, and session cleanup behavior.
-- Better settings safeguards while the receiver is active.
-- Hardened release packaging with validated PowerShell scripts and guarded bundle cleanup.
-- Expanded automated coverage across the React UI, Tauri application, and native receiver integration.
+- A normal iPhone disconnect now returns MirrorSim to **Listening for your iPhone** instead of leaving an empty preview in the connecting state.
+- Connection instructions reappear immediately after the phone disconnects.
+- The AirPlay receiver remains active, allowing the same or another iPhone to reconnect without clicking Start AirPlay again.
+- The previous phone identity, preview buffer, and pairing state are cleared while the selected receiver access policy remains in effect.
+- Disconnects are recorded as normal informational history events rather than stream warnings.
 
 ## Install
 
@@ -19,7 +16,7 @@ Choose one of the attached Windows builds:
 
 - `MirrorSim_*_x64-setup.exe` — recommended NSIS installer.
 - `MirrorSim_*_x64_en-US.msi` — MSI package for managed or advanced installations.
-- `MirrorSim-*-windows-x64-portable.zip` — portable build with no installation required.
+- `MirrorSim-portable-*.zip` — portable build with no installation required.
 
 Windows may show a SmartScreen warning because the binaries are updater-signed but are not yet backed by a commercial Windows code-signing certificate.
 
