@@ -76,6 +76,25 @@ Important: commands ending in `:fetch` download the runtime declared in `receive
 
 ---
 
+## App Icon
+
+The app icon is generated from `app-icon.png` (1024x1024), which is itself rendered by
+`scripts/render-app-icon.py` (Python + Pillow/NumPy) rather than hand-exported from a design
+tool, so the mark can be tweaked in code and regenerated exactly.
+
+To adjust the icon:
+
+```powershell
+python scripts/render-app-icon.py
+bun run tauri icon
+```
+
+The first command rewrites `app-icon.png`. The second regenerates every platform icon under
+`src-tauri/icons/` (Windows `.ico`, macOS `.icns`, the Windows Store `Square*Logo.png` tiles, and
+the unused iOS/Android sets Tauri scaffolds by default) from it.
+
+---
+
 ## Release Builds
 
 Release packaging is driven by `scripts/build-release.ps1`.
