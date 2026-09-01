@@ -36,8 +36,7 @@ if ([string]::IsNullOrWhiteSpace($SourceDir)) {
   $existingAdapter = Join-Path $DestinationDir 'MirrorSimAdapter.exe'
 
   if (Test-Path $existingAdapter) {
-    Write-Host "No local AirPlayServer build output was found. Reusing the runtime already present in $DestinationDir"
-    return
+    throw "No local AirPlayServer build output was found. Refusing to reuse the unverified runtime already present in $DestinationDir. Fetch the pinned runtime or pass -SourceDir explicitly."
   }
 
   throw "Could not find an AirPlayServer build output. Build MirrorSimAdapter first, fetch the versioned runtime bundle, or pass -SourceDir explicitly."
@@ -57,7 +56,7 @@ if (-not (Test-Path $SourceDir)) {
 
 New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
 
-$patterns = @('*.exe', '*.dll', '*.json', '*.ini', '*.conf', '*.txt')
+$patterns = @('*.exe', '*.dll', '*.json', '*.ini', '*.conf', '*.txt', '*.md', 'LICENSE*', 'COPYING*')
 if ($IncludeDebugSymbols) {
   $patterns += '*.pdb'
 }
@@ -83,7 +82,7 @@ if (-not $NoClean) {
         Remove-Item -Force $existingFile.FullName
       }
       catch {
-        Write-Warning "Could not remove locked runtime file: $($existingFile.FullName). It will be reused if still valid."
+      throw "Could not remove locked runtime file: $($existingFile.FullName). Close the process and retry to avoid a mixed runtime bundle."
       }
     }
   }
@@ -107,13 +106,7 @@ foreach ($file in $sourceFiles) {
     $copiedNames.Add($file.Name) | Out-Null
   }
   catch {
-    if (Test-Path $destinationPath) {
-      Write-Warning "Could not overwrite locked runtime file: $destinationPath. Keeping the existing copy."
-      $skippedNames.Add($file.Name) | Out-Null
-      continue
-    }
-
-    throw
+    throw "Could not copy runtime file to $destinationPath. Close any process using it and retry. $($_.Exception.Message)"
   }
 }
 

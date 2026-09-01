@@ -3,11 +3,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Manager};
 
 const CONNECTION_HISTORY_FILE: &str = "connection-history.json";
 const MAX_HISTORY_ENTRIES: usize = 250;
+static CONNECTION_HISTORY_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -33,11 +35,23 @@ fn connection_history_path(app: &AppHandle) -> CommandResult<PathBuf> {
 fn load_registry(app: &AppHandle) -> CommandResult<ConnectionHistoryRegistry> {
     let file_path = connection_history_path(app)?;
     if !file_path.exists() {
-        return Ok(ConnectionHistoryRegistry::default());
+        let backup_path = file_path.with_extension("json.bak");
+        if !backup_path.exists() {
+            return Ok(ConnectionHistoryRegistry::default());
+        }
+        let backup = fs::read_to_string(backup_path).map_err(|error| error.to_string())?;
+        return serde_json::from_str::<ConnectionHistoryRegistry>(&backup)
+            .map_err(|error| error.to_string());
     }
 
     let contents = fs::read_to_string(&file_path).map_err(|error| error.to_string())?;
-    serde_json::from_str::<ConnectionHistoryRegistry>(&contents).map_err(|error| error.to_string())
+    serde_json::from_str::<ConnectionHistoryRegistry>(&contents)
+        .or_else(|primary_error| {
+            let backup_path = file_path.with_extension("json.bak");
+            let backup = fs::read_to_string(backup_path).map_err(|_| primary_error)?;
+            serde_json::from_str::<ConnectionHistoryRegistry>(&backup)
+        })
+        .map_err(|error| error.to_string())
 }
 
 fn save_registry(app: &AppHandle, registry: &ConnectionHistoryRegistry) -> CommandResult<()> {
@@ -47,13 +61,23 @@ fn save_registry(app: &AppHandle, registry: &ConnectionHistoryRegistry) -> Comma
     }
 
     let payload = serde_json::to_vec_pretty(registry).map_err(|error| error.to_string())?;
-    fs::write(file_path, payload).map_err(|error| error.to_string())
+    let temporary_path = file_path.with_extension("json.tmp");
+    let backup_path = file_path.with_extension("json.bak");
+    fs::write(&temporary_path, payload).map_err(|error| error.to_string())?;
+    if file_path.exists() {
+        fs::copy(&file_path, backup_path).map_err(|error| error.to_string())?;
+        fs::remove_file(&file_path).map_err(|error| error.to_string())?;
+    }
+    fs::rename(temporary_path, file_path).map_err(|error| error.to_string())
 }
 
 pub(crate) fn append_history_entry(
     app: &AppHandle,
     mut entry: ConnectionHistoryEntry,
 ) -> CommandResult<()> {
+    let _history_guard = CONNECTION_HISTORY_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
     let mut registry = load_registry(app)?;
     if entry.id.trim().is_empty() {
         entry.id = format!("event-{}-{}", entry.occurred_at, registry.entries.len() + 1);
@@ -71,6 +95,9 @@ pub(crate) fn append_history_entry(
 pub(crate) fn get_connection_history(
     app: &AppHandle,
 ) -> CommandResult<Vec<ConnectionHistoryEntry>> {
+    let _history_guard = CONNECTION_HISTORY_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
     let mut entries = load_registry(app)?.entries;
     entries.sort_by(|left, right| {
         right

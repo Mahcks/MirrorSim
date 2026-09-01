@@ -3,17 +3,17 @@ use crate::history::{
     now_unix_timestamp,
 };
 use crate::models::{
-    AppUpdateInfo, BonjourStatusSnapshot, CommandResult, ConnectionHistoryEntry, DiagnosticsExport,
-    PairingEntryMode, PairingPhase, PairingSnapshot, PreviewDiagnosticsSnapshot,
-    PreviewMediaSegmentPayload, PreviewStreamDescriptor, PreviewTelemetry, ReceiverRuntimeSnapshot,
-    RemuxBlueprintSnapshot, SaveRecordingRequest, SaveScreenshotRequest, SavedScreenshot,
-    SessionSnapshot, SessionStatus, TrustedDevice,
+    AppUpdateInfo, BeginRecordingRequest, BonjourStatusSnapshot, CommandResult,
+    ConnectionHistoryEntry, DiagnosticsExport, PairingEntryMode, PairingPhase, PairingSnapshot,
+    PreviewDiagnosticsSnapshot, PreviewMediaSegmentPayload, PreviewStreamDescriptor,
+    PreviewTelemetry, ReceiverRuntimeSnapshot, RecordingWriteSession, RemuxBlueprintSnapshot,
+    SaveScreenshotRequest, SavedScreenshot, SessionSnapshot, SessionStatus, TrustedDevice,
 };
 use crate::runtime::{
     bonjour_blocking_message, emit_pairing_status, emit_preview_diagnostics, emit_receiver_runtime,
     emit_runtime_error, emit_session_status, emit_state_updates, ensure_bonjour_ready,
     ensure_sidecar_runtime, query_bonjour_status, resolve_capture_directory, send_sidecar_command,
-    stop_sidecar_runtime, AppState,
+    stop_sidecar_runtime, AppState, RecordingFileRuntime,
 };
 use crate::sidecar::ReceiverSidecarSpec;
 use crate::state::{
@@ -31,14 +31,44 @@ use crate::trust::{
 use crate::updater_config::{updater_is_configured, UPDATER_ENDPOINT};
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 use serde_json::json;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
+use std::path::{Component, Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::Ordering;
 use tauri::{AppHandle, State};
 use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
 const KEYFRAME_REQUEST_CAPABILITY: &str = "keyframe-request";
 const NATIVE_RECEIVER_CAPABILITY: &str = "native-receiver-process";
+const MAX_SCREENSHOT_BYTES: usize = 64 * 1024 * 1024;
+const MAX_RECORDING_CHUNK_BYTES: usize = 16 * 1024 * 1024;
+
+fn validated_capture_path(
+    directory: &Path,
+    file_name: &str,
+    expected_extension: &str,
+) -> CommandResult<PathBuf> {
+    let trimmed = file_name.trim();
+    let path = Path::new(trimmed);
+    let mut components = path.components();
+    let is_single_normal_component =
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
+    let has_expected_extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .is_some_and(|value| value.eq_ignore_ascii_case(expected_extension));
+
+    if trimmed.is_empty() || !is_single_normal_component || !has_expected_extension {
+        return Err(format!(
+            "capture filename must be a plain .{} filename",
+            expected_extension
+        ));
+    }
+
+    Ok(directory.join(path))
+}
 
 fn receiver_supports_keyframe_request(capabilities: &[String]) -> bool {
     capabilities.iter().any(|capability| {
@@ -515,15 +545,21 @@ pub(crate) fn save_screenshot(
     app: AppHandle,
     request: SaveScreenshotRequest,
 ) -> CommandResult<SavedScreenshot> {
+    if request.png_base64.len() > MAX_SCREENSHOT_BYTES * 2 {
+        return Err(String::from("screenshot payload is too large"));
+    }
     let png_bytes = BASE64_STANDARD
         .decode(request.png_base64.as_bytes())
         .map_err(|error| error.to_string())?;
+    if png_bytes.len() > MAX_SCREENSHOT_BYTES || !png_bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+        return Err(String::from("screenshot payload is not a valid-sized PNG"));
+    }
 
     let directory =
         resolve_capture_directory(&app, request.location, request.custom_directory.as_deref())?;
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
 
-    let file_path = directory.join(&request.file_name);
+    let file_path = validated_capture_path(&directory, &request.file_name, "png")?;
     eprintln!(
         "[MirrorSim capture] saving screenshot to {}",
         file_path.display()
@@ -537,29 +573,146 @@ pub(crate) fn save_screenshot(
 }
 
 #[tauri::command]
-pub(crate) fn save_recording(
+pub(crate) fn begin_recording_save(
     app: AppHandle,
-    request: SaveRecordingRequest,
-) -> CommandResult<SavedScreenshot> {
-    let media_bytes = BASE64_STANDARD
-        .decode(request.media_base64.as_bytes())
-        .map_err(|error| error.to_string())?;
-
+    state: State<'_, AppState>,
+    request: BeginRecordingRequest,
+) -> CommandResult<RecordingWriteSession> {
     let directory =
         resolve_capture_directory(&app, request.location, request.custom_directory.as_deref())?;
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
+    let final_path = validated_capture_path(&directory, &request.file_name, "webm")?;
+    let temporary_path = final_path.with_extension("webm.part");
+    let mut guard = state
+        .recording_file
+        .lock()
+        .map_err(|error| error.to_string())?;
+    if guard.is_some() {
+        return Err(String::from("a recording file is already open"));
+    }
 
-    let file_path = directory.join(&request.file_name);
-    eprintln!(
-        "[MirrorSim capture] saving recording to {}",
-        file_path.display()
-    );
-    fs::write(&file_path, media_bytes).map_err(|error| error.to_string())?;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(true)
+        .write(true)
+        .open(&temporary_path)
+        .map_err(|error| error.to_string())?;
+    let recording_id = state.next_recording_id.fetch_add(1, Ordering::Relaxed);
+    *guard = Some(RecordingFileRuntime {
+        recording_id,
+        file_name: request.file_name.clone(),
+        final_path: final_path.clone(),
+        temporary_path,
+        file,
+        bytes_written: 0,
+    });
+
+    Ok(RecordingWriteSession {
+        recording_id,
+        file_name: request.file_name,
+        file_path: final_path.to_string_lossy().into_owned(),
+    })
+}
+
+#[tauri::command]
+pub(crate) fn append_recording_chunk(
+    state: State<'_, AppState>,
+    recording_id: u64,
+    chunk_base64: String,
+) -> CommandResult<()> {
+    if chunk_base64.len() > MAX_RECORDING_CHUNK_BYTES * 2 {
+        return Err(String::from("recording chunk is too large"));
+    }
+    let bytes = BASE64_STANDARD
+        .decode(chunk_base64.as_bytes())
+        .map_err(|error| error.to_string())?;
+    if bytes.len() > MAX_RECORDING_CHUNK_BYTES {
+        return Err(String::from("recording chunk is too large"));
+    }
+
+    let mut guard = state
+        .recording_file
+        .lock()
+        .map_err(|error| error.to_string())?;
+    let recording = guard
+        .as_mut()
+        .filter(|recording| recording.recording_id == recording_id)
+        .ok_or_else(|| String::from("recording file is not active"))?;
+    if recording.bytes_written == 0 && !bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+        return Err(String::from("recording stream is missing its WebM header"));
+    }
+    recording
+        .file
+        .write_all(&bytes)
+        .map_err(|error| error.to_string())?;
+    recording.bytes_written = recording.bytes_written.saturating_add(bytes.len() as u64);
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn finish_recording_save(
+    state: State<'_, AppState>,
+    recording_id: u64,
+) -> CommandResult<SavedScreenshot> {
+    let recording = {
+        let mut guard = state
+            .recording_file
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if guard.as_ref().map(|value| value.recording_id) != Some(recording_id) {
+            return Err(String::from("recording file is not active"));
+        }
+        if guard.as_ref().map(|value| value.bytes_written) == Some(0) {
+            return Err(String::from("recording did not produce any media data"));
+        }
+        guard
+            .take()
+            .ok_or_else(|| String::from("recording file is not active"))?
+    };
+
+    let RecordingFileRuntime {
+        file_name,
+        final_path,
+        temporary_path,
+        file,
+        ..
+    } = recording;
+    file.sync_all().map_err(|error| error.to_string())?;
+    drop(file);
+    if final_path.exists() {
+        fs::remove_file(&final_path).map_err(|error| error.to_string())?;
+    }
+    fs::rename(&temporary_path, &final_path).map_err(|error| error.to_string())?;
 
     Ok(SavedScreenshot {
-        file_name: request.file_name,
-        file_path: file_path.to_string_lossy().into_owned(),
+        file_name,
+        file_path: final_path.to_string_lossy().into_owned(),
     })
+}
+
+#[tauri::command]
+pub(crate) fn abort_recording_save(
+    state: State<'_, AppState>,
+    recording_id: u64,
+) -> CommandResult<()> {
+    let recording = {
+        let mut guard = state
+            .recording_file
+            .lock()
+            .map_err(|error| error.to_string())?;
+        if guard.as_ref().map(|value| value.recording_id) != Some(recording_id) {
+            return Ok(());
+        }
+        guard.take()
+    };
+
+    if let Some(recording) = recording {
+        drop(recording.file);
+        if recording.temporary_path.exists() {
+            fs::remove_file(recording.temporary_path).map_err(|error| error.to_string())?;
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -1041,4 +1194,24 @@ pub(crate) fn refresh_receiver_readiness(
 
     emit_receiver_runtime(&app, &receiver_runtime)?;
     Ok(receiver_runtime)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::validated_capture_path;
+    use std::path::Path;
+
+    #[test]
+    fn capture_path_accepts_a_plain_expected_filename() {
+        let result = validated_capture_path(Path::new("C:/captures"), "shot.PNG", "png")
+            .expect("plain PNG filename");
+        assert_eq!(result, Path::new("C:/captures").join("shot.PNG"));
+    }
+
+    #[test]
+    fn capture_path_rejects_traversal_absolute_and_wrong_extension() {
+        for filename in ["../shot.png", "nested/shot.png", "C:/shot.png", "shot.exe"] {
+            assert!(validated_capture_path(Path::new("C:/captures"), filename, "png").is_err());
+        }
+    }
 }

@@ -2,7 +2,7 @@
 
 This folder holds the native AirPlay receiver runtime that MirrorSim packages into its Windows releases.
 
-The bundled runtime's upstream license text is stored at `LICENSES/AirPlayServer-LICENSE` in the repository root and is copied into portable release builds.
+The bundled runtime's upstream license text is stored at `LICENSES/AirPlayServer-LICENSE` in the repository root and is packaged into installer and portable release builds.
 
 Expected executable:
 
@@ -28,10 +28,15 @@ This folder is bundled into release artifacts through `src-tauri/tauri.conf.json
 
 ## Sync From a Local AirPlayServer Build
 
-If you have the sibling AirPlayServer repository checked out locally, MirrorSim can copy the current runtime into this folder for you:
+Choose the pinned published runtime:
 
 ```powershell
 bun run fetch:airplay-runtime
+```
+
+Or, if you have the sibling AirPlayServer repository checked out locally, copy that build instead:
+
+```powershell
 bun run sync:airplay-runtime
 ```
 

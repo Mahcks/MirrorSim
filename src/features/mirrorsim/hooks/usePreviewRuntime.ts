@@ -120,10 +120,17 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
   useEffect(() => {
     let alive = true;
     const unsubs: Array<() => void> = [];
+    const keepUnsubscribe = (unsubscribe: () => void) => {
+      if (alive) {
+        unsubs.push(unsubscribe);
+      } else {
+        unsubscribe();
+      }
+    };
 
     void (async () => {
       try {
-        unsubs.push(
+        keepUnsubscribe(
           await listen<SessionSnapshot>(SESSION_STATUS_EVENT, (event) => {
             if (alive) {
               setSession(event.payload);
@@ -131,35 +138,35 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
             }
           }),
         );
-        unsubs.push(
+        keepUnsubscribe(
           await listen<PreviewTelemetry>(PREVIEW_TELEMETRY_EVENT, (event) => {
             if (alive) {
               setPreview(event.payload);
             }
           }),
         );
-        unsubs.push(
+        keepUnsubscribe(
           await listen<PreviewStreamDescriptor>(PREVIEW_STREAM_EVENT, (event) => {
             if (alive) {
               setPreviewStream(event.payload);
             }
           }),
         );
-        unsubs.push(
+        keepUnsubscribe(
           await listen<PreviewDiagnosticsSnapshot>(PREVIEW_DIAGNOSTICS_EVENT, (event) => {
             if (alive) {
               setPreviewDiag(event.payload);
             }
           }),
         );
-        unsubs.push(
+        keepUnsubscribe(
           await listen<ReceiverRuntimeSnapshot>(RECEIVER_RUNTIME_EVENT, (event) => {
             if (alive) {
               setReceiverRuntime(event.payload);
             }
           }),
         );
-        unsubs.push(
+        keepUnsubscribe(
           await listen<PairingSnapshot>(PAIRING_STATUS_EVENT, (event) => {
             if (alive) {
               setPairing(event.payload);

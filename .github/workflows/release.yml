@@ -33,13 +33,15 @@ jobs:
             $tag = "v$version"
           }
 
+          powershell -ExecutionPolicy Bypass -File scripts/validate-release-version.ps1 -ExpectedTag $tag
+
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
           "tag=$tag" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
-          bun-version: latest
+          bun-version: 1.3.13
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@master
@@ -49,6 +51,16 @@ jobs:
       - name: Install frontend dependencies
         run: bun install --frozen-lockfile
 
+      - name: Validate source
+        shell: pwsh
+        run: |
+          bun run build
+          cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
+          cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path src-tauri/Cargo.toml
+          cargo clippy --locked --manifest-path receivers/mirror-receiver/Cargo.toml --all-targets -- -D warnings
+          cargo test --locked --manifest-path receivers/mirror-receiver/Cargo.toml
+
       - name: Validate updater signing config
         shell: pwsh
         run: |
@@ -56,17 +68,9 @@ jobs:
             throw 'Missing GitHub secret: TAURI_SIGNING_PRIVATE_KEY'
           }
 
-      - name: Fetch AirPlay runtime
+      - name: Build release assets from pinned runtime
         shell: pwsh
-        run: bun run fetch:airplay-runtime
-
-      - name: Build installer assets
-        shell: pwsh
-        run: bun run release:installer:fetch
-
-      - name: Build portable asset
-        shell: pwsh
-        run: bun run release:portable:fetch
+        run: bun run release:all:fetch
 
       - name: Generate updater manifest
         shell: pwsh

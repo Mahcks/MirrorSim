@@ -261,6 +261,8 @@ export function ConsoleView({
             {updateBanner}
             {(captureNotice || commandError) && (
               <div
+                role={commandError ? "alert" : "status"}
+                aria-live={commandError ? "assertive" : "polite"}
                 className={cn(
                   "rounded-[8px] border p-2.5 text-[11px] leading-4",
                   commandError

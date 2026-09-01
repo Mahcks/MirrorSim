@@ -9,8 +9,13 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+& (Join-Path $PSScriptRoot 'validate-release-version.ps1') -ExpectedTag $Tag
+if (-not $?) {
+  throw 'Release version validation failed.'
+}
 $packageJson = Get-Content -Raw (Join-Path $repoRoot 'package.json') | ConvertFrom-Json
 $version = $packageJson.version
+$bundleVersion = ($version -split '-')[0]
 
 $nsisDir = Join-Path $repoRoot 'src-tauri\target\release\bundle\nsis'
 $releaseRoot = Join-Path $repoRoot 'release'
@@ -20,13 +25,14 @@ if (-not (Test-Path $nsisDir)) {
   throw "NSIS bundle directory not found: $nsisDir"
 }
 
-$installer = Get-ChildItem -Path $nsisDir -File -Filter '*.exe' |
-  Sort-Object LastWriteTimeUtc -Descending |
-  Select-Object -First 1
+$installerCandidates = @(Get-ChildItem -Path $nsisDir -File -Filter "*$bundleVersion*.exe")
 
-if (-not $installer) {
-  throw "Could not find an NSIS updater installer under $nsisDir"
+if ($installerCandidates.Count -ne 1) {
+  $names = ($installerCandidates | ForEach-Object Name) -join ', '
+  throw "Expected exactly one NSIS installer for version $bundleVersion under $nsisDir, found $($installerCandidates.Count): $names"
 }
+
+$installer = $installerCandidates[0]
 
 $signaturePath = "$($installer.FullName).sig"
 if (-not (Test-Path $signaturePath)) {

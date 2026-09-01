@@ -24,7 +24,7 @@
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost blob: data:; media-src 'self' asset: http://asset.localhost blob:; style-src 'self' 'unsafe-inline'; script-src 'self'"
     }
   },
   "plugins": {
@@ -43,7 +43,8 @@
     "createUpdaterArtifacts": true,
     "targets": "all",
     "resources": [
-      "../receivers/AirPlayServer"
+      "../receivers/AirPlayServer",
+      "../LICENSES"
     ],
     "icon": [
       "icons/32x32.png",

@@ -193,6 +193,7 @@ pub(crate) fn clear_session_identity(store: &mut SessionStore) {
     store.snapshot.current_device_source_version = None;
     store.snapshot.current_device_key = None;
     store.snapshot.current_device_nickname = None;
+    store.snapshot.current_device_known = false;
     store.snapshot.current_device_trusted = false;
     store.snapshot.current_device_blocked = false;
     store.snapshot.current_device_blocked_reason = None;

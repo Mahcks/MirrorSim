@@ -5,8 +5,13 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
+& (Join-Path $PSScriptRoot 'validate-release-version.ps1')
+if (-not $?) {
+  throw 'Release version validation failed.'
+}
 $packageJson = Get-Content -Raw (Join-Path $repoRoot 'package.json') | ConvertFrom-Json
 $version = [string]$packageJson.version
+$bundleVersion = ($version -split '-')[0]
 
 function Get-Sha256Hex {
   param(
@@ -59,8 +64,10 @@ else {
 }
 
 $patterns = @(
-  "src-tauri/target/release/bundle/nsis/*$version*.exe",
-  "src-tauri/target/release/bundle/msi/*$version*.msi",
+  "src-tauri/target/release/bundle/nsis/*$bundleVersion*.exe",
+  "src-tauri/target/release/bundle/nsis/*$bundleVersion*.exe.sig",
+  "src-tauri/target/release/bundle/msi/*$bundleVersion*.msi",
+  "src-tauri/target/release/bundle/msi/*$bundleVersion*.msi.sig",
   "release/portable/*$version*.zip",
   'release/latest.json'
 )
@@ -69,8 +76,19 @@ $artifacts = foreach ($pattern in $patterns) {
   Get-ChildItem -Path (Join-Path $repoRoot $pattern) -File -ErrorAction SilentlyContinue
 }
 
-if (-not $artifacts) {
-  throw 'No release artifacts found to checksum.'
+$requiredKinds = @('.exe', '.exe.sig', '.msi', '.msi.sig', '.zip', 'latest.json')
+$artifactNames = @($artifacts | ForEach-Object Name)
+foreach ($kind in $requiredKinds) {
+  $present = if ($kind -eq 'latest.json') {
+    $artifactNames -contains $kind
+  }
+  else {
+    @($artifactNames | Where-Object { $_.EndsWith($kind, [System.StringComparison]::OrdinalIgnoreCase) }).Count -eq 1
+  }
+
+  if (-not $present) {
+    throw "Release checksum input is missing exactly one '$kind' artifact for version $version."
+  }
 }
 
 New-Item -ItemType Directory -Force -Path (Split-Path -Parent $resolvedOutputPath) | Out-Null

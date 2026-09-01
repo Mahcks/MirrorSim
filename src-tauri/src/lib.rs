@@ -10,15 +10,16 @@ mod trust;
 mod updater_config;
 
 use crate::commands::{
-    cancel_pairing, check_for_app_update, confirm_pairing_trust, export_diagnostics_report,
+    abort_recording_save, append_recording_chunk, begin_recording_save, cancel_pairing,
+    check_for_app_update, confirm_pairing_trust, export_diagnostics_report, finish_recording_save,
     forget_trusted_device, get_bonjour_status, get_connection_history, get_pairing_snapshot,
     get_preview_diagnostics, get_preview_init_segment, get_preview_stream_descriptor,
     get_preview_telemetry, get_receiver_runtime, get_receiver_sidecar_spec, get_remux_blueprint,
     get_session_snapshot, get_trusted_devices, install_app_update, open_windows_firewall,
     open_windows_services, reconnect_session, refresh_receiver_readiness, rename_trusted_device,
-    reset_trusted_devices, save_recording, save_screenshot, set_trusted_device_blocked,
-    start_recording, start_session, stop_recording, stop_session, take_preview_media_segment,
-    take_screenshot, trust_current_device,
+    reset_trusted_devices, save_screenshot, set_trusted_device_blocked, start_recording,
+    start_session, stop_recording, stop_session, take_preview_media_segment, take_screenshot,
+    trust_current_device,
 };
 use crate::runtime::AppState;
 use crate::updater_config::{updater_is_configured, UPDATER_PUBKEY};
@@ -56,7 +57,10 @@ pub fn run() {
             reset_trusted_devices,
             take_screenshot,
             save_screenshot,
-            save_recording,
+            begin_recording_save,
+            append_recording_chunk,
+            finish_recording_save,
+            abort_recording_save,
             start_recording,
             stop_recording,
             open_windows_services,

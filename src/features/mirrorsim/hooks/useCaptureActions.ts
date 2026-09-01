@@ -39,6 +39,10 @@ type UseCaptureActionsArgs = {
   videoEl: HTMLVideoElement | null;
 };
 
+type RecordingWriteSession = SavedCaptureFile & {
+  recordingId: number;
+};
+
 export function useCaptureActions({
   appPreferences,
   canCapture,
@@ -59,8 +63,49 @@ export function useCaptureActions({
   const [recElapsed, setRecElapsed] = useState(0);
   const recStartRef = useRef<number | null>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
-  const recordingChunksRef = useRef<Blob[]>([]);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordingWriteSessionRef = useRef<RecordingWriteSession | null>(null);
+  const recordingWriteChainRef = useRef<Promise<void>>(Promise.resolve());
+  const recordingWriteErrorRef = useRef<unknown>(null);
+  const captureInFlightRef = useRef(false);
+  const recordingTransitionRef = useRef(false);
+
+  useEffect(() => {
+    return () => {
+      const recorder = mediaRecorderRef.current;
+      if (recorder && recorder.state !== "inactive") {
+        recorder.stop();
+      }
+      recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+      const recordingId = recordingWriteSessionRef.current?.recordingId;
+      if (recordingId !== undefined) {
+        void invoke("abort_recording_save", { recordingId });
+      }
+      recordingStreamRef.current = null;
+      mediaRecorderRef.current = null;
+      recordingWriteSessionRef.current = null;
+    };
+  }, []);
+
+  useEffect(() => {
+    const recorder = mediaRecorderRef.current;
+    if (isRec || recordingTransitionRef.current || !recorder) {
+      return;
+    }
+
+    if (recorder.state !== "inactive") {
+      recorder.stop();
+    }
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    const recordingId = recordingWriteSessionRef.current?.recordingId;
+    if (recordingId !== undefined) {
+      void invoke("abort_recording_save", { recordingId });
+    }
+    recordingStreamRef.current = null;
+    mediaRecorderRef.current = null;
+    recordingWriteSessionRef.current = null;
+    setCaptureNotice("Recording stopped because the mirroring session ended.");
+  }, [isRec, setCaptureNotice]);
 
   useEffect(() => {
     if (!isRec) {
@@ -138,26 +183,6 @@ export function useCaptureActions({
     });
   }
 
-  async function saveRecordingToDisk(
-    blob: Blob,
-    fileName: string,
-    location: ScreenshotSaveLocation,
-    customDirectory?: string,
-  ) {
-    const bytes = new Uint8Array(await blob.arrayBuffer());
-    const mediaBase64 = uint8ArrayToBase64(bytes);
-    const normalizedCustomDirectory = customDirectory?.trim() || null;
-
-    return invoke<SavedCaptureFile>("save_recording", {
-      request: {
-        fileName,
-        mediaBase64,
-        location,
-        customDirectory: location === "custom" ? normalizedCustomDirectory : null,
-      },
-    });
-  }
-
   async function chooseScreenshotFolder() {
     const selection = await open({
       directory: true,
@@ -210,7 +235,7 @@ export function useCaptureActions({
     return "";
   }
 
-  async function startLocalRecording() {
+  async function startLocalRecording(fileName: string) {
     if (!videoEl || videoEl.readyState < 2 || videoEl.videoWidth === 0 || videoEl.videoHeight === 0) {
       throw new Error("Live preview is not ready for recording yet.");
     }
@@ -230,10 +255,33 @@ export function useCaptureActions({
       ? new MediaRecorder(previewCaptureStream, { mimeType })
       : new MediaRecorder(previewCaptureStream);
 
-    recordingChunksRef.current = [];
+    const writeSession = await invoke<RecordingWriteSession>("begin_recording_save", {
+      request: {
+        fileName,
+        location: recordingSettings.saveLocation,
+        customDirectory:
+          recordingSettings.saveLocation === "custom" ? recordingSettings.customSavePath.trim() || null : null,
+      },
+    });
+    recordingWriteSessionRef.current = writeSession;
+    recordingWriteChainRef.current = Promise.resolve();
+    recordingWriteErrorRef.current = null;
     mediaRecorder.addEventListener("dataavailable", (event) => {
       if (event.data.size > 0) {
-        recordingChunksRef.current.push(event.data);
+        const chunk = event.data;
+        recordingWriteChainRef.current = recordingWriteChainRef.current.then(async () => {
+          const session = recordingWriteSessionRef.current;
+          if (!session) {
+            throw new Error("Recording file session ended before its final chunk was written.");
+          }
+          const bytes = new Uint8Array(await chunk.arrayBuffer());
+          await invoke("append_recording_chunk", {
+            recordingId: session.recordingId,
+            chunkBase64: uint8ArrayToBase64(bytes),
+          });
+        }).catch((error) => {
+          recordingWriteErrorRef.current = error;
+        });
       }
     });
 
@@ -242,16 +290,21 @@ export function useCaptureActions({
     recordingStreamRef.current = previewCaptureStream;
   }
 
-  async function stopLocalRecording() {
+  async function stopLocalRecording(): Promise<SavedCaptureFile> {
     const mediaRecorder = mediaRecorderRef.current;
     if (!mediaRecorder) {
       throw new Error("Recording was not started in the preview surface.");
     }
 
-    const stoppedBlob = await new Promise<Blob>((resolve, reject) => {
-      const handleStop = () => {
+    await new Promise<void>((resolve, reject) => {
+      const handleStop = async () => {
         cleanup();
-        resolve(new Blob(recordingChunksRef.current, { type: mediaRecorder.mimeType || "video/webm" }));
+        await recordingWriteChainRef.current;
+        if (recordingWriteErrorRef.current) {
+          reject(recordingWriteErrorRef.current);
+          return;
+        }
+        resolve();
       };
       const handleError = () => {
         cleanup();
@@ -270,8 +323,15 @@ export function useCaptureActions({
     recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
     recordingStreamRef.current = null;
     mediaRecorderRef.current = null;
-
-    return stoppedBlob;
+    const writeSession = recordingWriteSessionRef.current;
+    if (!writeSession) {
+      throw new Error("Recording file session is not active.");
+    }
+    const savedRecording = await invoke<SavedCaptureFile>("finish_recording_save", {
+      recordingId: writeSession.recordingId,
+    });
+    recordingWriteSessionRef.current = null;
+    return savedRecording;
   }
 
   async function revealCaptureInExplorer(capture: Capture | undefined) {
@@ -283,7 +343,7 @@ export function useCaptureActions({
   }
 
   async function doCapture(overrides: ScreenshotCaptureOverrides = {}) {
-    if (!canCapture) {
+    if (!canCapture || captureInFlightRef.current) {
       console.info("[MirrorSim capture] skipped: capture is not available");
       return;
     }
@@ -309,6 +369,7 @@ export function useCaptureActions({
       return;
     }
 
+    captureInFlightRef.current = true;
     setCommandPending(true);
     setCommandError(null);
     setCaptureNotice("Taking screenshot...");
@@ -377,15 +438,17 @@ export function useCaptureActions({
       setCaptureNotice(`Screenshot failed: ${message}`);
       setCommandError(message);
     } finally {
+      captureInFlightRef.current = false;
       setCommandPending(false);
     }
   }
 
   async function doRecordToggle() {
-    if (!canRecord) {
+    if (!canRecord || recordingTransitionRef.current) {
       return;
     }
 
+    recordingTransitionRef.current = true;
     setCommandPending(true);
     setCommandError(null);
     setCaptureNotice(isRec ? "Stopping recording..." : "Starting recording...");
@@ -393,17 +456,8 @@ export function useCaptureActions({
     try {
       if (isRec) {
         const elapsed = recElapsed;
-        const recordedBlob = await stopLocalRecording();
         setSession(await invoke<SessionSnapshot>("stop_recording"));
-
-        const now = new Date();
-        const fileName = buildRecordingFileName(recordingSettings, now);
-        const savedRecording = await saveRecordingToDisk(
-          recordedBlob,
-          fileName,
-          recordingSettings.saveLocation,
-          recordingSettings.customSavePath,
-        );
+        const savedRecording = await stopLocalRecording();
         console.info("[MirrorSim capture] recording save result", savedRecording);
 
         if (recordingSettings.autoReveal || appPreferences.autoRevealSavedCaptures) {
@@ -432,7 +486,8 @@ export function useCaptureActions({
           customSavePath: recordingSettings.customSavePath,
           fileNamePrefix: recordingSettings.fileNamePrefix,
         });
-        await startLocalRecording();
+        const fileName = buildRecordingFileName(recordingSettings, new Date());
+        await startLocalRecording(fileName);
         setSession(await invoke<SessionSnapshot>("start_recording"));
         setCaptureNotice("Recording started");
       }
@@ -443,7 +498,11 @@ export function useCaptureActions({
       recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
       recordingStreamRef.current = null;
       mediaRecorderRef.current = null;
-      recordingChunksRef.current = [];
+      const recordingId = recordingWriteSessionRef.current?.recordingId;
+      if (recordingId !== undefined) {
+        void invoke("abort_recording_save", { recordingId });
+      }
+      recordingWriteSessionRef.current = null;
       const message = fmtError(error);
       console.error("[MirrorSim capture] recording failed", {
         message,
@@ -453,6 +512,7 @@ export function useCaptureActions({
       setCaptureNotice(`Recording failed: ${message}`);
       setCommandError(message);
     } finally {
+      recordingTransitionRef.current = false;
       setCommandPending(false);
     }
   }

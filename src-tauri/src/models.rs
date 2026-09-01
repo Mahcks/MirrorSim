@@ -347,11 +347,18 @@ pub(crate) struct SaveScreenshotRequest {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub(crate) struct SaveRecordingRequest {
+pub(crate) struct BeginRecordingRequest {
     pub(crate) file_name: String,
-    pub(crate) media_base64: String,
     pub(crate) location: ScreenshotSaveLocation,
     pub(crate) custom_directory: Option<String>,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct RecordingWriteSession {
+    pub(crate) recording_id: u64,
+    pub(crate) file_name: String,
+    pub(crate) file_path: String,
 }
 
 #[derive(Serialize)]

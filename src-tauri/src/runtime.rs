@@ -19,6 +19,7 @@ use crate::trust::{
 };
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 use serde_json::json;
+use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 #[cfg(windows)]
 use std::os::windows::io::AsRawHandle;
@@ -26,6 +27,7 @@ use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter, Manager};
@@ -51,11 +53,39 @@ const KEYFRAME_REQUEST_CAPABILITY: &str = "keyframe-request";
 const NATIVE_RECEIVER_CAPABILITY: &str = "native-receiver-process";
 const DECODER_RECOVERY_GAP_MICROS: u32 = 250_000;
 const HARD_RECEIVER_RESET_GAP_MICROS: u32 = 5_000_000;
+const EXPECTED_RECEIVER_PROTOCOL_VERSION: &str = "0.4.0";
+const MAX_RECEIVER_EVENT_LINE_BYTES: usize = 24 * 1024 * 1024;
 
 fn receiver_supports_keyframe_request(capabilities: &[String]) -> bool {
     capabilities.iter().any(|capability| {
         capability == KEYFRAME_REQUEST_CAPABILITY || capability == NATIVE_RECEIVER_CAPABILITY
     })
+}
+
+fn session_accepts_media(store: &SessionStore, stream_id: &str) -> bool {
+    store.active_session_id.is_some()
+        && !matches!(
+            store.snapshot.status,
+            SessionStatus::Idle | SessionStatus::Discovering
+        )
+        && !store.snapshot.current_device_blocked
+        && (!store.require_known_device || store.snapshot.current_device_known)
+        && store.receiver_runtime.stream_id == stream_id
+}
+
+fn sidecar_generation_is_current(
+    sidecar: &Arc<Mutex<Option<SidecarRuntime>>>,
+    generation: u64,
+) -> bool {
+    sidecar
+        .lock()
+        .ok()
+        .and_then(|guard| {
+            guard
+                .as_ref()
+                .map(|runtime| runtime.generation == generation)
+        })
+        .unwrap_or(false)
 }
 
 #[cfg(windows)]
@@ -119,6 +149,7 @@ impl Drop for SidecarJob {
 }
 
 pub(crate) struct SidecarRuntime {
+    generation: u64,
     child: Child,
     stdin: ChildStdin,
     #[cfg(windows)]
@@ -146,6 +177,18 @@ impl Drop for SidecarRuntime {
 pub(crate) struct AppState {
     pub(crate) inner: Arc<Mutex<SessionStore>>,
     pub(crate) sidecar: Arc<Mutex<Option<SidecarRuntime>>>,
+    next_sidecar_generation: AtomicU64,
+    pub(crate) recording_file: Arc<Mutex<Option<RecordingFileRuntime>>>,
+    pub(crate) next_recording_id: AtomicU64,
+}
+
+pub(crate) struct RecordingFileRuntime {
+    pub(crate) recording_id: u64,
+    pub(crate) file_name: String,
+    pub(crate) final_path: PathBuf,
+    pub(crate) temporary_path: PathBuf,
+    pub(crate) file: File,
+    pub(crate) bytes_written: u64,
 }
 
 impl Default for AppState {
@@ -153,6 +196,9 @@ impl Default for AppState {
         Self {
             inner: Arc::new(Mutex::new(SessionStore::default())),
             sidecar: Arc::new(Mutex::new(None)),
+            next_sidecar_generation: AtomicU64::new(1),
+            recording_file: Arc::new(Mutex::new(None)),
+            next_recording_id: AtomicU64::new(1),
         }
     }
 }
@@ -282,16 +328,8 @@ fn push_sidecar_candidates(candidates: &mut Vec<PathBuf>, base: &Path, relative:
 }
 
 fn resolve_sidecar_path(app: &AppHandle, relative_path: &str) -> CommandResult<PathBuf> {
-    let current_dir = std::env::current_dir().map_err(|error| error.to_string())?;
     let relative = Path::new(relative_path);
     let mut candidates = Vec::new();
-
-    push_sidecar_candidates(&mut candidates, &current_dir, relative);
-    push_sidecar_candidates(&mut candidates, &current_dir.join("src-tauri"), relative);
-
-    if let Some(parent) = current_dir.parent() {
-        push_sidecar_candidates(&mut candidates, parent, relative);
-    }
 
     if let Ok(resource_dir) = app.path().resource_dir() {
         push_sidecar_candidates(&mut candidates, &resource_dir, relative);
@@ -303,12 +341,25 @@ fn resolve_sidecar_path(app: &AppHandle, relative_path: &str) -> CommandResult<P
         }
     }
 
-    candidates.sort();
-    candidates.dedup();
+    #[cfg(debug_assertions)]
+    {
+        let current_dir = std::env::current_dir().map_err(|error| error.to_string())?;
+        push_sidecar_candidates(&mut candidates, &current_dir, relative);
+        push_sidecar_candidates(&mut candidates, &current_dir.join("src-tauri"), relative);
+        if let Some(parent) = current_dir.parent() {
+            push_sidecar_candidates(&mut candidates, parent, relative);
+        }
+    }
 
     for candidate in &candidates {
         if candidate.exists() {
-            return Ok(candidate.clone());
+            return candidate.canonicalize().map_err(|error| {
+                format!(
+                    "failed to resolve receiver path '{}': {}",
+                    candidate.display(),
+                    error
+                )
+            });
         }
     }
 
@@ -462,8 +513,13 @@ fn handle_sidecar_event(
     app: &AppHandle,
     store: &Arc<Mutex<SessionStore>>,
     sidecar: &Arc<Mutex<Option<SidecarRuntime>>>,
+    sidecar_generation: u64,
     event: SidecarEvent,
 ) -> CommandResult<()> {
+    if !sidecar_generation_is_current(sidecar, sidecar_generation) {
+        return Ok(());
+    }
+
     let mut request_keyframe: Option<(String, String)> = None;
     let mut stop_session_request: Option<String> = None;
     let mut restart_sidecar = false;
@@ -482,23 +538,41 @@ fn handle_sidecar_event(
                 protocol_version,
                 capabilities,
             } => {
-                guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
-                guard.snapshot.receiver_id = Some(receiver_id.clone());
-                guard.snapshot.receiver_protocol_version = Some(protocol_version.clone());
-                guard.snapshot.receiver_capabilities = capabilities.clone();
-                if guard.snapshot.status != SessionStatus::Idle {
-                    guard.snapshot.status = SessionStatus::Connecting;
+                if protocol_version != EXPECTED_RECEIVER_PROTOCOL_VERSION {
+                    restart_sidecar = true;
+                    guard.snapshot.status = SessionStatus::Idle;
+                    guard.active_session_id = None;
+                    clear_session_identity(&mut guard);
+                    clear_pairing(&mut guard);
+                    reset_preview(&mut guard);
+                    reset_fixture_transport(&mut guard);
+                    set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Idle);
+                    guard.receiver_runtime.last_error = Some(format!(
+                        "receiver protocol mismatch: expected {}, received {}",
+                        EXPECTED_RECEIVER_PROTOCOL_VERSION, protocol_version
+                    ));
                     emit_snapshot = true;
-                }
+                    emit_preview = true;
+                    emit_preview_stream = true;
+                } else {
+                    guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
+                    guard.snapshot.receiver_id = Some(receiver_id.clone());
+                    guard.snapshot.receiver_protocol_version = Some(protocol_version.clone());
+                    guard.snapshot.receiver_capabilities = capabilities.clone();
+                    if guard.snapshot.status != SessionStatus::Idle {
+                        guard.snapshot.status = SessionStatus::Connecting;
+                        emit_snapshot = true;
+                    }
 
-                let ready_note = format!(
-                    "{} {} ({})",
-                    receiver_id,
-                    protocol_version,
-                    capabilities.join(", ")
-                );
-                set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Ready);
-                guard.receiver_runtime.last_error = Some(ready_note);
+                    let ready_note = format!(
+                        "{} {} ({})",
+                        receiver_id,
+                        protocol_version,
+                        capabilities.join(", ")
+                    );
+                    set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Ready);
+                    guard.receiver_runtime.last_error = Some(ready_note);
+                }
             }
             SidecarEvent::SessionStarted {
                 session_id,
@@ -511,6 +585,9 @@ fn handle_sidecar_event(
                 device_os_build_version,
                 device_source_version,
             } => {
+                if guard.active_session_id.as_deref() != Some(session_id.as_str()) {
+                    return Ok(());
+                }
                 let trusted_devices = note_device_connected(
                     app,
                     &device_name,
@@ -551,7 +628,14 @@ fn handle_sidecar_event(
                     );
                     guard.pairing.can_trust = false;
                     guard.receiver_runtime.last_error = guard.pairing.failure_message.clone();
-                    stop_session_request = guard.active_session_id.clone();
+                    stop_session_request = guard.active_session_id.take();
+                    guard.require_local_session_approval = false;
+                    guard.require_known_device = false;
+                    guard.pending_local_session_approval = false;
+                    guard.snapshot.status = SessionStatus::Idle;
+                    reset_preview(&mut guard);
+                    reset_fixture_transport(&mut guard);
+                    guard.receiver_runtime.last_error = guard.pairing.failure_message.clone();
                     emit_pairing = true;
                     (
                         String::from("warning"),
@@ -572,7 +656,14 @@ fn handle_sidecar_event(
                     ));
                     guard.pairing.can_trust = false;
                     guard.receiver_runtime.last_error = guard.pairing.failure_message.clone();
-                    stop_session_request = guard.active_session_id.clone();
+                    stop_session_request = guard.active_session_id.take();
+                    guard.require_local_session_approval = false;
+                    guard.require_known_device = false;
+                    guard.pending_local_session_approval = false;
+                    guard.snapshot.status = SessionStatus::Idle;
+                    reset_preview(&mut guard);
+                    reset_fixture_transport(&mut guard);
+                    guard.receiver_runtime.last_error = guard.pairing.failure_message.clone();
                     emit_pairing = true;
                     (
                         String::from("warning"),
@@ -627,10 +718,10 @@ fn handle_sidecar_event(
                     status: history_status,
                     message: history_message,
                     device_name: Some(device_name),
-                    device_id: device_id,
-                    device_model: device_model,
-                    device_os_name: device_os_name,
-                    device_os_version: device_os_version,
+                    device_id,
+                    device_model,
+                    device_os_name,
+                    device_os_version,
                     device_key: guard.snapshot.current_device_key.clone(),
                     receiver_name: guard.snapshot.receiver_id.clone(),
                 });
@@ -645,6 +736,9 @@ fn handle_sidecar_event(
                 failure_message,
                 can_trust,
             } => {
+                if guard.active_session_id.is_none() {
+                    return Ok(());
+                }
                 let awaiting_trust_confirmation = guard.pairing.can_trust
                     || matches!(guard.pairing.phase, PairingPhase::AwaitingTrust);
 
@@ -783,6 +877,10 @@ fn handle_sidecar_event(
                 duration,
                 payload_base64,
             } => {
+                if !session_accepts_media(&guard, &stream_id) {
+                    return Ok(());
+                }
+
                 let waiting_for_local_approval = guard.pending_local_session_approval;
                 let previous_sample_index = guard.preview_diagnostics.last_access_unit_index;
                 let sample_index_restarted =
@@ -829,9 +927,6 @@ fn handle_sidecar_event(
                     });
 
                     sync_preview_diagnostics(&mut guard);
-                } else if guard.receiver_runtime.stream_id != stream_id {
-                    prepare_live_transport(&mut guard, stream_id.clone());
-                    emit_preview_stream = true;
                 } else if needs_decoder_recovery {
                     prepare_live_transport(&mut guard, stream_id.clone());
                     guard.remux_blueprint.reset_live_preview(stream_id.clone());
@@ -964,6 +1059,15 @@ fn handle_sidecar_event(
                 reason,
                 requires_init_segment_refresh,
             } => {
+                if guard.active_session_id.is_none()
+                    || matches!(
+                        guard.snapshot.status,
+                        SessionStatus::Idle | SessionStatus::Discovering
+                    )
+                    || guard.receiver_runtime.stream_id != stream_id
+                {
+                    return Ok(());
+                }
                 prepare_live_transport(&mut guard, stream_id.clone());
                 guard.remux_blueprint.reset_live_preview(stream_id.clone());
                 guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
@@ -1028,6 +1132,9 @@ fn handle_sidecar_event(
                 message,
                 recoverable,
             } => {
+                if guard.active_session_id.is_none() {
+                    return Ok(());
+                }
                 let snapshot = guard.snapshot.clone();
                 drop(guard);
 
@@ -1067,12 +1174,12 @@ fn handle_sidecar_event(
                     },
                 );
 
-                return emit_runtime_error(
-                    app,
-                    store,
-                    format!("{}: {}", code, message),
-                    recoverable,
-                );
+                let result =
+                    emit_runtime_error(app, store, format!("{}: {}", code, message), recoverable);
+                if !recoverable {
+                    stop_sidecar_runtime(sidecar);
+                }
+                return result;
             }
         }
 
@@ -1145,21 +1252,25 @@ fn spawn_sidecar_stdout_loop(
     app: AppHandle,
     store: Arc<Mutex<SessionStore>>,
     sidecar: Arc<Mutex<Option<SidecarRuntime>>>,
+    sidecar_generation: u64,
     stdout: ChildStdout,
 ) {
     thread::spawn(move || {
-        let reader = BufReader::new(stdout);
+        let mut reader = BufReader::new(stdout);
 
-        for line in reader.lines() {
-            let line = match line {
-                Ok(line) => line,
+        loop {
+            let line = match read_bounded_line(&mut reader, MAX_RECEIVER_EVENT_LINE_BYTES) {
+                Ok(Some(line)) => line,
+                Ok(None) => break,
                 Err(error) => {
-                    let _ = emit_runtime_error(
-                        &app,
-                        &store,
-                        format!("receiver output error: {}", error),
-                        true,
-                    );
+                    if sidecar_generation_is_current(&sidecar, sidecar_generation) {
+                        let _ = emit_runtime_error(
+                            &app,
+                            &store,
+                            format!("receiver output error: {}", error),
+                            true,
+                        );
+                    }
                     break;
                 }
             };
@@ -1170,21 +1281,37 @@ fn spawn_sidecar_stdout_loop(
 
             match serde_json::from_str::<SidecarEvent>(&line) {
                 Ok(event) => {
-                    let _ = handle_sidecar_event(&app, &store, &sidecar, event);
+                    let _ = handle_sidecar_event(&app, &store, &sidecar, sidecar_generation, event);
                 }
                 Err(error) => {
-                    let _ = emit_runtime_error(
-                        &app,
-                        &store,
-                        format!("receiver emitted malformed event: {}", error),
-                        true,
-                    );
+                    if sidecar_generation_is_current(&sidecar, sidecar_generation) {
+                        let _ = emit_runtime_error(
+                            &app,
+                            &store,
+                            format!("receiver emitted malformed event: {}", error),
+                            true,
+                        );
+                    }
                 }
             }
         }
 
-        if let Ok(mut guard) = sidecar.lock() {
-            *guard = None;
+        let cleared_current = if let Ok(mut guard) = sidecar.lock() {
+            if guard
+                .as_ref()
+                .is_some_and(|runtime| runtime.generation == sidecar_generation)
+            {
+                *guard = None;
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+
+        if !cleared_current {
+            return;
         }
 
         let is_idle = match store.lock() {
@@ -1203,7 +1330,57 @@ fn spawn_sidecar_stdout_loop(
     });
 }
 
-fn spawn_sidecar_stderr_loop(app: AppHandle, store: Arc<Mutex<SessionStore>>, stderr: ChildStderr) {
+fn read_bounded_line<R: BufRead>(
+    reader: &mut R,
+    max_bytes: usize,
+) -> std::io::Result<Option<String>> {
+    let mut bytes = Vec::new();
+    let mut exceeded = false;
+
+    loop {
+        let available = reader.fill_buf()?;
+        if available.is_empty() {
+            if exceeded {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "receiver event exceeded the maximum line size",
+                ));
+            }
+            if bytes.is_empty() {
+                return Ok(None);
+            }
+            return String::from_utf8(bytes)
+                .map(Some)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error));
+        }
+
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let consumed = newline.map_or(available.len(), |index| index + 1);
+        let content_len = newline.unwrap_or(consumed);
+        if !exceeded {
+            if bytes.len() + content_len > max_bytes {
+                exceeded = true;
+            } else {
+                bytes.extend_from_slice(&available[..content_len]);
+            }
+        }
+        reader.consume(consumed);
+
+        if newline.is_some() {
+            if exceeded {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "receiver event exceeded the maximum line size",
+                ));
+            }
+            return String::from_utf8(bytes)
+                .map(Some)
+                .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error));
+        }
+    }
+}
+
+fn spawn_sidecar_stderr_loop(stderr: ChildStderr) {
     thread::spawn(move || {
         let reader = BufReader::new(stderr);
 
@@ -1218,7 +1395,7 @@ fn spawn_sidecar_stderr_loop(app: AppHandle, store: Arc<Mutex<SessionStore>>, st
                 continue;
             }
 
-            let _ = emit_runtime_error(&app, &store, format!("receiver stderr: {}", trimmed), true);
+            eprintln!("[MirrorSim receiver] {}", trimmed);
         }
     });
 }
@@ -1230,6 +1407,9 @@ pub(crate) fn ensure_sidecar_runtime(app: &AppHandle, state: &AppState) -> Comma
     }
 
     let spec = ReceiverSidecarSpec::direct_receiver_boundary();
+    let sidecar_generation = state
+        .next_sidecar_generation
+        .fetch_add(1, Ordering::Relaxed);
     let executable = resolve_sidecar_path(app, &spec.launch.executable)?;
     let working_directory = resolve_sidecar_path(app, &spec.launch.working_directory)?;
 
@@ -1275,20 +1455,22 @@ pub(crate) fn ensure_sidecar_runtime(app: &AppHandle, state: &AppState) -> Comma
         .take()
         .ok_or_else(|| String::from("receiver sidecar stderr was unavailable"))?;
 
-    spawn_sidecar_stdout_loop(
-        app.clone(),
-        state.inner.clone(),
-        state.sidecar.clone(),
-        stdout,
-    );
-    spawn_sidecar_stderr_loop(app.clone(), state.inner.clone(), stderr);
-
     *sidecar_guard = Some(SidecarRuntime {
+        generation: sidecar_generation,
         child,
         stdin,
         #[cfg(windows)]
         _job: sidecar_job,
     });
+
+    spawn_sidecar_stdout_loop(
+        app.clone(),
+        state.inner.clone(),
+        state.sidecar.clone(),
+        sidecar_generation,
+        stdout,
+    );
+    spawn_sidecar_stderr_loop(stderr);
     Ok(true)
 }
 
@@ -1317,4 +1499,61 @@ pub(crate) fn ensure_bonjour_ready() -> CommandResult<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{read_bounded_line, session_accepts_media};
+    use crate::models::SessionStatus;
+    use crate::state::{prepare_live_transport, SessionStore};
+
+    fn connected_store() -> SessionStore {
+        let mut store = SessionStore {
+            active_session_id: Some(String::from("session-1")),
+            ..SessionStore::default()
+        };
+        store.snapshot.status = SessionStatus::Connecting;
+        prepare_live_transport(&mut store, String::from("stream-1"));
+        store
+    }
+
+    #[test]
+    fn stopped_session_rejects_late_media() {
+        let mut store = connected_store();
+        store.active_session_id = None;
+        store.snapshot.status = SessionStatus::Idle;
+
+        assert!(!session_accepts_media(&store, "stream-1"));
+    }
+
+    #[test]
+    fn media_requires_the_active_stream_id() {
+        let store = connected_store();
+
+        assert!(session_accepts_media(&store, "stream-1"));
+        assert!(!session_accepts_media(&store, "stale-stream"));
+    }
+
+    #[test]
+    fn blocked_and_unknown_only_sessions_reject_media() {
+        let mut store = connected_store();
+        store.snapshot.current_device_blocked = true;
+        assert!(!session_accepts_media(&store, "stream-1"));
+
+        store.snapshot.current_device_blocked = false;
+        store.require_known_device = true;
+        store.snapshot.current_device_known = false;
+        assert!(!session_accepts_media(&store, "stream-1"));
+    }
+
+    #[test]
+    fn receiver_lines_are_bounded_and_consumed() {
+        let mut reader = std::io::Cursor::new(b"123456\nok\n".to_vec());
+        assert!(read_bounded_line(&mut reader, 4).is_err());
+        assert_eq!(
+            read_bounded_line(&mut reader, 4).expect("next line"),
+            Some(String::from("ok"))
+        );
+        assert_eq!(read_bounded_line(&mut reader, 4).expect("eof"), None);
+    }
 }

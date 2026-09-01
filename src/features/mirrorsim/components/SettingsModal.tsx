@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 import type {
   AppMode,
@@ -52,19 +52,22 @@ function Toggle({
   checked,
   onChange,
   disabled,
+  label,
 }: {
   checked: boolean;
   onChange: (value: boolean) => void;
   disabled?: boolean;
+  label: string;
 }) {
   return (
     <button
       type="button"
       role="switch"
       aria-checked={checked}
+      aria-label={label}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5.5 w-10.5 shrink-0 cursor-pointer rounded-full p-0.5 transition-colors duration-150 focus:outline-none disabled:cursor-default disabled:opacity-40 ${
+      className={`relative inline-flex h-5.5 w-10.5 shrink-0 cursor-pointer rounded-full p-0.5 transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:cursor-default disabled:opacity-40 ${
         checked ? "bg-blue-500" : "bg-white/20"
       }`}
     >
@@ -78,7 +81,7 @@ function Toggle({
 }
 
 const fieldLabel = "mb-1.5 text-[11px] text-white/45";
-const fieldInput = "w-full rounded-xl border border-white/8 bg-[#111315] px-3 py-2 text-sm text-white/85 outline-none placeholder:text-white/22";
+const fieldInput = "w-full rounded-xl border border-white/8 bg-[#111315] px-3 py-2 text-sm text-white/85 outline-none placeholder:text-white/22 focus-visible:border-blue-400/60 focus-visible:ring-2 focus-visible:ring-blue-400/30";
 const fieldNote = "mt-1.5 text-[11px] leading-4 text-white/38";
 const btn = "rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-[11px] font-medium text-white/75 transition hover:border-white/14 hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-40";
 const btnSm = "rounded-xl border border-white/8 bg-white/5 px-2.5 py-1 text-[10px] font-medium text-white/65 transition hover:border-white/14 hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-40";
@@ -120,6 +123,13 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const [nicknameDrafts, setNicknameDrafts] = useState<Record<string, string>>({});
   const [blockReasonDrafts, setBlockReasonDrafts] = useState<Record<string, string>>({});
+  const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (open) {
+      closeButtonRef.current?.focus();
+    }
+  }, [open]);
 
   useEffect(() => {
     const nextNicknames: Record<string, string> = {};
@@ -248,6 +258,9 @@ export function SettingsModal({
       onMouseDown={onClose}
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="mirrorsim-settings-title"
         className={embedded
           ? "flex h-full w-full flex-col overflow-hidden rounded-[22px] border border-white/10 bg-[#17191d] shadow-[0_24px_72px_rgba(0,0,0,0.52)]"
           : "flex max-h-[calc(100dvh-2rem)] w-full max-w-115 flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[#17191d] shadow-[0_24px_72px_rgba(0,0,0,0.52)]"
@@ -256,8 +269,8 @@ export function SettingsModal({
       >
         {/* Header */}
         <div className={embedded ? "flex shrink-0 items-center justify-between gap-3 border-b border-white/7 px-4 py-3" : "flex shrink-0 items-center justify-between gap-4 border-b border-white/7 px-5 py-4"}>
-          <h2 className="text-[15px] font-semibold tracking-tight text-white">Preferences</h2>
-          <button type="button" className={btn} onClick={onClose}>
+          <h2 id="mirrorsim-settings-title" className="text-[15px] font-semibold tracking-tight text-white">Preferences</h2>
+          <button ref={closeButtonRef} type="button" className={btn} onClick={onClose}>
             Close
           </button>
         </div>
@@ -271,6 +284,7 @@ export function SettingsModal({
             <div className="py-3">
               <div className={fieldLabel}>Default view</div>
               <select
+                aria-label="Default view"
                 className={fieldInput}
                 value={appPreferences.launchMode}
                 onChange={(event) => setAppPreference("launchMode", event.target.value as AppMode)}
@@ -282,6 +296,7 @@ export function SettingsModal({
             <div className="py-3">
               <div className={fieldLabel}>Preview quality</div>
               <select
+                aria-label="Preview quality"
                 className={fieldInput}
                 value={appPreferences.previewQualityPreset}
                 onChange={(event) => setAppPreference("previewQualityPreset", event.target.value as PreviewQualityPreset)}
@@ -295,9 +310,10 @@ export function SettingsModal({
             <div className="py-3">
               <div className={fieldLabel}>AirPlay receiver name</div>
               <input
+                aria-label="AirPlay receiver name"
                 type="text"
                 className={fieldInput}
-                value={receiverDisplayName}
+                value={appPreferences.receiverDisplayName}
                 onChange={(event) => setAppPreference("receiverDisplayName", event.target.value)}
                 placeholder="MirrorSim"
               />
@@ -309,21 +325,22 @@ export function SettingsModal({
                 <div className="mt-0.5 text-[11px] text-white/38">Opaque dark background instead of transparent glass.</div>
               </div>
               <Toggle
+                label="Solid window background"
                 checked={appPreferences.useOpaqueWindowBackground}
                 onChange={(value) => setAppPreference("useOpaqueWindowBackground", value)}
               />
             </div>
             <div className="flex items-center justify-between gap-4 py-3">
               <span className="text-sm text-white/80">Remember last view mode</span>
-              <Toggle checked={appPreferences.rememberLastMode} onChange={(value) => setAppPreference("rememberLastMode", value)} />
+              <Toggle label="Remember last view mode" checked={appPreferences.rememberLastMode} onChange={(value) => setAppPreference("rememberLastMode", value)} />
             </div>
             <div className="flex items-center justify-between gap-4 py-3">
               <span className="text-sm text-white/80">Remember last orientation</span>
-              <Toggle checked={appPreferences.rememberLastOrientation} onChange={(value) => setAppPreference("rememberLastOrientation", value)} />
+              <Toggle label="Remember last orientation" checked={appPreferences.rememberLastOrientation} onChange={(value) => setAppPreference("rememberLastOrientation", value)} />
             </div>
             <div className="flex items-center justify-between gap-4 py-3">
               <span className="text-sm text-white/80">Keep Minimal window always on top</span>
-              <Toggle checked={appPreferences.keepMinimalOnTop} onChange={(value) => setAppPreference("keepMinimalOnTop", value)} />
+              <Toggle label="Keep Minimal window always on top" checked={appPreferences.keepMinimalOnTop} onChange={(value) => setAppPreference("keepMinimalOnTop", value)} />
             </div>
           </div>
 
@@ -332,22 +349,22 @@ export function SettingsModal({
           <div className="divide-y divide-white/7">
             <div className="flex items-center justify-between gap-4 py-3">
               <span className="text-sm text-white/80">Save to disk</span>
-              <Toggle checked={screenshotSettings.saveToDisk} onChange={(value) => setScreenshotSetting("saveToDisk", value)} />
+              <Toggle label="Save screenshots to disk" checked={screenshotSettings.saveToDisk} onChange={(value) => setScreenshotSetting("saveToDisk", value)} />
             </div>
             <div className="flex items-center justify-between gap-4 py-3">
               <span className="text-sm text-white/80">Copy to clipboard</span>
-              <Toggle checked={screenshotSettings.copyToClipboard} onChange={(value) => setScreenshotSetting("copyToClipboard", value)} />
+              <Toggle label="Copy screenshots to clipboard" checked={screenshotSettings.copyToClipboard} onChange={(value) => setScreenshotSetting("copyToClipboard", value)} />
             </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
                 <div className="text-sm text-white/80">Open in Explorer after saving</div>
                 <div className="mt-0.5 text-[11px] text-white/38">Reveals the file in File Explorer each time.</div>
               </div>
-              <Toggle checked={appPreferences.autoRevealSavedCaptures} onChange={(value) => setAppPreference("autoRevealSavedCaptures", value)} />
+              <Toggle label="Open saved screenshots in Explorer" checked={appPreferences.autoRevealSavedCaptures} onChange={(value) => setAppPreference("autoRevealSavedCaptures", value)} />
             </div>
             <div className="flex items-center justify-between gap-4 py-3">
               <span className="text-sm text-white/80">Show capture flash</span>
-              <Toggle checked={appPreferences.screenshotFlashEnabled} onChange={(value) => setAppPreference("screenshotFlashEnabled", value)} />
+              <Toggle label="Show screenshot capture flash" checked={appPreferences.screenshotFlashEnabled} onChange={(value) => setAppPreference("screenshotFlashEnabled", value)} />
             </div>
           </div>
           {!screenshotSettings.saveToDisk && !screenshotSettings.copyToClipboard && (
@@ -360,6 +377,7 @@ export function SettingsModal({
             <div className="py-3">
               <div className={fieldLabel}>Save to</div>
               <select
+                aria-label="Screenshot save location"
                 className={fieldInput}
                 value={screenshotSettings.saveLocation}
                 onChange={(event) => setScreenshotSetting("saveLocation", event.target.value as ScreenshotSaveLocation)}
@@ -375,6 +393,7 @@ export function SettingsModal({
                 <div className={fieldLabel}>Folder path</div>
                 <div className="flex gap-2">
                   <input
+                    aria-label="Custom screenshot folder"
                     type="text"
                     className={`${fieldInput} min-w-0 flex-1`}
                     value={screenshotSettings.customSavePath}
@@ -391,6 +410,7 @@ export function SettingsModal({
             <div className="py-3">
               <div className={fieldLabel}>Filename prefix</div>
               <input
+                aria-label="Screenshot filename prefix"
                 type="text"
                 className={fieldInput}
                 value={screenshotSettings.fileNamePrefix}
@@ -400,7 +420,7 @@ export function SettingsModal({
             </div>
             <div className="flex items-center justify-between gap-4 py-3">
               <span className="text-sm text-white/80">Append timestamp to filename</span>
-              <Toggle checked={screenshotSettings.includeTimestamp} onChange={(value) => setScreenshotSetting("includeTimestamp", value)} />
+              <Toggle label="Append timestamp to screenshot filename" checked={screenshotSettings.includeTimestamp} onChange={(value) => setScreenshotSetting("includeTimestamp", value)} />
             </div>
           </div>
 
@@ -410,6 +430,7 @@ export function SettingsModal({
             <div className="py-3">
               <div className={fieldLabel}>Save to</div>
               <select
+                aria-label="Recording save location"
                 className={fieldInput}
                 value={recordingSettings.saveLocation}
                 onChange={(event) => setRecordingSetting("saveLocation", event.target.value as ScreenshotSaveLocation)}
@@ -425,6 +446,7 @@ export function SettingsModal({
                 <div className={fieldLabel}>Folder path</div>
                 <div className="flex gap-2">
                   <input
+                    aria-label="Custom recording folder"
                     type="text"
                     className={`${fieldInput} min-w-0 flex-1`}
                     value={recordingSettings.customSavePath}
@@ -441,6 +463,7 @@ export function SettingsModal({
             <div className="py-3">
               <div className={fieldLabel}>Filename prefix</div>
               <input
+                aria-label="Recording filename prefix"
                 type="text"
                 className={fieldInput}
                 value={recordingSettings.fileNamePrefix}
@@ -450,14 +473,14 @@ export function SettingsModal({
             </div>
             <div className="flex items-center justify-between gap-4 py-3">
               <span className="text-sm text-white/80">Append timestamp to filename</span>
-              <Toggle checked={recordingSettings.includeTimestamp} onChange={(value) => setRecordingSetting("includeTimestamp", value)} />
+              <Toggle label="Append timestamp to recording filename" checked={recordingSettings.includeTimestamp} onChange={(value) => setRecordingSetting("includeTimestamp", value)} />
             </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
                 <div className="text-sm text-white/80">Open in Explorer after saving</div>
                 <div className="mt-0.5 text-[11px] text-white/38">Reveals the file in File Explorer when recording finishes.</div>
               </div>
-              <Toggle checked={recordingSettings.autoReveal} onChange={(value) => setRecordingSetting("autoReveal", value)} />
+              <Toggle label="Open saved recordings in Explorer" checked={recordingSettings.autoReveal} onChange={(value) => setRecordingSetting("autoReveal", value)} />
             </div>
           </div>
           <p className="mt-2 text-[11px] leading-4 text-white/38">Recording quality follows your Preview Quality setting. Screenshots always capture the full current frame.</p>
@@ -470,14 +493,14 @@ export function SettingsModal({
                 <div className="text-sm text-white/80">Search for devices on launch</div>
                 <div className="mt-0.5 text-[11px] text-white/38">Automatically look for your iPhone when the app opens.</div>
               </div>
-              <Toggle checked={appPreferences.autoStartDiscovery} onChange={(value) => setAppPreference("autoStartDiscovery", value)} />
+              <Toggle label="Start discovery on launch" checked={appPreferences.autoStartDiscovery} onChange={(value) => setAppPreference("autoStartDiscovery", value)} />
             </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
                 <div className="text-sm text-white/80">Auto-reconnect after drops</div>
                 <div className="mt-0.5 text-[11px] text-white/38">Reconnect automatically if the connection is lost unexpectedly.</div>
               </div>
-              <Toggle checked={appPreferences.autoReconnectOnDrop} onChange={(value) => setAppPreference("autoReconnectOnDrop", value)} />
+              <Toggle label="Reconnect automatically after a drop" checked={appPreferences.autoReconnectOnDrop} onChange={(value) => setAppPreference("autoReconnectOnDrop", value)} />
             </div>
           </div>
 
@@ -520,17 +543,21 @@ export function SettingsModal({
             <div className="py-3">
               <div className={fieldLabel}>When a new iPhone connects</div>
               <select
+                aria-label="New iPhone access policy"
                 className={fieldInput}
                 value={appPreferences.receiverAccessMode}
                 onChange={(event) => setAppPreference("receiverAccessMode", event.target.value as ReceiverAccessMode)}
               >
                 <option value="remember-trusted">Remember approved iPhones on this PC</option>
                 <option value="ask">Ask each time — don't remember</option>
+                <option value="known-only">Allow known iPhones only</option>
               </select>
               <p className={fieldNote}>
                 {appPreferences.receiverAccessMode === "remember-trusted"
                   ? "Approved devices are added to this PC's trusted list and can reconnect automatically."
-                  : "Every connection requires approval. Devices aren't remembered unless saved manually."}
+                  : appPreferences.receiverAccessMode === "known-only"
+                    ? "Only iPhones already listed on this PC are allowed to start a session."
+                    : "Every connection requires approval. Devices aren't remembered unless saved manually."}
               </p>
             </div>
           </div>
@@ -618,6 +645,7 @@ export function SettingsModal({
 
                   <div className="mt-3 flex gap-2">
                     <input
+                      aria-label={`Nickname for ${device.displayName}`}
                       type="text"
                       className="min-w-0 flex-1 rounded-xl border border-white/8 bg-[#0d0e10] px-3 py-1.5 text-[11px] text-white/85 outline-none placeholder:text-white/22"
                       value={nicknameDrafts[device.key] ?? ""}
@@ -636,6 +664,7 @@ export function SettingsModal({
 
                   <div className="mt-2 flex gap-2">
                     <input
+                      aria-label={`Block reason for ${device.displayName}`}
                       type="text"
                       className="min-w-0 flex-1 rounded-xl border border-white/8 bg-[#0d0e10] px-3 py-1.5 text-[11px] text-white/85 outline-none placeholder:text-white/22"
                       value={blockReasonDrafts[device.key] ?? ""}
@@ -714,6 +743,7 @@ export function SettingsModal({
                 <div className="mt-0.5 text-[11px] text-white/38">Opens the diagnostics panel automatically when receiver or preview errors occur.</div>
               </div>
               <Toggle
+                label="Open diagnostics automatically on errors"
                 checked={appPreferences.openDiagnosticsOnError}
                 onChange={(value) => setAppPreference("openDiagnosticsOnError", value)}
               />

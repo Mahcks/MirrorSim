@@ -1,12 +1,16 @@
+#![allow(clippy::too_many_arguments)] // Receiver identity fields mirror the external protocol.
+
 use crate::models::{CommandResult, SessionSnapshot, TrustedDevice};
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
+use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
 use crate::history::now_unix_timestamp;
 
 const TRUST_REGISTRY_FILE: &str = "trusted-devices.json";
+static TRUST_REGISTRY_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -25,11 +29,23 @@ fn trust_registry_path(app: &AppHandle) -> CommandResult<PathBuf> {
 fn load_registry(app: &AppHandle) -> CommandResult<TrustedDeviceRegistry> {
     let file_path = trust_registry_path(app)?;
     if !file_path.exists() {
-        return Ok(TrustedDeviceRegistry::default());
+        let backup_path = file_path.with_extension("json.bak");
+        if !backup_path.exists() {
+            return Ok(TrustedDeviceRegistry::default());
+        }
+        let backup = fs::read_to_string(backup_path).map_err(|error| error.to_string())?;
+        return serde_json::from_str::<TrustedDeviceRegistry>(&backup)
+            .map_err(|error| error.to_string());
     }
 
     let contents = fs::read_to_string(&file_path).map_err(|error| error.to_string())?;
-    serde_json::from_str::<TrustedDeviceRegistry>(&contents).map_err(|error| error.to_string())
+    serde_json::from_str::<TrustedDeviceRegistry>(&contents)
+        .or_else(|primary_error| {
+            let backup_path = file_path.with_extension("json.bak");
+            let backup = fs::read_to_string(backup_path).map_err(|_| primary_error)?;
+            serde_json::from_str::<TrustedDeviceRegistry>(&backup)
+        })
+        .map_err(|error| error.to_string())
 }
 
 fn save_registry(app: &AppHandle, registry: &TrustedDeviceRegistry) -> CommandResult<()> {
@@ -39,7 +55,14 @@ fn save_registry(app: &AppHandle, registry: &TrustedDeviceRegistry) -> CommandRe
     }
 
     let payload = serde_json::to_vec_pretty(registry).map_err(|error| error.to_string())?;
-    fs::write(file_path, payload).map_err(|error| error.to_string())
+    let temporary_path = file_path.with_extension("json.tmp");
+    let backup_path = file_path.with_extension("json.bak");
+    fs::write(&temporary_path, payload).map_err(|error| error.to_string())?;
+    if file_path.exists() {
+        fs::copy(&file_path, backup_path).map_err(|error| error.to_string())?;
+        fs::remove_file(&file_path).map_err(|error| error.to_string())?;
+    }
+    fs::rename(temporary_path, file_path).map_err(|error| error.to_string())
 }
 
 fn display_label(device: &TrustedDevice) -> String {
@@ -265,7 +288,13 @@ pub(crate) fn apply_current_device_trust(
 }
 
 pub(crate) fn get_trusted_devices(app: &AppHandle) -> CommandResult<Vec<TrustedDevice>> {
-    let mut devices = load_registry(app)?.devices;
+    let _registry_guard = TRUST_REGISTRY_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
+    sorted_devices(load_registry(app)?.devices)
+}
+
+fn sorted_devices(mut devices: Vec<TrustedDevice>) -> CommandResult<Vec<TrustedDevice>> {
     devices.sort_by(|left, right| {
         right.last_seen_at.cmp(&left.last_seen_at).then_with(|| {
             display_label(left)
@@ -286,6 +315,9 @@ pub(crate) fn note_device_connected(
     os_build_version: Option<&str>,
     source_version: Option<&str>,
 ) -> CommandResult<Vec<TrustedDevice>> {
+    let _registry_guard = TRUST_REGISTRY_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
     let mut registry = load_registry(app)?;
     let now = now_unix_timestamp();
     if let Some(device) = find_device_mut(
@@ -304,7 +336,7 @@ pub(crate) fn note_device_connected(
         device.last_failure_at = None;
     }
     save_registry(app, &registry)?;
-    get_trusted_devices(app)
+    sorted_devices(registry.devices)
 }
 
 pub(crate) fn note_pairing_state(
@@ -319,6 +351,9 @@ pub(crate) fn note_pairing_state(
     pending_pairing: bool,
     failure_message: Option<&str>,
 ) -> CommandResult<Vec<TrustedDevice>> {
+    let _registry_guard = TRUST_REGISTRY_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
     let mut registry = load_registry(app)?;
     let now = now_unix_timestamp();
     if let Some(device) = find_device_mut(
@@ -339,7 +374,7 @@ pub(crate) fn note_pairing_state(
         }
     }
     save_registry(app, &registry)?;
-    get_trusted_devices(app)
+    sorted_devices(registry.devices)
 }
 
 pub(crate) fn note_device_failure(
@@ -353,6 +388,9 @@ pub(crate) fn note_device_failure(
     source_version: Option<&str>,
     failure_message: &str,
 ) -> CommandResult<Vec<TrustedDevice>> {
+    let _registry_guard = TRUST_REGISTRY_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
     let mut registry = load_registry(app)?;
     let now = now_unix_timestamp();
     if let Some(device) = find_device_mut(
@@ -370,7 +408,7 @@ pub(crate) fn note_device_failure(
         device.last_failure_reason = Some(failure_message.trim().to_string());
     }
     save_registry(app, &registry)?;
-    get_trusted_devices(app)
+    sorted_devices(registry.devices)
 }
 
 pub(crate) fn note_known_device(
@@ -383,6 +421,9 @@ pub(crate) fn note_known_device(
     os_build_version: Option<&str>,
     source_version: Option<&str>,
 ) -> CommandResult<Vec<TrustedDevice>> {
+    let _registry_guard = TRUST_REGISTRY_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
     let mut registry = load_registry(app)?;
     let now = now_unix_timestamp();
     if let Some(device) = upsert_device(
@@ -404,7 +445,7 @@ pub(crate) fn note_known_device(
     }
 
     save_registry(app, &registry)?;
-    get_trusted_devices(app)
+    sorted_devices(registry.devices)
 }
 
 pub(crate) fn trust_device(
@@ -417,6 +458,9 @@ pub(crate) fn trust_device(
     os_build_version: Option<&str>,
     source_version: Option<&str>,
 ) -> CommandResult<Vec<TrustedDevice>> {
+    let _registry_guard = TRUST_REGISTRY_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
     let mut registry = load_registry(app)?;
     let now = now_unix_timestamp();
     if let Some(device) = upsert_device(
@@ -441,7 +485,7 @@ pub(crate) fn trust_device(
     }
 
     save_registry(app, &registry)?;
-    get_trusted_devices(app)
+    sorted_devices(registry.devices)
 }
 
 pub(crate) fn rename_trusted_device(
@@ -449,6 +493,9 @@ pub(crate) fn rename_trusted_device(
     device_key: &str,
     nickname: Option<&str>,
 ) -> CommandResult<Vec<TrustedDevice>> {
+    let _registry_guard = TRUST_REGISTRY_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
     let mut registry = load_registry(app)?;
     if let Some(device) = registry
         .devices
@@ -461,7 +508,7 @@ pub(crate) fn rename_trusted_device(
             .map(str::to_string);
     }
     save_registry(app, &registry)?;
-    get_trusted_devices(app)
+    sorted_devices(registry.devices)
 }
 
 pub(crate) fn set_trusted_device_blocked(
@@ -470,6 +517,9 @@ pub(crate) fn set_trusted_device_blocked(
     blocked: bool,
     reason: Option<&str>,
 ) -> CommandResult<Vec<TrustedDevice>> {
+    let _registry_guard = TRUST_REGISTRY_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
     let mut registry = load_registry(app)?;
     if let Some(device) = registry
         .devices
@@ -491,20 +541,26 @@ pub(crate) fn set_trusted_device_blocked(
         }
     }
     save_registry(app, &registry)?;
-    get_trusted_devices(app)
+    sorted_devices(registry.devices)
 }
 
 pub(crate) fn forget_trusted_device(
     app: &AppHandle,
     device_key: &str,
 ) -> CommandResult<Vec<TrustedDevice>> {
+    let _registry_guard = TRUST_REGISTRY_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
     let mut registry = load_registry(app)?;
     registry.devices.retain(|device| device.key != device_key);
     save_registry(app, &registry)?;
-    get_trusted_devices(app)
+    sorted_devices(registry.devices)
 }
 
 pub(crate) fn reset_trusted_devices(app: &AppHandle) -> CommandResult<Vec<TrustedDevice>> {
+    let _registry_guard = TRUST_REGISTRY_LOCK
+        .lock()
+        .map_err(|error| error.to_string())?;
     save_registry(app, &TrustedDeviceRegistry::default())?;
     Ok(Vec::new())
 }
