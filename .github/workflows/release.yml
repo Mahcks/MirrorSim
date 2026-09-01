@@ -84,7 +84,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.release_meta.outputs.tag }}
-          generate_release_notes: true
+          name: MirrorSim ${{ steps.release_meta.outputs.tag }}
+          body_path: RELEASE_NOTES.md
+          make_latest: true
           files: |
             src-tauri/target/release/bundle/nsis/*.exe
             src-tauri/target/release/bundle/nsis/*.exe.sig
