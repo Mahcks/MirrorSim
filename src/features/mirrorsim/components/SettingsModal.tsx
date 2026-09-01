@@ -81,7 +81,7 @@ function Toggle({
 }
 
 const fieldLabel = "mb-1.5 text-[11px] text-white/45";
-const fieldInput = "w-full rounded-xl border border-white/8 bg-[#111315] px-3 py-2 text-sm text-white/85 outline-none placeholder:text-white/22 focus-visible:border-blue-400/60 focus-visible:ring-2 focus-visible:ring-blue-400/30";
+const fieldInput = "w-full rounded-xl border border-white/8 bg-[#111315] px-3 py-2 text-sm text-white/85 outline-none placeholder:text-white/22 focus-visible:border-blue-400/60 focus-visible:ring-2 focus-visible:ring-blue-400/30 disabled:cursor-not-allowed disabled:opacity-45";
 const fieldNote = "mt-1.5 text-[11px] leading-4 text-white/38";
 const btn = "rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-[11px] font-medium text-white/75 transition hover:border-white/14 hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-40";
 const btnSm = "rounded-xl border border-white/8 bg-white/5 px-2.5 py-1 text-[10px] font-medium text-white/65 transition hover:border-white/14 hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-40";
@@ -153,6 +153,7 @@ export function SettingsModal({
   const historyPreview = connectionHistory.slice(0, 8);
   const bonjourNeedsAttention = bonjourStatus.status === "missing" || bonjourStatus.status === "stopped";
   const receiverReady = receiverRuntime.state === "ready" || receiverRuntime.state === "streaming";
+  const sessionActive = session.status !== "idle";
   const formatTimestamp = (timestamp: number | null | undefined) =>
     timestamp ? new Date(timestamp * 1000).toLocaleString() : "Never";
   const currentDeviceLabel = session.currentDeviceNickname ?? session.deviceName;
@@ -316,8 +317,13 @@ export function SettingsModal({
                 value={appPreferences.receiverDisplayName}
                 onChange={(event) => setAppPreference("receiverDisplayName", event.target.value)}
                 placeholder="MirrorSim"
+                disabled={sessionActive}
               />
-              <p className={fieldNote}>Appears in your iPhone's Screen Mirroring list. Keep it short.</p>
+              <p className={fieldNote}>
+                {sessionActive
+                  ? "Stop the AirPlay receiver before changing its advertised name."
+                  : "Appears in your iPhone's Screen Mirroring list. Keep it short."}
+              </p>
             </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
@@ -490,10 +496,10 @@ export function SettingsModal({
           <div className="divide-y divide-white/7">
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
-                <div className="text-sm text-white/80">Search for devices on launch</div>
-                <div className="mt-0.5 text-[11px] text-white/38">Automatically look for your iPhone when the app opens.</div>
+                <div className="text-sm text-white/80">Start AirPlay on launch</div>
+                <div className="mt-0.5 text-[11px] text-white/38">Automatically make MirrorSim available in Screen Mirroring when the app opens.</div>
               </div>
-              <Toggle label="Start discovery on launch" checked={appPreferences.autoStartDiscovery} onChange={(value) => setAppPreference("autoStartDiscovery", value)} />
+              <Toggle label="Start AirPlay receiver on launch" checked={appPreferences.autoStartDiscovery} onChange={(value) => setAppPreference("autoStartDiscovery", value)} />
             </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
@@ -547,13 +553,16 @@ export function SettingsModal({
                 className={fieldInput}
                 value={appPreferences.receiverAccessMode}
                 onChange={(event) => setAppPreference("receiverAccessMode", event.target.value as ReceiverAccessMode)}
+                disabled={sessionActive}
               >
                 <option value="remember-trusted">Remember approved iPhones on this PC</option>
                 <option value="ask">Ask each time — don't remember</option>
                 <option value="known-only">Allow known iPhones only</option>
               </select>
               <p className={fieldNote}>
-                {appPreferences.receiverAccessMode === "remember-trusted"
+                {sessionActive
+                  ? "Stop the AirPlay receiver before changing its device-access policy."
+                  : appPreferences.receiverAccessMode === "remember-trusted"
                   ? "Approved devices are added to this PC's trusted list and can reconnect automatically."
                   : appPreferences.receiverAccessMode === "known-only"
                     ? "Only iPhones already listed on this PC are allowed to start a session."

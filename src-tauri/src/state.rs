@@ -14,6 +14,7 @@ pub(crate) struct SessionStore {
     pub(crate) require_local_session_approval: bool,
     pub(crate) require_known_device: bool,
     pub(crate) pending_local_session_approval: bool,
+    pub(crate) native_pairing_approved_for_session: bool,
     pub(crate) remember_pairing_approval: bool,
     pub(crate) snapshot: SessionSnapshot,
     pub(crate) pairing: PairingSnapshot,
@@ -37,6 +38,7 @@ impl Default for SessionStore {
             require_local_session_approval: false,
             require_known_device: false,
             pending_local_session_approval: false,
+            native_pairing_approved_for_session: false,
             remember_pairing_approval: false,
             snapshot: SessionSnapshot {
                 status: SessionStatus::Idle,
@@ -183,7 +185,7 @@ pub(crate) fn reset_preview(store: &mut SessionStore) {
     };
 }
 
-pub(crate) fn clear_session_identity(store: &mut SessionStore) {
+pub(crate) fn clear_current_device_identity(store: &mut SessionStore) {
     store.snapshot.device_name = String::from(IDLE_DEVICE_NAME);
     store.snapshot.current_device_id = None;
     store.snapshot.current_device_model = None;
@@ -197,6 +199,10 @@ pub(crate) fn clear_session_identity(store: &mut SessionStore) {
     store.snapshot.current_device_trusted = false;
     store.snapshot.current_device_blocked = false;
     store.snapshot.current_device_blocked_reason = None;
+}
+
+pub(crate) fn clear_session_identity(store: &mut SessionStore) {
+    clear_current_device_identity(store);
     store.snapshot.receiver_id = None;
     store.snapshot.receiver_protocol_version = None;
     store.snapshot.receiver_capabilities.clear();

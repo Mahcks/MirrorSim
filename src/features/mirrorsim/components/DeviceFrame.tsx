@@ -21,6 +21,8 @@ type DeviceFrameProps = {
   bonjourNeedsAttention: boolean;
   sessionHeadline: string;
   sessionSupportingText: string;
+  showPhoneSteps: boolean;
+  phoneSteps: [string, string, string];
   primarySessionActionLabel: string;
   primarySessionActionDisabled: boolean;
   onPrimary: () => void;
@@ -49,6 +51,8 @@ export function DeviceFrame({
   bonjourNeedsAttention,
   sessionHeadline,
   sessionSupportingText,
+  showPhoneSteps,
+  phoneSteps,
   primarySessionActionLabel,
   primarySessionActionDisabled,
   onPrimary,
@@ -152,9 +156,9 @@ export function DeviceFrame({
               <p className="mt-1.5 max-w-47.5 text-[10px] leading-[1.6] text-white/36">
                 {sessionSupportingText}
               </p>
-              {sessionState === "discovering" && (
+              {showPhoneSteps && (
                 <ol className="mt-4 w-full max-w-45 space-y-1.5 text-left">
-                  {(["Open Control Center", "Tap Screen Mirroring", "Choose MirrorSim"] as const).map((step, i) => (
+                  {phoneSteps.map((step, i) => (
                     <li key={i} className="flex items-center gap-2.5">
                       <span className="w-3 shrink-0 text-center text-[9px] font-semibold tabular-nums text-white/20">{i + 1}</span>
                       <span className="text-[10px] text-white/42">{step}</span>

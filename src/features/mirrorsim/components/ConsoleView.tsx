@@ -29,7 +29,6 @@ type ConsoleViewProps = {
   diagnosticsItems: Array<[string, string]>;
   idleTelemetryHint: string;
   isConnected: boolean;
-  isIdle: boolean;
   isLive: boolean;
   isRec: boolean;
   isTransitioningSession: boolean;
@@ -62,6 +61,7 @@ type ConsoleViewProps = {
   sessionHeadline: string;
   sessionSecondaryLabel: string;
   sessionSupportingText: string;
+  showRetryConnection: boolean;
   settingsOpen: boolean;
   settingsModal: ReactNode;
   technicalDetails: ReactNode;
@@ -92,7 +92,6 @@ export function ConsoleView({
   diagnosticsItems,
   idleTelemetryHint,
   isConnected,
-  isIdle,
   isLive,
   isRec,
   isTransitioningSession,
@@ -125,6 +124,7 @@ export function ConsoleView({
   sessionHeadline,
   sessionSecondaryLabel,
   sessionSupportingText,
+  showRetryConnection,
   settingsOpen,
   settingsModal,
   technicalDetails,
@@ -296,7 +296,7 @@ export function ConsoleView({
               >
                 {primarySessionActionLabel}
               </button>
-              {!isIdle && !isRec && (
+              {showRetryConnection && !isRec && (
                 <button
                   type="button"
                   className="inline-flex items-center gap-1.5 rounded-xl border border-white/7 bg-[#1a1b1e] px-3 py-1.5 text-[11px] font-medium text-white/55 transition hover:border-white/12 hover:text-white disabled:cursor-default disabled:opacity-40"

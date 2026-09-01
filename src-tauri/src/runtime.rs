@@ -73,6 +73,35 @@ fn session_accepts_media(store: &SessionStore, stream_id: &str) -> bool {
         && store.receiver_runtime.stream_id == stream_id
 }
 
+fn needs_local_session_approval(store: &SessionStore) -> bool {
+    store.require_local_session_approval
+        && !store.snapshot.current_device_trusted
+        && !store.native_pairing_approved_for_session
+}
+
+fn pairing_policy_rejection(store: &SessionStore) -> Option<String> {
+    if store.snapshot.current_device_blocked {
+        return Some(
+            store
+                .snapshot
+                .current_device_blocked_reason
+                .clone()
+                .unwrap_or_else(|| String::from("This iPhone is blocked on this PC.")),
+        );
+    }
+
+    if store.require_known_device
+        && store.snapshot.current_device_key.is_some()
+        && !store.snapshot.current_device_known
+    {
+        return Some(String::from(
+            "This iPhone is not known on this PC yet. Switch Device Trust to Ask Each Time or Remember Approved iPhones, connect once, and approve it first.",
+        ));
+    }
+
+    None
+}
+
 fn sidecar_generation_is_current(
     sidecar: &Arc<Mutex<Option<SidecarRuntime>>>,
     generation: u64,
@@ -389,7 +418,10 @@ pub(crate) fn emit_runtime_error(
         let mut guard = store.lock().map_err(|error| error.to_string())?;
 
         if recoverable {
-            if guard.snapshot.status != SessionStatus::Idle {
+            if matches!(
+                guard.snapshot.status,
+                SessionStatus::Mirroring | SessionStatus::Recording
+            ) {
                 guard.snapshot.status = SessionStatus::Connecting;
             }
             guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
@@ -397,6 +429,7 @@ pub(crate) fn emit_runtime_error(
         } else {
             guard.snapshot.status = SessionStatus::Idle;
             guard.active_session_id = None;
+            guard.native_pairing_approved_for_session = false;
             clear_session_identity(&mut guard);
             clear_pairing(&mut guard);
             reset_preview(&mut guard);
@@ -522,6 +555,7 @@ fn handle_sidecar_event(
 
     let mut request_keyframe: Option<(String, String)> = None;
     let mut stop_session_request: Option<String> = None;
+    let mut cancel_pairing_request: Option<String> = None;
     let mut restart_sidecar = false;
     let mut history_entries: Vec<ConnectionHistoryEntry> = Vec::new();
 
@@ -542,6 +576,7 @@ fn handle_sidecar_event(
                     restart_sidecar = true;
                     guard.snapshot.status = SessionStatus::Idle;
                     guard.active_session_id = None;
+                    guard.native_pairing_approved_for_session = false;
                     clear_session_identity(&mut guard);
                     clear_pairing(&mut guard);
                     reset_preview(&mut guard);
@@ -559,19 +594,9 @@ fn handle_sidecar_event(
                     guard.snapshot.receiver_id = Some(receiver_id.clone());
                     guard.snapshot.receiver_protocol_version = Some(protocol_version.clone());
                     guard.snapshot.receiver_capabilities = capabilities.clone();
-                    if guard.snapshot.status != SessionStatus::Idle {
-                        guard.snapshot.status = SessionStatus::Connecting;
-                        emit_snapshot = true;
-                    }
-
-                    let ready_note = format!(
-                        "{} {} ({})",
-                        receiver_id,
-                        protocol_version,
-                        capabilities.join(", ")
-                    );
+                    emit_snapshot = true;
                     set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Ready);
-                    guard.receiver_runtime.last_error = Some(ready_note);
+                    guard.receiver_runtime.last_error = None;
                 }
             }
             SidecarEvent::SessionStarted {
@@ -607,7 +632,12 @@ fn handle_sidecar_event(
                 guard.snapshot.current_device_os_build_version = device_os_build_version.clone();
                 guard.snapshot.current_device_source_version = device_source_version.clone();
                 apply_current_device_trust(&mut guard.snapshot, &trusted_devices);
-                clear_pairing(&mut guard);
+                if matches!(
+                    guard.pairing.phase,
+                    PairingPhase::Idle | PairingPhase::Paired | PairingPhase::Failed
+                ) {
+                    clear_pairing(&mut guard);
+                }
                 guard.snapshot.status = SessionStatus::Connecting;
                 prepare_live_transport(&mut guard, stream_id);
                 set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Ready);
@@ -632,6 +662,7 @@ fn handle_sidecar_event(
                     guard.require_local_session_approval = false;
                     guard.require_known_device = false;
                     guard.pending_local_session_approval = false;
+                    guard.native_pairing_approved_for_session = false;
                     guard.snapshot.status = SessionStatus::Idle;
                     reset_preview(&mut guard);
                     reset_fixture_transport(&mut guard);
@@ -660,6 +691,7 @@ fn handle_sidecar_event(
                     guard.require_local_session_approval = false;
                     guard.require_known_device = false;
                     guard.pending_local_session_approval = false;
+                    guard.native_pairing_approved_for_session = false;
                     guard.snapshot.status = SessionStatus::Idle;
                     reset_preview(&mut guard);
                     reset_fixture_transport(&mut guard);
@@ -672,9 +704,7 @@ fn handle_sidecar_event(
                             device_name
                         ),
                     )
-                } else if guard.require_local_session_approval
-                    && !guard.snapshot.current_device_trusted
-                {
+                } else if needs_local_session_approval(&guard) {
                     guard.pending_local_session_approval = true;
                     guard.pairing.phase = PairingPhase::AwaitingTrust;
                     guard.pairing.entry_mode = crate::models::PairingEntryMode::ConfirmOnly;
@@ -751,120 +781,168 @@ fn handle_sidecar_event(
                 if let Some(device_id) = device_id {
                     guard.snapshot.current_device_id = Some(device_id.clone());
                     guard.pairing.device_id = Some(device_id);
+                    emit_snapshot = true;
+                }
+
+                if emit_snapshot {
                     let trusted_devices = get_trusted_devices(app)?;
                     apply_current_device_trust(&mut guard.snapshot, &trusted_devices);
-                    emit_snapshot = true;
                 }
 
-                guard.pairing.phase = phase;
-                guard.pairing.entry_mode = entry_mode;
-                guard.pairing.display_pin = display_pin;
-                guard.pairing.prompt = prompt;
-                guard.pairing.failure_message = failure_message;
-                guard.pairing.can_trust = can_trust;
+                let policy_rejection = pairing_policy_rejection(&guard);
 
-                if !guard.snapshot.device_name.is_empty() {
-                    let trusted_devices = note_pairing_state(
-                        app,
-                        &guard.snapshot.device_name,
-                        guard.snapshot.current_device_id.as_deref(),
-                        guard.snapshot.current_device_model.as_deref(),
-                        guard.snapshot.current_device_os_name.as_deref(),
-                        guard.snapshot.current_device_os_version.as_deref(),
-                        guard.snapshot.current_device_os_build_version.as_deref(),
-                        guard.snapshot.current_device_source_version.as_deref(),
-                        matches!(
-                            phase,
-                            PairingPhase::PinRequired
-                                | PairingPhase::AwaitingTrust
-                                | PairingPhase::Verifying
-                        ),
-                        guard.pairing.failure_message.as_deref(),
-                    )?;
-                    apply_current_device_trust(&mut guard.snapshot, &trusted_devices);
-                    emit_snapshot = true;
-                }
+                if let Some(rejection) = policy_rejection {
+                    if !matches!(phase, PairingPhase::Idle) {
+                        guard.pairing.phase = PairingPhase::Failed;
+                        guard.pairing.entry_mode = crate::models::PairingEntryMode::ConfirmOnly;
+                        guard.pairing.display_pin = None;
+                        guard.pairing.prompt = None;
+                        guard.pairing.failure_message = Some(rejection.clone());
+                        guard.pairing.can_trust = false;
+                        guard.receiver_runtime.last_error = Some(rejection.clone());
 
-                if matches!(phase, PairingPhase::Paired) {
-                    guard.pairing.display_pin = None;
-                    guard.pairing.prompt = None;
-                    guard.pairing.failure_message = None;
-                    guard.pairing.can_trust = false;
+                        if can_trust
+                            || matches!(
+                                phase,
+                                PairingPhase::PinRequired | PairingPhase::AwaitingTrust
+                            )
+                        {
+                            cancel_pairing_request = guard.active_session_id.clone();
+                        }
 
-                    if awaiting_trust_confirmation && !guard.snapshot.device_name.is_empty() {
-                        let trusted_devices = if guard.remember_pairing_approval {
-                            trust_device(
-                                app,
-                                &guard.snapshot.device_name,
-                                guard.snapshot.current_device_id.as_deref(),
-                                guard.snapshot.current_device_model.as_deref(),
-                                guard.snapshot.current_device_os_name.as_deref(),
-                                guard.snapshot.current_device_os_version.as_deref(),
-                                guard.snapshot.current_device_os_build_version.as_deref(),
-                                guard.snapshot.current_device_source_version.as_deref(),
-                            )?
-                        } else {
-                            note_known_device(
-                                app,
-                                &guard.snapshot.device_name,
-                                guard.snapshot.current_device_id.as_deref(),
-                                guard.snapshot.current_device_model.as_deref(),
-                                guard.snapshot.current_device_os_name.as_deref(),
-                                guard.snapshot.current_device_os_version.as_deref(),
-                                guard.snapshot.current_device_os_build_version.as_deref(),
-                                guard.snapshot.current_device_source_version.as_deref(),
-                            )?
-                        };
+                        history_entries.push(ConnectionHistoryEntry {
+                            id: String::new(),
+                            occurred_at: now_unix_timestamp(),
+                            event: String::from("pairing-policy-rejected"),
+                            status: String::from("error"),
+                            message: rejection,
+                            device_name: Some(guard.snapshot.device_name.clone()),
+                            device_id: guard.snapshot.current_device_id.clone(),
+                            device_model: guard.snapshot.current_device_model.clone(),
+                            device_os_name: guard.snapshot.current_device_os_name.clone(),
+                            device_os_version: guard.snapshot.current_device_os_version.clone(),
+                            device_key: guard.snapshot.current_device_key.clone(),
+                            receiver_name: guard.snapshot.receiver_id.clone(),
+                        });
+                    } else {
+                        guard.pairing.phase = PairingPhase::Failed;
+                        guard.pairing.entry_mode = crate::models::PairingEntryMode::ConfirmOnly;
+                        guard.pairing.display_pin = None;
+                        guard.pairing.prompt = None;
+                        guard.pairing.failure_message = Some(rejection);
+                        guard.pairing.can_trust = false;
+                    }
+                } else {
+                    guard.pairing.phase = phase;
+                    guard.pairing.entry_mode = entry_mode;
+                    guard.pairing.display_pin = display_pin;
+                    guard.pairing.prompt = prompt;
+                    guard.pairing.failure_message = failure_message;
+                    guard.pairing.can_trust = can_trust;
+
+                    if guard.snapshot.current_device_key.is_some() {
+                        let trusted_devices = note_pairing_state(
+                            app,
+                            &guard.snapshot.device_name,
+                            guard.snapshot.current_device_id.as_deref(),
+                            guard.snapshot.current_device_model.as_deref(),
+                            guard.snapshot.current_device_os_name.as_deref(),
+                            guard.snapshot.current_device_os_version.as_deref(),
+                            guard.snapshot.current_device_os_build_version.as_deref(),
+                            guard.snapshot.current_device_source_version.as_deref(),
+                            matches!(
+                                phase,
+                                PairingPhase::PinRequired
+                                    | PairingPhase::AwaitingTrust
+                                    | PairingPhase::Verifying
+                            ),
+                            guard.pairing.failure_message.as_deref(),
+                        )?;
                         apply_current_device_trust(&mut guard.snapshot, &trusted_devices);
                         emit_snapshot = true;
                     }
 
-                    if guard.pending_local_session_approval {
-                        resume_local_session_approval(&mut guard);
-                        emit_snapshot = true;
-                        if guard
-                            .snapshot
-                            .receiver_capabilities
-                            .iter()
-                            .any(|capability| capability == KEYFRAME_REQUEST_CAPABILITY)
-                        {
-                            request_keyframe = guard.active_session_id.as_ref().map(|_| {
-                                (
-                                    guard.receiver_runtime.stream_id.clone(),
-                                    String::from("pairing_approved"),
-                                )
-                            });
+                    if matches!(phase, PairingPhase::Paired) {
+                        guard.pairing.display_pin = None;
+                        guard.pairing.prompt = None;
+                        guard.pairing.failure_message = None;
+                        guard.pairing.can_trust = false;
+
+                        if awaiting_trust_confirmation && !guard.snapshot.device_name.is_empty() {
+                            let trusted_devices = if guard.remember_pairing_approval {
+                                trust_device(
+                                    app,
+                                    &guard.snapshot.device_name,
+                                    guard.snapshot.current_device_id.as_deref(),
+                                    guard.snapshot.current_device_model.as_deref(),
+                                    guard.snapshot.current_device_os_name.as_deref(),
+                                    guard.snapshot.current_device_os_version.as_deref(),
+                                    guard.snapshot.current_device_os_build_version.as_deref(),
+                                    guard.snapshot.current_device_source_version.as_deref(),
+                                )?
+                            } else {
+                                note_known_device(
+                                    app,
+                                    &guard.snapshot.device_name,
+                                    guard.snapshot.current_device_id.as_deref(),
+                                    guard.snapshot.current_device_model.as_deref(),
+                                    guard.snapshot.current_device_os_name.as_deref(),
+                                    guard.snapshot.current_device_os_version.as_deref(),
+                                    guard.snapshot.current_device_os_build_version.as_deref(),
+                                    guard.snapshot.current_device_source_version.as_deref(),
+                                )?
+                            };
+                            apply_current_device_trust(&mut guard.snapshot, &trusted_devices);
+                            emit_snapshot = true;
+                        }
+
+                        if guard.pending_local_session_approval {
+                            resume_local_session_approval(&mut guard);
+                            emit_snapshot = true;
+                            if guard
+                                .snapshot
+                                .receiver_capabilities
+                                .iter()
+                                .any(|capability| capability == KEYFRAME_REQUEST_CAPABILITY)
+                            {
+                                request_keyframe = guard.active_session_id.as_ref().map(|_| {
+                                    (
+                                        guard.receiver_runtime.stream_id.clone(),
+                                        String::from("pairing_approved"),
+                                    )
+                                });
+                            }
                         }
                     }
-                }
 
-                history_entries.push(ConnectionHistoryEntry {
-                    id: String::new(),
-                    occurred_at: now_unix_timestamp(),
-                    event: format!("pairing-{}", serde_variant_name(&phase)),
-                    status: if matches!(phase, PairingPhase::Failed) {
-                        String::from("error")
-                    } else if matches!(phase, PairingPhase::Paired) {
-                        String::from("success")
-                    } else {
-                        String::from("info")
-                    },
-                    message: guard
-                        .pairing
-                        .failure_message
-                        .clone()
-                        .or_else(|| guard.pairing.prompt.clone())
-                        .unwrap_or_else(|| {
-                            format!("Pairing moved to {}.", serde_variant_name(&phase))
-                        }),
-                    device_name: Some(guard.snapshot.device_name.clone()),
-                    device_id: guard.snapshot.current_device_id.clone(),
-                    device_model: guard.snapshot.current_device_model.clone(),
-                    device_os_name: guard.snapshot.current_device_os_name.clone(),
-                    device_os_version: guard.snapshot.current_device_os_version.clone(),
-                    device_key: guard.snapshot.current_device_key.clone(),
-                    receiver_name: guard.snapshot.receiver_id.clone(),
-                });
+                    history_entries.push(ConnectionHistoryEntry {
+                        id: String::new(),
+                        occurred_at: now_unix_timestamp(),
+                        event: format!("pairing-{}", serde_variant_name(&phase)),
+                        status: if matches!(phase, PairingPhase::Failed) {
+                            String::from("error")
+                        } else if matches!(phase, PairingPhase::Paired) {
+                            String::from("success")
+                        } else {
+                            String::from("info")
+                        },
+                        message: guard
+                            .pairing
+                            .failure_message
+                            .clone()
+                            .or_else(|| guard.pairing.prompt.clone())
+                            .unwrap_or_else(|| {
+                                format!("Pairing moved to {}.", serde_variant_name(&phase))
+                            }),
+                        device_name: Some(guard.snapshot.device_name.clone()),
+                        device_id: guard.snapshot.current_device_id.clone(),
+                        device_model: guard.snapshot.current_device_model.clone(),
+                        device_os_name: guard.snapshot.current_device_os_name.clone(),
+                        device_os_version: guard.snapshot.current_device_os_version.clone(),
+                        device_key: guard.snapshot.current_device_key.clone(),
+                        receiver_name: guard.snapshot.receiver_id.clone(),
+                    });
+                }
 
                 emit_pairing = true;
             }
@@ -897,6 +975,7 @@ fn handle_sidecar_event(
                     guard.require_local_session_approval = false;
                     guard.require_known_device = false;
                     guard.pending_local_session_approval = false;
+                    guard.native_pairing_approved_for_session = false;
                     guard.snapshot.status = SessionStatus::Idle;
                     clear_pairing(&mut guard);
                     reset_preview(&mut guard);
@@ -1098,6 +1177,7 @@ fn handle_sidecar_event(
                         guard.require_local_session_approval = false;
                         guard.require_known_device = false;
                         guard.pending_local_session_approval = false;
+                        guard.native_pairing_approved_for_session = false;
                         guard.snapshot.status = SessionStatus::Idle;
                         clear_pairing(&mut guard);
                         reset_fixture_transport(&mut guard);
@@ -1221,6 +1301,16 @@ fn handle_sidecar_event(
             sidecar,
             json!({
                 "name": "stop_session",
+                "session_id": session_id,
+            }),
+        );
+    }
+
+    if let Some(session_id) = cancel_pairing_request {
+        let _ = send_sidecar_command(
+            sidecar,
+            json!({
+                "name": "cancel_pairing",
                 "session_id": session_id,
             }),
         );
@@ -1503,7 +1593,10 @@ pub(crate) fn ensure_bonjour_ready() -> CommandResult<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::{read_bounded_line, session_accepts_media};
+    use super::{
+        needs_local_session_approval, pairing_policy_rejection, read_bounded_line,
+        session_accepts_media,
+    };
     use crate::models::SessionStatus;
     use crate::state::{prepare_live_transport, SessionStore};
 
@@ -1544,6 +1637,40 @@ mod tests {
         store.require_known_device = true;
         store.snapshot.current_device_known = false;
         assert!(!session_accepts_media(&store, "stream-1"));
+    }
+
+    #[test]
+    fn native_pairing_approval_prevents_a_second_ask_mode_prompt() {
+        let mut store = connected_store();
+        store.require_local_session_approval = true;
+        store.snapshot.current_device_trusted = false;
+        assert!(needs_local_session_approval(&store));
+
+        store.native_pairing_approved_for_session = true;
+        assert!(!needs_local_session_approval(&store));
+    }
+
+    #[test]
+    fn pairing_policy_rejects_blocked_and_unknown_devices() {
+        let mut store = connected_store();
+        store.snapshot.current_device_key = Some(String::from("phone-1"));
+        store.snapshot.current_device_blocked = true;
+        store.snapshot.current_device_blocked_reason = Some(String::from("Blocked by owner"));
+        assert_eq!(
+            pairing_policy_rejection(&store).as_deref(),
+            Some("Blocked by owner")
+        );
+
+        store.snapshot.current_device_blocked = false;
+        store.snapshot.current_device_blocked_reason = None;
+        store.require_known_device = true;
+        store.snapshot.current_device_known = false;
+        assert!(pairing_policy_rejection(&store)
+            .as_deref()
+            .is_some_and(|message| message.contains("not known")));
+
+        store.snapshot.current_device_known = true;
+        assert!(pairing_policy_rejection(&store).is_none());
     }
 
     #[test]

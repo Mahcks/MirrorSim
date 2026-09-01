@@ -120,6 +120,14 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
   useEffect(() => {
     let alive = true;
     const unsubs: Array<() => void> = [];
+    const eventSeen = {
+      session: false,
+      preview: false,
+      stream: false,
+      diagnostics: false,
+      runtime: false,
+      pairing: false,
+    };
     const keepUnsubscribe = (unsubscribe: () => void) => {
       if (alive) {
         unsubs.push(unsubscribe);
@@ -133,14 +141,15 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
         keepUnsubscribe(
           await listen<SessionSnapshot>(SESSION_STATUS_EVENT, (event) => {
             if (alive) {
+              eventSeen.session = true;
               setSession(event.payload);
-              setCommandError(null);
             }
           }),
         );
         keepUnsubscribe(
           await listen<PreviewTelemetry>(PREVIEW_TELEMETRY_EVENT, (event) => {
             if (alive) {
+              eventSeen.preview = true;
               setPreview(event.payload);
             }
           }),
@@ -148,6 +157,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
         keepUnsubscribe(
           await listen<PreviewStreamDescriptor>(PREVIEW_STREAM_EVENT, (event) => {
             if (alive) {
+              eventSeen.stream = true;
               setPreviewStream(event.payload);
             }
           }),
@@ -155,6 +165,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
         keepUnsubscribe(
           await listen<PreviewDiagnosticsSnapshot>(PREVIEW_DIAGNOSTICS_EVENT, (event) => {
             if (alive) {
+              eventSeen.diagnostics = true;
               setPreviewDiag(event.payload);
             }
           }),
@@ -162,6 +173,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
         keepUnsubscribe(
           await listen<ReceiverRuntimeSnapshot>(RECEIVER_RUNTIME_EVENT, (event) => {
             if (alive) {
+              eventSeen.runtime = true;
               setReceiverRuntime(event.payload);
             }
           }),
@@ -169,6 +181,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
         keepUnsubscribe(
           await listen<PairingSnapshot>(PAIRING_STATUS_EVENT, (event) => {
             if (alive) {
+              eventSeen.pairing = true;
               setPairing(event.payload);
             }
           }),
@@ -185,13 +198,13 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
         ]);
 
         if (alive) {
-          setSession(snap);
-          setPreview(telemetry);
-          setReceiverRuntime(runtime);
-          setPreviewDiag(diagnostics);
-          setPreviewStream(stream);
+          if (!eventSeen.session) setSession(snap);
+          if (!eventSeen.preview) setPreview(telemetry);
+          if (!eventSeen.runtime) setReceiverRuntime(runtime);
+          if (!eventSeen.diagnostics) setPreviewDiag(diagnostics);
+          if (!eventSeen.stream) setPreviewStream(stream);
           setBonjourStatus(bonjour);
-          setPairing(initialPairing);
+          if (!eventSeen.pairing) setPairing(initialPairing);
         }
       } catch (error) {
         if (alive) {

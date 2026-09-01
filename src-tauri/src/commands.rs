@@ -17,9 +17,9 @@ use crate::runtime::{
 };
 use crate::sidecar::ReceiverSidecarSpec;
 use crate::state::{
-    clear_pairing, clear_session_identity, prepare_live_transport, reset_fixture_transport,
-    reset_preview, resume_local_session_approval, set_receiver_runtime_state,
-    sync_preview_diagnostics,
+    clear_current_device_identity, clear_pairing, clear_session_identity, prepare_live_transport,
+    reset_fixture_transport, reset_preview, resume_local_session_approval,
+    set_receiver_runtime_state, sync_preview_diagnostics,
 };
 use crate::trust::{
     apply_current_device_trust, forget_trusted_device as forget_trusted_device_from_registry,
@@ -125,6 +125,7 @@ fn stop_session_inner(
         guard.active_session_id = None;
         guard.require_local_session_approval = false;
         guard.require_known_device = false;
+        guard.native_pairing_approved_for_session = false;
         guard.snapshot.status = SessionStatus::Idle;
         clear_session_identity(&mut guard);
         clear_pairing(&mut guard);
@@ -325,7 +326,14 @@ pub(crate) fn start_session(
         .lock()
         .map_err(|error| error.to_string())?
         .is_some();
-    let (trusted_device_ids, blocked_device_ids) = pairing_device_policy(&app)?;
+    let require_local_approval = require_local_approval.unwrap_or(false);
+    let require_known_device = require_known_device.unwrap_or(false);
+    let (mut trusted_device_ids, blocked_device_ids) = pairing_device_policy(&app)?;
+    if require_local_approval {
+        // Ask mode challenges every sender, including devices remembered by
+        // another mode. The native AirPlay prompt is the single approval step.
+        trusted_device_ids.clear();
+    }
 
     let (
         snapshot,
@@ -347,8 +355,9 @@ pub(crate) fn start_session(
         if should_start {
             guard.sequence += 1;
             guard.active_session_id = Some(session_id.clone());
-            guard.require_local_session_approval = require_local_approval.unwrap_or(false);
-            guard.require_known_device = require_known_device.unwrap_or(false);
+            guard.require_local_session_approval = require_local_approval;
+            guard.require_known_device = require_known_device;
+            guard.native_pairing_approved_for_session = false;
             guard.snapshot.status = SessionStatus::Discovering;
             clear_pairing(&mut guard);
             reset_preview(&mut guard);
@@ -356,7 +365,6 @@ pub(crate) fn start_session(
             set_receiver_runtime_state(&mut guard, crate::models::ReceiverRuntimeState::Priming);
 
             if sidecar_was_running {
-                guard.snapshot.status = SessionStatus::Connecting;
                 set_receiver_runtime_state(&mut guard, crate::models::ReceiverRuntimeState::Ready);
             }
         }
@@ -437,7 +445,12 @@ pub(crate) fn reconnect_session(
     }
 
     stop_sidecar_runtime(&state.sidecar);
-    let (trusted_device_ids, blocked_device_ids) = pairing_device_policy(&app)?;
+    let require_local_approval = require_local_approval.unwrap_or(false);
+    let require_known_device = require_known_device.unwrap_or(false);
+    let (mut trusted_device_ids, blocked_device_ids) = pairing_device_policy(&app)?;
+    if require_local_approval {
+        trusted_device_ids.clear();
+    }
 
     let (
         snapshot,
@@ -456,8 +469,9 @@ pub(crate) fn reconnect_session(
         let stream_id = format!("airplay-stream-{:04}", guard.sequence);
 
         guard.active_session_id = Some(session_id.clone());
-        guard.require_local_session_approval = require_local_approval.unwrap_or(false);
-        guard.require_known_device = require_known_device.unwrap_or(false);
+        guard.require_local_session_approval = require_local_approval;
+        guard.require_known_device = require_known_device;
+        guard.native_pairing_approved_for_session = false;
         clear_pairing(&mut guard);
         reset_preview(&mut guard);
         prepare_live_transport(&mut guard, stream_id.clone());
@@ -969,6 +983,10 @@ pub(crate) fn confirm_pairing_trust(
             ));
         }
 
+        // The native adapter emits session_started immediately before its final
+        // paired event. Remember this decision now so SessionStarted does not
+        // display a second approval prompt or erase the remember choice.
+        guard.native_pairing_approved_for_session = true;
         guard.remember_pairing_approval = remember_device;
 
         guard.pairing.phase = PairingPhase::Verifying;
@@ -1007,13 +1025,29 @@ pub(crate) fn cancel_pairing(
         }
     }
 
-    let (pairing, session_id) = {
+    let (pairing, session_id, snapshot) = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
         clear_pairing(&mut guard);
-        (guard.pairing.clone(), guard.active_session_id.clone())
+        let snapshot = if matches!(
+            guard.snapshot.status,
+            SessionStatus::Idle | SessionStatus::Discovering
+        ) {
+            clear_current_device_identity(&mut guard);
+            Some(guard.snapshot.clone())
+        } else {
+            None
+        };
+        (
+            guard.pairing.clone(),
+            guard.active_session_id.clone(),
+            snapshot,
+        )
     };
 
     emit_pairing_status(&app, &pairing)?;
+    if let Some(snapshot) = snapshot.as_ref() {
+        emit_session_status(&app, snapshot)?;
+    }
 
     send_sidecar_command(
         &state.sidecar,

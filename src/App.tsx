@@ -15,6 +15,7 @@ import {
   fmtError,
 } from "@/features/mirrorsim/helpers";
 import { ConsoleView } from "@/features/mirrorsim/components/ConsoleView";
+import { getConnectionPresentation } from "@/features/mirrorsim/connectionFlow";
 import { DeviceFrame } from "@/features/mirrorsim/components/DeviceFrame";
 import { MinimalContextMenu } from "@/features/mirrorsim/components/MinimalContextMenu";
 import { MinimalView } from "@/features/mirrorsim/components/MinimalView";
@@ -96,6 +97,7 @@ export default function App() {
   const [reconnectUiState, setReconnectUiState] = useState<{ attempt: number; phase: "scheduled" | "retrying" } | null>(null);
   const [reconnectNextRetryAt, setReconnectNextRetryAt] = useState<number | null>(null);
   const shouldMaintainConnectionRef = useRef(false);
+  const hasReachedLiveSessionRef = useRef(false);
   const reconnectAttemptRef = useRef(0);
   const reconnectTimerRef = useRef<number | null>(null);
   const autoReconnectInFlightRef = useRef(false);
@@ -177,11 +179,12 @@ export default function App() {
   // derived
   const ss = session.status;
   const isIdle = ss === "idle";
-  const isConnected = ss !== "idle";
   const isLive = ss === "mirroring" || ss === "recording";
+  const isConnected = isLive;
   const isRec = ss === "recording";
   const isTransitioningSession = ss === "discovering" || ss === "connecting";
   const bonjourNeedsAttention = bonjourStatus.status === "missing" || bonjourStatus.status === "stopped";
+  const receiverDisplayName = appPreferences.receiverDisplayName.trim() || "MirrorSim";
   const receiverTransportLabel = receiverRuntime.transport === "airplayserver" ? "AirPlay transport" : "Fixture transport";
   const receiverStateLabel =
     receiverRuntime.state === "idle"
@@ -197,10 +200,6 @@ export default function App() {
       : previewStream?.deliveryMode === "static-paths"
         ? "Static preview"
         : null;
-  const receiverIdentityLabel = session.receiverId
-    ? `${session.receiverId}${session.receiverProtocolVersion ? ` v${session.receiverProtocolVersion}` : ""}`
-    : null;
-  const receiverDisplayName = appPreferences.receiverDisplayName.trim() || "MirrorSim";
   const supportsPairingTrustControl = session.receiverCapabilities.includes("pairing-trust-control");
   const approvalActionSupported = pairing.canTrust || supportsPairingTrustControl;
   const receiverCapabilityLabel = session.receiverCapabilities.includes("native-receiver-process")
@@ -208,55 +207,17 @@ export default function App() {
     : session.receiverCapabilities.length > 0
       ? `${session.receiverCapabilities.length} receiver features`
       : null;
-  const pairingNeedsAttention = pairing.phase !== "idle" && pairing.phase !== "paired" && pairing.phase !== "verifying";
-  const sessionHeadline = bonjourNeedsAttention
-    ? bonjourStatus.status === "missing"
-      ? "Bonjour is required"
-      : "Bonjour service is stopped"
-    : pairingNeedsAttention
-      ? pairing.phase === "pin-required"
-        ? "AirPlay verification required"
-        : pairing.phase === "awaiting-trust"
-          ? "Confirm trust"
-          : pairing.phase === "verifying"
-            ? "Verifying pairing"
-            : pairing.phase === "failed"
-              ? "Pairing failed"
-              : pairing.deviceName ?? session.deviceName
-    : isLive
-      ? session.currentDeviceNickname ?? session.deviceName
-      : ss === "connecting"
-        ? "Connecting to iPhone"
-        : ss === "discovering"
-          ? "Looking for your iPhone"
-          : "Ready to mirror";
-  const sessionSupportingText = bonjourNeedsAttention
-    ? bonjourStatus.detail
-    : pairing.phase === "pin-required"
-      ? pairing.prompt
-        ?? "This sender is asking for AirPlay verification outside MirrorSim. Cancel if you do not want to continue from this laptop."
-      : pairing.phase === "awaiting-trust"
-        ? pairing.prompt ?? (appPreferences.receiverAccessMode === "remember-trusted"
-          ? "Approve the trust request so MirrorSim remembers this iPhone on this PC."
-          : "Approve the trust request for this session only. MirrorSim will ask again next time.")
-      : pairing.phase === "verifying"
-        ? pairing.prompt ?? "MirrorSim is waiting for the receiver to finish pairing."
-      : pairing.phase === "failed"
-        ? pairing.failureMessage ?? pairing.prompt ?? "The receiver rejected the current pairing attempt."
-    : isRec
-      ? "Recording your screen. Stop at any time from the toolbar."
-      : isLive
-        ? "Your iPhone screen is live."
-        : ss === "connecting"
-          ? "Connected — waiting for your iPhone to start streaming."
-          : ss === "discovering"
-            ? "Now on your iPhone:"
-            : `Hit Start, then pick ${receiverDisplayName} from your iPhone's Screen Mirroring list.`;
-  const sessionSecondaryLabel = isLive
-    ? "Connected via AirPlay"
-    : pairingNeedsAttention
-      ? pairing.deviceId ?? "Pairing in progress"
-    : receiverIdentityLabel ?? (receiverRuntime.state === "ready" ? "Ready" : "Status unavailable");
+  const connectionPresentation = getConnectionPresentation({
+    session,
+    pairing,
+    receiverRuntime,
+    bonjourStatus,
+    receiverDisplayName,
+  });
+  const pairingNeedsAttention = connectionPresentation.pairingNeedsAttention;
+  const sessionHeadline = connectionPresentation.headline;
+  const sessionSupportingText = connectionPresentation.supportingText;
+  const sessionSecondaryLabel = connectionPresentation.secondaryLabel;
   const currentDeviceTrustLabel = session.currentDeviceKey
     ? session.currentDeviceBlocked
       ? "Blocked on this PC"
@@ -264,7 +225,7 @@ export default function App() {
         ? "Trusted device"
         : session.currentDeviceKnown
           ? "Known device"
-        : pairingNeedsAttention
+        : pairingNeedsAttention || connectionPresentation.pairingInProgress
           ? "Pairing pending"
           : "New device"
     : null;
@@ -273,42 +234,28 @@ export default function App() {
     ? `${session.currentDeviceOsName ?? "iPhone OS"} ${session.currentDeviceOsVersion}${session.currentDeviceOsBuildVersion ? ` (${session.currentDeviceOsBuildVersion})` : ""}`
     : session.currentDeviceOsName;
   const reconnectAttemptLabel = reconnectUiState && reconnectUiState.attempt > 1 ? ` #${reconnectUiState.attempt}` : "";
-  const titlebarStateLabel = isLive
-    ? "Connected"
-    : reconnectUiState?.phase === "retrying"
-      ? `Reconnecting${reconnectAttemptLabel}`
-      : isTransitioningSession
-        ? "Connecting"
-        : "Waiting";
-  const titlebarStateDotClass = isLive
-    ? "bg-emerald-400"
-    : isTransitioningSession
-      ? "bg-amber-300"
-      : "bg-white/35";
-  const primarySessionActionLabel = isIdle
-    ? "Start"
-    : isRec
-      ? "Stop recording"
-      : isTransitioningSession
-        ? "Cancel"
-        : "Disconnect";
+  const titlebarStateLabel = reconnectUiState?.phase === "retrying"
+    ? `Reconnecting${reconnectAttemptLabel}`
+    : connectionPresentation.titlebarLabel;
+  const titlebarStateDotClass = cn(
+    "h-1.5 w-1.5 shrink-0 rounded-full",
+    connectionPresentation.tone === "live"
+      ? "bg-emerald-400"
+      : connectionPresentation.tone === "warning"
+        ? "bg-red-400"
+        : connectionPresentation.tone === "active"
+          ? "bg-cyan-300"
+          : "bg-white/35",
+  );
+  const primarySessionActionLabel = connectionPresentation.primaryActionLabel;
   const primarySessionActionDisabled = commandPending || (isIdle && bonjourNeedsAttention);
-  const primarySessionActionTitle = isIdle
-    ? "Start mirroring"
-    : isRec
-      ? "Stop recording"
-      : isTransitioningSession
-        ? "Cancel"
-        : "Disconnect";
-  const idleTelemetryHint = bonjourNeedsAttention
-    ? bonjourStatus.status === "missing"
-      ? `Install Bonjour so your iPhone can discover ${receiverDisplayName} on the network.`
-      : `Start the Bonjour Service so your iPhone can discover ${receiverDisplayName}.`
-    : `Open Control Center on your iPhone, tap Screen Mirroring, then choose ${receiverDisplayName}.`;
+  const primarySessionActionTitle = connectionPresentation.primaryActionTitle;
+  const idleTelemetryHint = connectionPresentation.telemetryHint;
+  const showRetryConnection = isIdle && !bonjourNeedsAttention && Boolean(receiverRuntime.lastError);
   const canCapture = isLive;
   const canRecord = isLive;
   const tone: "inactive" | "live" | "warning" =
-    surfaceStatus === "error" || surfaceStatus === "unsupported"
+    connectionPresentation.tone === "warning" || surfaceStatus === "error" || surfaceStatus === "unsupported"
       ? "warning"
       : isLive && surfaceStatus === "ready"
         ? "live"
@@ -426,7 +373,7 @@ export default function App() {
               <strong className="max-w-[60%] truncate text-right font-medium text-white/80">{session.currentDeviceSourceVersion}</strong>
             </div>
           )}
-          {pairingNeedsAttention && (
+          {(pairingNeedsAttention || connectionPresentation.pairingInProgress) && (
             <div className="flex items-center justify-between gap-3">
               <span className="text-white/30">Pairing</span>
               <strong className="max-w-[60%] truncate text-right font-medium text-white/80">{pairing.phase}</strong>
@@ -594,13 +541,13 @@ export default function App() {
   }, [appPreferences.openDiagnosticsOnError, commandError, receiverRuntime.lastError, surfaceError]);
 
   useEffect(() => {
-    if (!appPreferences.autoStartDiscovery || autoDiscoveryAttemptedRef.current || ss !== "idle") {
+    if (!preferencesReady || !appPreferences.autoStartDiscovery || autoDiscoveryAttemptedRef.current || ss !== "idle") {
       return;
     }
 
     autoDiscoveryAttemptedRef.current = true;
     void startSessionFlow("start_session", "manual");
-  }, [appPreferences.autoStartDiscovery, ss]);
+  }, [appPreferences.autoStartDiscovery, preferencesReady, ss]);
 
   useEffect(() => {
     if (ss !== "idle") {
@@ -608,6 +555,7 @@ export default function App() {
     }
 
     if (ss === "mirroring" || ss === "recording") {
+      hasReachedLiveSessionRef.current = true;
       reconnectAttemptRef.current = 0;
       setReconnectUiState(null);
       setReconnectNextRetryAt(null);
@@ -829,12 +777,8 @@ export default function App() {
   }
 
   async function cancelPairing() {
-    if (!approvalActionSupported) {
-      setPairing((previous) => ({ ...previous, phase: "idle", failureMessage: null, prompt: null, canTrust: false, displayPin: null }));
-      return;
-    }
-
     setCommandPending(true);
+    setCommandError(null);
 
     try {
       setPairing(await invoke<PairingSnapshot>("cancel_pairing"));
@@ -914,12 +858,16 @@ export default function App() {
   async function startSessionFlow(command: "start_session" | "reconnect_session", source: "manual" | "auto") {
     shouldMaintainConnectionRef.current = true;
     if (source === "manual") {
+      hasReachedLiveSessionRef.current = false;
       setReconnectUiState(null);
       clearAutoReconnectTimer();
       reconnectAttemptRef.current = 0;
     }
     const ok = await runSessionCommand(command, source === "auto");
     if (!ok) {
+      if (source === "manual") {
+        shouldMaintainConnectionRef.current = false;
+      }
       try {
         await refreshBonjourStatus();
       } catch {
@@ -934,6 +882,7 @@ export default function App() {
 
   async function stopSessionFlow() {
     shouldMaintainConnectionRef.current = false;
+    hasReachedLiveSessionRef.current = false;
     reconnectAttemptRef.current = 0;
     autoReconnectInFlightRef.current = false;
     setReconnectUiState(null);
@@ -979,7 +928,10 @@ export default function App() {
         : "border-white/7 bg-[#15161a] text-white/75";
 
   useEffect(() => {
-    if (!appPreferences.autoReconnectOnDrop || !shouldMaintainConnectionRef.current || isRec) {
+    if (!appPreferences.autoReconnectOnDrop
+      || !shouldMaintainConnectionRef.current
+      || !hasReachedLiveSessionRef.current
+      || isRec) {
       return;
     }
 
@@ -1167,6 +1119,8 @@ export default function App() {
       bonjourNeedsAttention={bonjourNeedsAttention}
       sessionHeadline={sessionHeadline}
       sessionSupportingText={sessionSupportingText}
+      showPhoneSteps={connectionPresentation.showPhoneSteps}
+      phoneSteps={connectionPresentation.phoneSteps}
       primarySessionActionLabel={primarySessionActionLabel}
       primarySessionActionDisabled={primarySessionActionDisabled}
       onPrimary={doPrimary}
@@ -1195,6 +1149,8 @@ export default function App() {
       bonjourNeedsAttention={bonjourNeedsAttention}
       sessionHeadline={sessionHeadline}
       sessionSupportingText={sessionSupportingText}
+      showPhoneSteps={connectionPresentation.showPhoneSteps}
+      phoneSteps={connectionPresentation.phoneSteps}
       primarySessionActionLabel={primarySessionActionLabel}
       primarySessionActionDisabled={primarySessionActionDisabled}
       onPrimary={doPrimary}
@@ -1236,7 +1192,6 @@ export default function App() {
           diagnosticsItems={diagnosticsItems}
           idleTelemetryHint={idleTelemetryHint}
           isConnected={isConnected}
-          isIdle={isIdle}
           isLive={isLive}
           isRec={isRec}
           isTransitioningSession={isTransitioningSession}
@@ -1269,6 +1224,7 @@ export default function App() {
           sessionHeadline={sessionHeadline}
           sessionSecondaryLabel={sessionSecondaryLabel}
           sessionSupportingText={sessionSupportingText}
+          showRetryConnection={showRetryConnection}
           settingsOpen={settingsOpen}
           settingsModal={settingsModal}
           technicalDetails={renderTechnicalDetails()}
