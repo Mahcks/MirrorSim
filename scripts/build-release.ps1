@@ -121,7 +121,7 @@ function Invoke-InstallerBuild {
   foreach ($bundleName in @('nsis', 'msi')) {
     $bundlePath = [System.IO.Path]::GetFullPath((Join-Path $bundleRoot $bundleName))
     if (-not $bundlePath.StartsWith($bundleRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
-      throw "Refusing to clean bundle path outside $bundleRoot: $bundlePath"
+      throw "Refusing to clean bundle path outside ${bundleRoot}: $bundlePath"
     }
     if (Test-Path $bundlePath) {
       Remove-Item -Recurse -Force -LiteralPath $bundlePath
