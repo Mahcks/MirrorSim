@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -74,7 +74,7 @@ function scheduleAfterFirstPaint(callback: () => void, delayMs = 0) {
 // ── App ───────────────────────────────────────────────────────────────────────
 
 export default function App() {
-  const devUpdatePreview = getDevUpdateOverride();
+  const devUpdatePreview = useMemo(getDevUpdateOverride, []);
   const [appMode, setAppMode] = useState<AppMode>("minimal");
   const [orientation, setOrientation] = useState<Orientation>("portrait");
   const [zoom, setZoom] = useState<ZoomLevel>(1);
@@ -559,13 +559,15 @@ export default function App() {
       setOrientation(startupOrientation);
     }
 
-    if (startupMode === "minimal") {
-      void (async () => {
+    void (async () => {
+      if (startupMode === "minimal") {
         setAppMode("minimal");
         setZoom(1);
         await fitMinimalWindow(startupOrientation);
-      })();
-    }
+      } else {
+        await goConsole();
+      }
+    })();
   }, [appPreferences, orientation, preferencesReady]);
 
   useEffect(() => {
@@ -644,8 +646,8 @@ export default function App() {
   useEffect(() => {
     if (!contextMenu) return;
     const close = () => setContextMenu(null);
-    window.addEventListener("pointerdown", close, { capture: true });
-    return () => window.removeEventListener("pointerdown", close, { capture: true });
+    window.addEventListener("pointerdown", close);
+    return () => window.removeEventListener("pointerdown", close);
   }, [contextMenu]);
 
   // keyboard shortcuts — intentionally no deps so closures are always fresh

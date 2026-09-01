@@ -1,4 +1,5 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useEffect, useRef } from "react";
 
 import type { Capture, ContextMenuPos } from "@/features/mirrorsim/types";
 
@@ -43,15 +44,51 @@ export function MinimalContextMenu({
   zoomCanIncrease,
   zoomCanDecrease,
 }: MinimalContextMenuProps) {
+  const menuRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (contextMenu) {
+      menuRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+    }
+  }, [contextMenu]);
+
   if (!contextMenu) {
     return null;
   }
 
   return (
     <div
+      ref={menuRef}
+      role="menu"
+      aria-label="MirrorSim actions"
       className="fixed z-[200] min-w-[196px] rounded-xl border border-white/12 bg-[#1e2023] p-1 shadow-[0_16px_48px_rgba(0,0,0,0.56),0_4px_12px_rgba(0,0,0,0.32)]"
-      style={{ left: contextMenu.x, top: contextMenu.y }}
+      style={{
+        left: Math.max(8, Math.min(contextMenu.x, window.innerWidth - 212)),
+        top: Math.max(8, Math.min(contextMenu.y, window.innerHeight - 420)),
+      }}
       onPointerDown={(event) => event.stopPropagation()}
+      onKeyDown={(event) => {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          onClose();
+          return;
+        }
+        if (!["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+          return;
+        }
+        event.preventDefault();
+        const buttons = Array.from(menuRef.current?.querySelectorAll<HTMLButtonElement>("button:not(:disabled)") ?? []);
+        if (buttons.length === 0) return;
+        const currentIndex = buttons.indexOf(document.activeElement as HTMLButtonElement);
+        const nextIndex = event.key === "Home"
+          ? 0
+          : event.key === "End"
+            ? buttons.length - 1
+            : event.key === "ArrowDown"
+              ? (currentIndex + 1 + buttons.length) % buttons.length
+              : (currentIndex - 1 + buttons.length) % buttons.length;
+        buttons[nextIndex]?.focus();
+      }}
     >
       <button
         type="button"

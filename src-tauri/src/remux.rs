@@ -6,6 +6,7 @@ const FIXTURE_SEGMENT_FRAME_COUNT: usize = FIXTURE_FRAME_COUNT / FIXTURE_SEGMENT
 const FIXTURE_TIMESCALE: u32 = 90_000;
 const FIXTURE_FRAME_DURATION: u32 = 3_000;
 const LIVE_TIMESCALE: u32 = 1_000_000;
+const MAX_LIVE_ACCESS_UNIT_DESCRIPTORS: usize = 600;
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -160,6 +161,11 @@ impl RemuxBlueprint {
                 duration,
             },
         });
+
+        if !self.should_loop && self.access_units.len() > MAX_LIVE_ACCESS_UNIT_DESCRIPTORS {
+            let overflow = self.access_units.len() - MAX_LIVE_ACCESS_UNIT_DESCRIPTORS;
+            self.access_units.drain(0..overflow);
+        }
     }
 
     pub fn buffered_access_unit_count(&self) -> usize {
@@ -209,6 +215,26 @@ mod tests {
         assert_eq!(blueprint.buffered_access_unit_count(), 2);
         assert!(blueprint.media_segments.is_empty());
         assert_eq!(blueprint.access_units[0].size_bytes, 12_000);
+    }
+
+    #[test]
+    fn live_preview_bounds_diagnostic_access_units() {
+        let mut blueprint = RemuxBlueprint::live_preview("live-stream");
+
+        for index in 0..1_000 {
+            blueprint.push_access_unit(
+                index,
+                4_800,
+                index % 60 == 0,
+                index as u64,
+                index as u64,
+                16_667,
+            );
+        }
+
+        assert_eq!(blueprint.buffered_access_unit_count(), 600);
+        assert_eq!(blueprint.access_units[0].sample_index, 400);
+        assert_eq!(blueprint.access_units[599].sample_index, 999);
     }
 
     #[test]

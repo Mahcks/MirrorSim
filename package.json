@@ -17,6 +17,10 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "test": "bun test && cargo test --locked --manifest-path src-tauri/Cargo.toml && cargo test --locked --manifest-path receivers/mirror-receiver/Cargo.toml",
+    "lint": "powershell -ExecutionPolicy Bypass -File scripts/validate-powershell-scripts.ps1 && cargo fmt --manifest-path src-tauri/Cargo.toml -- --check && cargo clippy --locked --manifest-path src-tauri/Cargo.toml --all-targets -- -D warnings && cargo clippy --locked --manifest-path receivers/mirror-receiver/Cargo.toml --all-targets -- -D warnings",
+    "audit": "bun audit",
+    "check": "bun run build && bun run lint && bun run test && bun run audit",
     "preview": "vite preview",
     "fetch:airplay-runtime": "powershell -ExecutionPolicy Bypass -File scripts/fetch-airplay-runtime.ps1",
     "sync:airplay-runtime": "powershell -ExecutionPolicy Bypass -File scripts/sync-airplay-runtime.ps1",
@@ -31,26 +35,26 @@
     "tauri": "tauri"
   },
   "dependencies": {
-    "@tailwindcss/vite": "^4.3.0",
-    "@tauri-apps/api": "^2",
-    "@tauri-apps/plugin-dialog": "^2",
-    "@tauri-apps/plugin-opener": "^2",
-    "@tauri-apps/plugin-store": "^2",
+    "@tailwindcss/vite": "^4.3.3",
+    "@tauri-apps/api": "^2.11.1",
+    "@tauri-apps/plugin-dialog": "^2.7.3",
+    "@tauri-apps/plugin-opener": "^2.5.5",
+    "@tauri-apps/plugin-store": "^2.4.4",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "lucide-react": "^1.14.0",
-    "react": "^19.1.0",
-    "react-dom": "^19.1.0",
-    "tailwind-merge": "^3.5.0",
-    "tailwindcss": "^4.3.0"
+    "lucide-react": "^1.39.0",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
+    "tailwind-merge": "^3.6.0",
+    "tailwindcss": "^4.3.3"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2",
-    "@types/node": "^25.6.2",
-    "@types/react": "^19.1.8",
-    "@types/react-dom": "^19.1.6",
-    "@vitejs/plugin-react": "^4.6.0",
-    "typescript": "~5.8.3",
-    "vite": "^7.0.4"
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/node": "^26.4.0",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "~7.0.2",
+    "vite": "^8.2.2"
   }
 }

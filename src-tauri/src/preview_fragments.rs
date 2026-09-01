@@ -6,6 +6,7 @@ use std::collections::VecDeque;
 const TRACK_ID: u32 = 1;
 const MIN_SEGMENT_SAMPLES: usize = 4;
 const MAX_QUEUED_SEGMENTS: usize = 45;
+const MAX_QUEUED_SEGMENT_BYTES: usize = 64 * 1024 * 1024;
 const LIVE_TRACK_TIMESCALE: u32 = 1_000_000;
 const DEFAULT_PREVIEW_SAMPLE_DURATION: u32 = 16_667;
 const MAX_PREVIEW_SAMPLE_DURATION: u32 = 50_000;
@@ -174,10 +175,8 @@ impl LivePreviewBuffer {
 
         let should_flush_before_push =
             is_random_access && self.pending_samples.len() >= MIN_SEGMENT_SAMPLES;
-        if should_flush_before_push {
-            if self.flush_pending_segment()? {
-                emitted_segment = self.last_emitted_segment_descriptor();
-            }
+        if should_flush_before_push && self.flush_pending_segment()? {
+            emitted_segment = self.last_emitted_segment_descriptor();
         }
 
         self.pending_samples.push(EncodedAccessUnit {
@@ -185,10 +184,8 @@ impl LivePreviewBuffer {
             payload: sample_payload,
         });
 
-        if self.pending_samples.len() >= MIN_SEGMENT_SAMPLES {
-            if self.flush_pending_segment()? {
-                emitted_segment = self.last_emitted_segment_descriptor();
-            }
+        if self.pending_samples.len() >= MIN_SEGMENT_SAMPLES && self.flush_pending_segment()? {
+            emitted_segment = self.last_emitted_segment_descriptor();
         }
 
         Ok(PreviewPushResult {
@@ -207,7 +204,14 @@ impl LivePreviewBuffer {
         self.next_sequence_number += 1;
         self.last_emitted_segment = Some(segment.descriptor.clone());
         self.emitted_segments.push_back(segment);
-        while self.emitted_segments.len() > MAX_QUEUED_SEGMENTS {
+        while self.emitted_segments.len() > MAX_QUEUED_SEGMENTS
+            || self
+                .emitted_segments
+                .iter()
+                .map(|queued| queued.bytes.len())
+                .sum::<usize>()
+                > MAX_QUEUED_SEGMENT_BYTES
+        {
             self.emitted_segments.pop_front();
         }
         self.pending_samples.clear();
@@ -223,8 +227,8 @@ fn track_config_from_parameter_sets(
     parameter_sets: Option<&(Vec<u8>, Vec<u8>)>,
 ) -> Option<(AvcTrackConfig, Vec<u8>)> {
     let (sps, pps) = parameter_sets?;
-    let avcc = build_avcc(&sps, &pps);
-    let (width, height) = parse_sps_dimensions(&sps).unwrap_or((393, 852));
+    let avcc = build_avcc(sps, pps);
+    let (width, height) = parse_sps_dimensions(sps).unwrap_or((393, 852));
     let codec = if sps.len() >= 4 {
         format!("avc1.{:02x}{:02x}{:02x}", sps[1], sps[2], sps[3])
     } else {

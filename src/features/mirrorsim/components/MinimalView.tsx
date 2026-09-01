@@ -138,6 +138,8 @@ export function MinimalView({
       {(captureNotice || commandError) && (
         <div className="pointer-events-none fixed bottom-3 left-1/2 z-50 max-w-[calc(100vw-24px)] -translate-x-1/2">
           <div
+            role={commandError ? "alert" : "status"}
+            aria-live={commandError ? "assertive" : "polite"}
             className={cn(
               "max-w-[360px] truncate rounded-[8px] border px-3 py-2 text-[11px] font-medium shadow-2xl backdrop-blur",
               commandError

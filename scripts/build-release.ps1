@@ -14,6 +14,11 @@ $packageJson = Get-Content -Raw $packageJsonPath | ConvertFrom-Json
 $version = $packageJson.version
 $productName = 'MirrorSim'
 
+& (Join-Path $PSScriptRoot 'validate-release-version.ps1')
+if (-not $?) {
+  throw 'Release version validation failed.'
+}
+
 $releaseRoot = Join-Path $repoRoot 'release'
 $portableRoot = Join-Path $releaseRoot 'portable'
 $portableFolderName = "$productName-portable-v$version"
@@ -111,6 +116,17 @@ function Invoke-Prep {
 
 function Invoke-InstallerBuild {
   Assert-UpdaterReleaseConfig
+  $bundleRoot = [System.IO.Path]::GetFullPath((Join-Path $releaseTargetDir 'bundle'))
+  $bundleRootPrefix = $bundleRoot.TrimEnd('\') + '\'
+  foreach ($bundleName in @('nsis', 'msi')) {
+    $bundlePath = [System.IO.Path]::GetFullPath((Join-Path $bundleRoot $bundleName))
+    if (-not $bundlePath.StartsWith($bundleRootPrefix, [System.StringComparison]::OrdinalIgnoreCase)) {
+      throw "Refusing to clean bundle path outside ${bundleRoot}: $bundlePath"
+    }
+    if (Test-Path $bundlePath) {
+      Remove-Item -Recurse -Force -LiteralPath $bundlePath
+    }
+  }
   Invoke-Step 'bunx tauri build --bundles nsis,msi' -RustToolchain $releaseRustToolchain
 }
 

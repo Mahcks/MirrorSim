@@ -1,3 +1,5 @@
+import { useEffect, useRef } from "react";
+
 import type { PairingSnapshot } from "@/receiverContract";
 
 type PairingModalProps = {
@@ -11,6 +13,14 @@ type PairingModalProps = {
 };
 
 export function PairingModal({ pairing, approvalActionSupported, rememberTrustByDefault, commandPending, embedded = false, onConfirmTrust, onCancel }: PairingModalProps) {
+  const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
+
+  useEffect(() => {
+    if (pairing.phase !== "idle" && pairing.phase !== "paired" && pairing.phase !== "verifying") {
+      cancelButtonRef.current?.focus();
+    }
+  }, [pairing.phase]);
+
   if (pairing.phase === "idle" || pairing.phase === "paired" || pairing.phase === "verifying") {
     return null;
   }
@@ -47,20 +57,24 @@ export function PairingModal({ pairing, approvalActionSupported, rememberTrustBy
       }
     >
       <div
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="mirrorsim-pairing-title"
+        aria-describedby="mirrorsim-pairing-description"
         className={embedded
           ? "w-full max-w-70 rounded-[24px] border border-white/10 bg-[#17191d] p-4 shadow-[0_24px_72px_rgba(0,0,0,0.52)]"
           : "w-full max-w-100 rounded-3xl border border-white/10 bg-[#17191d] p-5 shadow-[0_28px_96px_rgba(0,0,0,0.58)]"
         }
       >
         <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/35">Pairing</div>
-        <h2 className={embedded ? "mt-2 text-[16px] font-semibold tracking-[-0.03em] text-white" : "mt-2 text-xl font-semibold tracking-[-0.03em] text-white"}>{title}</h2>
+        <h2 id="mirrorsim-pairing-title" className={embedded ? "mt-2 text-[16px] font-semibold tracking-[-0.03em] text-white" : "mt-2 text-xl font-semibold tracking-[-0.03em] text-white"}>{title}</h2>
         {(pairing.deviceName || pairing.deviceId) && (
           <div className={embedded ? "mt-2 text-[12px] text-white/55" : "mt-2 text-sm text-white/55"}>
             {pairing.deviceName ?? "Unknown iPhone"}
             {pairing.deviceId ? <span className="ml-2 text-white/30">{pairing.deviceId}</span> : null}
           </div>
         )}
-        <p className={embedded ? "mt-3 text-[12px] leading-5 text-white/55" : "mt-3 text-sm leading-6 text-white/55"}>{description}</p>
+        <p id="mirrorsim-pairing-description" className={embedded ? "mt-3 text-[12px] leading-5 text-white/55" : "mt-3 text-sm leading-6 text-white/55"}>{description}</p>
 
         {pairing.phase === "pin-required" && pairing.entryMode === "enter-on-device" && pairing.displayPin && (
           <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-center">
@@ -71,6 +85,7 @@ export function PairingModal({ pairing, approvalActionSupported, rememberTrustBy
 
         <div className="mt-5 flex flex-wrap justify-end gap-2">
           <button
+            ref={cancelButtonRef}
             type="button"
             className="inline-flex items-center rounded-xl border border-white/10 bg-white/6 px-3 py-2 text-[12px] font-medium text-white/70 transition hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-40"
             onClick={onCancel}

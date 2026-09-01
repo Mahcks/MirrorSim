@@ -21,10 +21,15 @@ That folder is included in both installer and portable outputs. End users should
 
 ## Maintainer Workflow
 
-Before building a release, sync the runtime into `receivers/AirPlayServer`:
+Before building a release, choose exactly one runtime source:
 
 ```powershell
 bun run fetch:airplay-runtime
+```
+
+Or, when intentionally testing a sibling AirPlayServer build:
+
+```powershell
 bun run sync:airplay-runtime
 ```
 

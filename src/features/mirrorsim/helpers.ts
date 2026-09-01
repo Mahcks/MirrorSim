@@ -136,18 +136,46 @@ export function uint8ArrayToBase64(bytes: Uint8Array): string {
 }
 
 export function mergeStoredPreferences(stored: StoredPreferences | null) {
+  const booleanOr = (value: unknown, fallback: boolean) => typeof value === "boolean" ? value : fallback;
+  const stringOr = (value: unknown, fallback: string) => typeof value === "string" ? value : fallback;
+  const enumOr = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
+    typeof value === "string" && allowed.includes(value as T) ? value as T : fallback;
+  const screenshots = stored?.screenshots;
+  const recordings = stored?.recordings;
+  const app = stored?.app;
+
   return {
     screenshots: {
-      ...defaultScreenshotSettings,
-      ...(stored?.screenshots ?? {}),
+      saveToDisk: booleanOr(screenshots?.saveToDisk, defaultScreenshotSettings.saveToDisk),
+      copyToClipboard: booleanOr(screenshots?.copyToClipboard, defaultScreenshotSettings.copyToClipboard),
+      saveLocation: enumOr(screenshots?.saveLocation, ["pictures", "documents", "downloads", "custom"], defaultScreenshotSettings.saveLocation),
+      customSavePath: stringOr(screenshots?.customSavePath, defaultScreenshotSettings.customSavePath),
+      fileNamePrefix: stringOr(screenshots?.fileNamePrefix, defaultScreenshotSettings.fileNamePrefix),
+      includeTimestamp: booleanOr(screenshots?.includeTimestamp, defaultScreenshotSettings.includeTimestamp),
     },
     recordings: {
-      ...defaultRecordingSettings,
-      ...(stored?.recordings ?? {}),
+      saveLocation: enumOr(recordings?.saveLocation, ["pictures", "documents", "downloads", "custom"], defaultRecordingSettings.saveLocation),
+      customSavePath: stringOr(recordings?.customSavePath, defaultRecordingSettings.customSavePath),
+      fileNamePrefix: stringOr(recordings?.fileNamePrefix, defaultRecordingSettings.fileNamePrefix),
+      includeTimestamp: booleanOr(recordings?.includeTimestamp, defaultRecordingSettings.includeTimestamp),
+      autoReveal: booleanOr(recordings?.autoReveal, defaultRecordingSettings.autoReveal),
     },
     app: {
-      ...defaultAppPreferences,
-      ...(stored?.app ?? {}),
+      launchMode: enumOr(app?.launchMode, ["console", "minimal"], defaultAppPreferences.launchMode),
+      previewQualityPreset: enumOr(app?.previewQualityPreset, ["quality", "balanced", "speed"], defaultAppPreferences.previewQualityPreset),
+      receiverAccessMode: enumOr(app?.receiverAccessMode, ["ask", "remember-trusted", "known-only"], defaultAppPreferences.receiverAccessMode),
+      useOpaqueWindowBackground: booleanOr(app?.useOpaqueWindowBackground, defaultAppPreferences.useOpaqueWindowBackground),
+      rememberLastMode: booleanOr(app?.rememberLastMode, defaultAppPreferences.rememberLastMode),
+      rememberLastOrientation: booleanOr(app?.rememberLastOrientation, defaultAppPreferences.rememberLastOrientation),
+      keepMinimalOnTop: booleanOr(app?.keepMinimalOnTop, defaultAppPreferences.keepMinimalOnTop),
+      autoRevealSavedCaptures: booleanOr(app?.autoRevealSavedCaptures, defaultAppPreferences.autoRevealSavedCaptures),
+      screenshotFlashEnabled: booleanOr(app?.screenshotFlashEnabled, defaultAppPreferences.screenshotFlashEnabled),
+      autoStartDiscovery: booleanOr(app?.autoStartDiscovery, defaultAppPreferences.autoStartDiscovery),
+      autoReconnectOnDrop: booleanOr(app?.autoReconnectOnDrop, defaultAppPreferences.autoReconnectOnDrop),
+      openDiagnosticsOnError: booleanOr(app?.openDiagnosticsOnError, defaultAppPreferences.openDiagnosticsOnError),
+      receiverDisplayName: stringOr(app?.receiverDisplayName, defaultAppPreferences.receiverDisplayName),
+      lastMode: enumOr(app?.lastMode, ["console", "minimal"], defaultAppPreferences.lastMode),
+      lastOrientation: enumOr(app?.lastOrientation, ["portrait", "landscape"], defaultAppPreferences.lastOrientation),
     },
   };
 }

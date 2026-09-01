@@ -199,6 +199,12 @@ Install dependencies:
 bun install
 ```
 
+Fetch the pinned, checksum-verified AirPlay runtime before launching the desktop app:
+
+```powershell
+bun run fetch:airplay-runtime
+```
+
 Run the frontend only:
 
 ```powershell
@@ -221,6 +227,12 @@ Run Rust tests:
 
 ```powershell
 cargo test --manifest-path src-tauri\Cargo.toml
+```
+
+Run the complete build, formatting, Clippy, and test suite for both Rust crates:
+
+```powershell
+bun run check
 ```
 
 ### AirPlay Runtime
@@ -251,7 +263,7 @@ Important: commands ending in `:fetch` download the runtime declared in `receive
 
 ## Release Builds
 
-Release packaging is driven by `scripts/build-release.ps1`.
+Release packaging is driven by `scripts/build-release.ps1`. Published releases should use the `:fetch` commands so every package is built from the pinned, checksum-verified runtime. Local-runtime packaging fails if a sibling AirPlayServer build is not available; it will not silently reuse an old runtime drop.
 
 ```powershell
 bun run release:prep
@@ -286,6 +298,8 @@ git push origin v0.1.0-1
 ```
 
 The release workflow uploads installer, portable zip, updater metadata, and `checksums.txt`.
+
+Before publishing, the workflow verifies that the Git tag matches the versions in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. Every uploaded installer, signature, portable archive, and updater manifest must be represented in `checksums.txt`.
 
 ---
 

@@ -40,6 +40,8 @@ type PreviewMediaSegmentPayload = {
   bytes: number[];
 };
 
+const LIVE_BUFFER_RETENTION_SECONDS = 20;
+
 function formatStreamError(error: unknown) {
   if (error instanceof Error) {
     return error.message;
@@ -95,6 +97,43 @@ function appendSegment(sourceBuffer: SourceBuffer, segment: ArrayBuffer) {
     sourceBuffer.addEventListener("error", handleError, { once: true });
     sourceBuffer.appendBuffer(segment);
   });
+}
+
+function removeBufferedRange(sourceBuffer: SourceBuffer, start: number, end: number) {
+  if (end <= start || sourceBuffer.updating) {
+    return Promise.resolve();
+  }
+
+  return new Promise<void>((resolve, reject) => {
+    const handleUpdateEnd = () => {
+      cleanup();
+      resolve();
+    };
+    const handleError = () => {
+      cleanup();
+      reject(new Error("The preview SourceBuffer rejected old-buffer eviction."));
+    };
+    const cleanup = () => {
+      sourceBuffer.removeEventListener("updateend", handleUpdateEnd);
+      sourceBuffer.removeEventListener("error", handleError);
+    };
+
+    sourceBuffer.addEventListener("updateend", handleUpdateEnd, { once: true });
+    sourceBuffer.addEventListener("error", handleError, { once: true });
+    sourceBuffer.remove(start, end);
+  });
+}
+
+async function trimLiveBuffer(sourceBuffer: SourceBuffer, videoElement: HTMLVideoElement) {
+  if (sourceBuffer.buffered.length === 0) {
+    return;
+  }
+
+  const bufferedStart = sourceBuffer.buffered.start(0);
+  const removeBefore = Math.max(0, videoElement.currentTime - LIVE_BUFFER_RETENTION_SECONDS);
+  if (removeBefore > bufferedStart + 1) {
+    await removeBufferedRange(sourceBuffer, bufferedStart, removeBefore);
+  }
 }
 
 function toArrayBuffer(bytes: number[]) {
@@ -190,6 +229,10 @@ export function attachMockPreviewStream(
       while (!disposed) {
         const nextSegment = (await invoke("take_preview_media_segment")) as PreviewMediaSegmentPayload | null;
 
+        if (disposed) {
+          return;
+        }
+
         if (!nextSegment) {
           updateDiagnostics({ emptyPollCount: diagnostics.emptyPollCount + 1 });
           await delay(80, abortController.signal);
@@ -198,6 +241,7 @@ export function attachMockPreviewStream(
 
         updateDiagnostics({ sourceBufferUpdating: true });
         await appendSegment(sourceBuffer, toArrayBuffer(nextSegment.bytes));
+        await trimLiveBuffer(sourceBuffer, videoElement);
         updateDiagnostics({
           mediaAppendCount: diagnostics.mediaAppendCount + 1,
           lastAppendedSequenceNumber: nextSegment.sequenceNumber,
