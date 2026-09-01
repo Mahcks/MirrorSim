@@ -16,6 +16,11 @@ import {
 } from "@/features/mirrorsim/helpers";
 import { ConsoleView } from "@/features/mirrorsim/components/ConsoleView";
 import { getConnectionPresentation } from "@/features/mirrorsim/connectionFlow";
+import {
+  getUpdatePrimaryAction,
+  isUpdateRestartSafe,
+  type AppUpdateState,
+} from "@/features/mirrorsim/updateFlow";
 import { DeviceFrame } from "@/features/mirrorsim/components/DeviceFrame";
 import { MinimalContextMenu } from "@/features/mirrorsim/components/MinimalContextMenu";
 import { MinimalView } from "@/features/mirrorsim/components/MinimalView";
@@ -91,7 +96,7 @@ export default function App() {
   const [connectionHistory, setConnectionHistory] = useState<ConnectionHistoryEntry[]>([]);
   const [lastDiagnosticsExport, setLastDiagnosticsExport] = useState<DiagnosticsExport | null>(null);
   const [availableUpdate, setAvailableUpdate] = useState<AppUpdateInfo | null>(null);
-  const [updateState, setUpdateState] = useState<"idle" | "checking" | "available" | "installing" | "disabled">("idle");
+  const [updateState, setUpdateState] = useState<AppUpdateState>("idle");
   const [updateError, setUpdateError] = useState<string | null>(null);
   const [screenshotFlashActive, setScreenshotFlashActive] = useState(false);
   const [reconnectUiState, setReconnectUiState] = useState<{ attempt: number; phase: "scheduled" | "retrying" } | null>(null);
@@ -264,7 +269,13 @@ export default function App() {
   const previewPreset = PREVIEW_QUALITY_PRESETS[appPreferences.previewQualityPreset];
   const reconnectCountdownSeconds = reconnectNextRetryAt === null ? null : Math.max(0, Math.ceil((reconnectNextRetryAt - Date.now()) / 1000));
   const releasePageUrl = "https://github.com/Mahcks/MirrorSim/releases/latest";
-  const shouldShowUpdateBadge = updateState === "available" || updateState === "installing";
+  const shouldShowUpdateBadge = ["downloading", "available", "ready", "installing"].includes(updateState);
+  const updateRestartSafe = isUpdateRestartSafe(ss);
+  const updatePrimaryAction = getUpdatePrimaryAction({
+    updateState,
+    sessionState: ss,
+    devPreview: Boolean(import.meta.env.DEV && devUpdatePreview),
+  });
   const zoomIndex = ZOOM_LEVELS.indexOf(zoom);
   const controlButtonClass =
     "inline-flex h-8 w-8 items-center justify-center rounded-[5px] text-white/55 transition hover:bg-[#1a1b1e] hover:text-white disabled:cursor-default disabled:opacity-30";
@@ -401,7 +412,7 @@ export default function App() {
   useEffect(() => {
     if (import.meta.env.DEV && devUpdatePreview) {
       setAvailableUpdate(devUpdatePreview);
-      setUpdateState("available");
+      setUpdateState("ready");
       setUpdateError(null);
       return;
     }
@@ -420,16 +431,40 @@ export default function App() {
       setUpdateState("checking");
       setUpdateError(null);
 
-      void invoke<AppUpdateInfo | null>("check_for_app_update")
-        .then((update) => {
+      void (async () => {
+        let update: AppUpdateInfo | null = null;
+        try {
+          const downloaded = await invoke<AppUpdateInfo | null>("get_downloaded_app_update");
           if (cancelled) {
             return;
           }
+          if (downloaded) {
+            setAvailableUpdate(downloaded);
+            setUpdateState("ready");
+            return;
+          }
 
+          update = await invoke<AppUpdateInfo | null>("check_for_app_update");
+          if (cancelled) {
+            return;
+          }
           setAvailableUpdate(update);
-          setUpdateState(update ? "available" : "idle");
-        })
-        .catch((error) => {
+          if (!update) {
+            setUpdateState("idle");
+            return;
+          }
+
+          setUpdateState("downloading");
+          const prepared = await invoke<AppUpdateInfo | null>("download_app_update");
+          if (cancelled) {
+            return;
+          }
+          setAvailableUpdate(prepared ?? update);
+          setUpdateState(prepared ? "ready" : "available");
+          if (!prepared) {
+            setUpdateError("The update is no longer available. MirrorSim will check again next time it starts.");
+          }
+        } catch (error) {
           if (cancelled) {
             return;
           }
@@ -440,9 +475,10 @@ export default function App() {
             return;
           }
 
-          setUpdateState("idle");
+          setUpdateState(update ? "available" : "idle");
           setUpdateError(message);
-        });
+        }
+      })();
     }, 900);
 
     return () => {
@@ -834,8 +870,36 @@ export default function App() {
     }
   }
 
+  async function downloadAvailableUpdate() {
+    if (!availableUpdate || updateState === "downloading" || updateState === "ready" || updateState === "installing") {
+      return;
+    }
+
+    setUpdateState("downloading");
+    setUpdateError(null);
+
+    try {
+      let prepared = await invoke<AppUpdateInfo | null>("download_app_update");
+      if (!prepared) {
+        const refreshed = await invoke<AppUpdateInfo | null>("check_for_app_update");
+        setAvailableUpdate(refreshed);
+        if (refreshed) {
+          prepared = await invoke<AppUpdateInfo | null>("download_app_update");
+        }
+      }
+      setAvailableUpdate(prepared ?? availableUpdate);
+      setUpdateState(prepared ? "ready" : "available");
+      if (!prepared) {
+        setUpdateError("The update is no longer available. MirrorSim will check again next time it starts.");
+      }
+    } catch (error) {
+      setUpdateState("available");
+      setUpdateError(fmtError(error));
+    }
+  }
+
   async function installAvailableUpdate() {
-    if (!availableUpdate || updateState === "installing") {
+    if (!availableUpdate || updateState !== "ready") {
       return;
     }
 
@@ -844,13 +908,22 @@ export default function App() {
       return;
     }
 
+    if (!updateRestartSafe) {
+      setUpdateError("Finish the current connection before restarting MirrorSim to update.");
+      return;
+    }
+
     setUpdateState("installing");
     setUpdateError(null);
 
     try {
-      await invoke<AppUpdateInfo | null>("install_app_update");
+      const installed = await invoke<AppUpdateInfo | null>("install_app_update");
+      if (!installed) {
+        setUpdateState("available");
+        setUpdateError("The prepared update expired. Retry the download before restarting.");
+      }
     } catch (error) {
-      setUpdateState("available");
+      setUpdateState("ready");
       setUpdateError(fmtError(error));
     }
   }
@@ -976,56 +1049,119 @@ export default function App() {
   const updateHeadline = availableUpdate
     ? import.meta.env.DEV && devUpdatePreview
       ? `Preview update ${availableUpdate.version}`
-      : `Update ${availableUpdate.version} is ready`
+      : updateState === "downloading"
+        ? `Downloading update ${availableUpdate.version}`
+        : updateState === "installing"
+          ? `Restarting into update ${availableUpdate.version}`
+          : updateState === "available"
+            ? `Update ${availableUpdate.version} needs attention`
+            : `Update ${availableUpdate.version} is ready`
     : null;
-  const updateDetail = availableUpdate?.notes?.split(/\r?\n/).map((line) => line.trim()).find(Boolean)
-    ?? (availableUpdate
-      ? import.meta.env.DEV && devUpdatePreview
-        ? `This is a local updater UI preview. Publish a GitHub Release before testing a real install.`
-        : `You're on ${availableUpdate.currentVersion}. Install the latest MirrorSim release from GitHub Releases.`
-      : null);
-  const updatePublishedLabel = availableUpdate?.pubDate
-    ? new Date(availableUpdate.pubDate).toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" })
-    : null;
+  const updateStatusDetail = updateState === "downloading"
+    ? "Downloading and verifying in the background."
+    : updateState === "available"
+      ? "The background download did not finish."
+      : updateState === "installing"
+        ? "MirrorSim will close, apply the signed update, and reopen."
+        : updateState === "ready"
+          ? updateRestartSafe
+            ? "Downloaded and verified."
+            : "Ready after the current session ends."
+          : null;
 
-  function renderUpdateBanner() {
+  function renderUpdateBanner(compact = false) {
     if (!availableUpdate) {
       return null;
     }
 
+    const isDevPreview = Boolean(import.meta.env.DEV && devUpdatePreview);
+    const compactLabel = updateState === "ready" && !updateRestartSafe
+      ? "Update ready after session"
+      : isDevPreview
+        ? `Update ${availableUpdate.version} preview`
+        : updateState === "downloading"
+        ? `Downloading ${availableUpdate.version}`
+        : updateState === "installing"
+          ? "Restarting MirrorSim"
+          : updateState === "available"
+            ? "Update download failed"
+            : `${availableUpdate.version} ready`;
+    const statusDotClass = updateState === "available"
+      ? "bg-amber-300"
+      : updateState === "ready"
+        ? "bg-emerald-300"
+        : updateState === "downloading" || updateState === "installing"
+          ? "animate-pulse bg-cyan-300"
+          : "bg-white/35";
+    const showPrimaryAction = updatePrimaryAction.kind !== "none";
+
+    if (compact) {
+      return (
+        <div
+          role="status"
+          aria-live="polite"
+          className="flex max-w-[calc(100vw-16px)] items-center gap-2 rounded-full border border-white/10 bg-[#15171b]/94 py-1.5 pl-2.5 pr-1.5 text-white/80 shadow-lg backdrop-blur-md"
+          title={updateError ?? updatePrimaryAction.title ?? updateStatusDetail ?? undefined}
+        >
+          <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", statusDotClass)} aria-hidden="true" />
+          <span className="truncate text-[10px] font-medium">{compactLabel}</span>
+          {showPrimaryAction && (
+            <button
+              type="button"
+              className="inline-flex shrink-0 items-center justify-center rounded-full bg-white/9 px-2.5 py-1 text-[10px] font-semibold text-white transition hover:bg-white/14 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
+              onClick={() => {
+                if (updatePrimaryAction.kind === "download") {
+                  void downloadAvailableUpdate();
+                } else {
+                  void installAvailableUpdate();
+                }
+              }}
+              title={updatePrimaryAction.title}
+            >
+              {updatePrimaryAction.kind === "install" ? "Restart" : "Retry"}
+            </button>
+          )}
+        </div>
+      );
+    }
+
     return (
-      <div className="rounded-[8px] border border-amber-400/20 bg-amber-500/10 p-2.5 text-amber-100">
-        <div className="min-w-0">
-          <div className="text-[11px] font-medium text-amber-100">{updateHeadline}</div>
-          <p className="mt-1 text-[11px] leading-4 text-amber-100/80">{updateDetail}</p>
-          {updatePublishedLabel && (
-            <div className="mt-1 text-[10px] text-amber-100/65">Published {updatePublishedLabel}</div>
-          )}
-          {updateError && (
-            <div className="mt-1 text-[10px] text-amber-100/80">{updateError}</div>
+      <div
+        role="status"
+        aria-live="polite"
+        className="rounded-lg border border-white/8 bg-white/2.5 px-2.5 py-2 text-white/75"
+      >
+        <div className="flex items-start gap-2.5">
+          <span className={cn("mt-1 h-1.5 w-1.5 shrink-0 rounded-full", statusDotClass)} aria-hidden="true" />
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-[11px] font-medium text-white/85">{updateHeadline}</div>
+            {updateStatusDetail && <p className="mt-0.5 text-[10px] leading-4 text-white/45">{updateStatusDetail}</p>}
+            {updateError && <p className="mt-0.5 wrap-break-word text-[10px] leading-4 text-amber-200/80">{updateError}</p>}
+          </div>
+          {showPrimaryAction && (
+            <button
+              type="button"
+              className="inline-flex shrink-0 items-center justify-center rounded-[5px] border border-white/10 bg-white/5 px-2 py-1 text-[10px] font-semibold text-white/80 transition hover:border-white/15 hover:bg-white/9 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
+              onClick={() => {
+                if (updatePrimaryAction.kind === "download") {
+                  void downloadAvailableUpdate();
+                } else {
+                  void installAvailableUpdate();
+                }
+              }}
+              title={updatePrimaryAction.title}
+            >
+              {updatePrimaryAction.label}
+            </button>
           )}
         </div>
-        <div className="mt-2 grid grid-cols-2 gap-1.5">
-          <button
-            type="button"
-            className="inline-flex min-w-0 items-center justify-center rounded-[5px] border border-white/10 bg-black/20 px-2.5 py-1 text-[11px] font-medium text-inherit transition hover:border-white/20 disabled:cursor-default disabled:opacity-40"
-            onClick={() => void installAvailableUpdate()}
-            disabled={updateState === "installing" || Boolean(import.meta.env.DEV && devUpdatePreview)}
-          >
-            {import.meta.env.DEV && devUpdatePreview
-              ? "Preview only"
-              : updateState === "installing"
-                ? "Installing..."
-                : "Install update"}
-          </button>
-          <button
-            type="button"
-            className="inline-flex min-w-0 items-center justify-center rounded-[5px] border border-white/10 bg-black/20 px-2.5 py-1 text-[11px] font-medium text-inherit transition hover:border-white/20"
-            onClick={() => void openUrl(releasePageUrl).catch((error) => setCommandError(fmtError(error)))}
-          >
-            View release
-          </button>
-        </div>
+        <button
+          type="button"
+          className="ml-4 mt-1 text-[10px] text-white/35 underline decoration-white/15 underline-offset-2 transition hover:text-white/65 focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
+          onClick={() => void openUrl(releasePageUrl).catch((error) => setCommandError(fmtError(error)))}
+        >
+          Release details
+        </button>
       </div>
     );
   }
@@ -1304,6 +1440,7 @@ export default function App() {
         shellWidth={MINIMAL_SHELL_WIDTH[orientation]}
         titlebarStateDotClass={cn("h-1.5 w-1.5 rounded-full", titlebarStateDotClass)}
         titlebarStateLabel={titlebarStateLabel}
+        updateBanner={renderUpdateBanner(true)}
       />
     </>
   );

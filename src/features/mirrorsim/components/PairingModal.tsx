@@ -62,7 +62,7 @@ export function PairingModal({ pairing, approvalActionSupported, rememberTrustBy
         aria-labelledby="mirrorsim-pairing-title"
         aria-describedby="mirrorsim-pairing-description"
         className={embedded
-          ? "w-full max-w-70 rounded-[24px] border border-white/10 bg-[#17191d] p-4 shadow-[0_24px_72px_rgba(0,0,0,0.52)]"
+          ? "w-full max-w-70 rounded-3xl border border-white/10 bg-[#17191d] p-4 shadow-[0_24px_72px_rgba(0,0,0,0.52)]"
           : "w-full max-w-100 rounded-3xl border border-white/10 bg-[#17191d] p-5 shadow-[0_28px_96px_rgba(0,0,0,0.58)]"
         }
       >

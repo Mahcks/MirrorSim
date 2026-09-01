@@ -14,7 +14,13 @@
     "core:window:allow-set-min-size",
     "core:window:allow-set-max-size",
     "dialog:allow-open",
-    "opener:allow-open-url",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://github.com/Mahcks/MirrorSim/releases/latest" },
+        { "url": "https://support.apple.com/kb/DL999" }
+      ]
+    },
     "opener:allow-reveal-item-in-dir",
     "store:allow-load",
     "store:allow-get",

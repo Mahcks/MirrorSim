@@ -33,6 +33,7 @@ type MinimalViewProps = {
   shellWidth: number;
   titlebarStateDotClass: string;
   titlebarStateLabel: string;
+  updateBanner: ReactNode;
 };
 
 export function MinimalView({
@@ -61,6 +62,7 @@ export function MinimalView({
   shellWidth,
   titlebarStateDotClass,
   titlebarStateLabel,
+  updateBanner,
 }: MinimalViewProps) {
   return (
     <div className="flex h-screen w-screen flex-col items-center overflow-hidden bg-transparent text-white">
@@ -141,7 +143,7 @@ export function MinimalView({
             role={commandError ? "alert" : "status"}
             aria-live={commandError ? "assertive" : "polite"}
             className={cn(
-              "max-w-[360px] truncate rounded-[8px] border px-3 py-2 text-[11px] font-medium shadow-2xl backdrop-blur",
+              "max-w-90 truncate rounded-lg border px-3 py-2 text-[11px] font-medium shadow-2xl backdrop-blur",
               commandError
                 ? "border-red-400/25 bg-red-950/85 text-red-100"
                 : "border-emerald-300/20 bg-[#101418]/90 text-emerald-100",
@@ -150,6 +152,12 @@ export function MinimalView({
           >
             {commandError ?? captureNotice}
           </div>
+        </div>
+      )}
+
+      {updateBanner && (
+        <div className="fixed right-2 top-12 z-40">
+          {updateBanner}
         </div>
       )}
 

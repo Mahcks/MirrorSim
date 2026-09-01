@@ -1,9 +1,9 @@
 use crate::history::{append_history_entry, now_unix_timestamp};
 use crate::models::{
-    BonjourStatusKind, BonjourStatusSnapshot, CommandResult, ConnectionHistoryEntry, PairingPhase,
-    PairingSnapshot, PreviewDiagnosticsSnapshot, PreviewStreamDescriptor, PreviewTelemetry,
-    ReceiverRuntimeSnapshot, ReceiverRuntimeState, ReceiverTransport, ScreenshotSaveLocation,
-    SessionSnapshot, SessionStatus, SidecarEvent,
+    AppUpdateInfo, BonjourStatusKind, BonjourStatusSnapshot, CommandResult, ConnectionHistoryEntry,
+    PairingPhase, PairingSnapshot, PreviewDiagnosticsSnapshot, PreviewStreamDescriptor,
+    PreviewTelemetry, ReceiverRuntimeSnapshot, ReceiverRuntimeState, ReceiverTransport,
+    ScreenshotSaveLocation, SessionSnapshot, SessionStatus, SidecarEvent,
 };
 use crate::preview_fragments::normalize_preview_sample_duration;
 use crate::sidecar::ReceiverSidecarSpec;
@@ -28,7 +28,7 @@ use std::os::windows::io::AsRawHandle;
 use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
 use tauri::{AppHandle, Emitter, Manager};
@@ -210,6 +210,15 @@ pub(crate) struct AppState {
     next_sidecar_generation: AtomicU64,
     pub(crate) recording_file: Arc<Mutex<Option<RecordingFileRuntime>>>,
     pub(crate) next_recording_id: AtomicU64,
+    pub(crate) pending_update: Arc<Mutex<Option<PendingAppUpdate>>>,
+    pub(crate) update_download_in_progress: AtomicBool,
+}
+
+#[derive(Clone)]
+pub(crate) struct PendingAppUpdate {
+    pub(crate) info: AppUpdateInfo,
+    pub(crate) update: tauri_plugin_updater::Update,
+    pub(crate) bytes: Option<Vec<u8>>,
 }
 
 pub(crate) struct RecordingFileRuntime {
@@ -229,6 +238,8 @@ impl Default for AppState {
             next_sidecar_generation: AtomicU64::new(1),
             recording_file: Arc::new(Mutex::new(None)),
             next_recording_id: AtomicU64::new(1),
+            pending_update: Arc::new(Mutex::new(None)),
+            update_download_in_progress: AtomicBool::new(false),
         }
     }
 }

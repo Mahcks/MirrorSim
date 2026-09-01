@@ -13,7 +13,7 @@ use crate::runtime::{
     bonjour_blocking_message, emit_pairing_status, emit_preview_diagnostics, emit_receiver_runtime,
     emit_runtime_error, emit_session_status, emit_state_updates, ensure_bonjour_ready,
     ensure_sidecar_runtime, query_bonjour_status, resolve_capture_directory, send_sidecar_command,
-    stop_sidecar_runtime, AppState, RecordingFileRuntime,
+    stop_sidecar_runtime, AppState, PendingAppUpdate, RecordingFileRuntime,
 };
 use crate::sidecar::ReceiverSidecarSpec;
 use crate::state::{
@@ -254,29 +254,10 @@ pub(crate) fn get_preview_diagnostics(
 }
 
 #[tauri::command]
-pub(crate) async fn check_for_app_update(app: AppHandle) -> CommandResult<Option<AppUpdateInfo>> {
-    ensure_updater_is_configured()?;
-    let endpoint = Url::parse(UPDATER_ENDPOINT).map_err(|error| error.to_string())?;
-    let update = app
-        .updater_builder()
-        .endpoints(vec![endpoint])
-        .map_err(|error| error.to_string())?
-        .build()
-        .map_err(|error| error.to_string())?
-        .check()
-        .await
-        .map_err(|error| error.to_string())?;
-
-    Ok(update.map(|update| AppUpdateInfo {
-        version: update.version,
-        current_version: app.package_info().version.to_string(),
-        notes: update.body,
-        pub_date: update.date.map(|value| value.to_string()),
-    }))
-}
-
-#[tauri::command]
-pub(crate) async fn install_app_update(app: AppHandle) -> CommandResult<Option<AppUpdateInfo>> {
+pub(crate) async fn check_for_app_update(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> CommandResult<Option<AppUpdateInfo>> {
     ensure_updater_is_configured()?;
     let endpoint = Url::parse(UPDATER_ENDPOINT).map_err(|error| error.to_string())?;
     let update = app
@@ -290,6 +271,11 @@ pub(crate) async fn install_app_update(app: AppHandle) -> CommandResult<Option<A
         .map_err(|error| error.to_string())?;
 
     let Some(update) = update else {
+        let mut pending = state
+            .pending_update
+            .lock()
+            .map_err(|error| error.to_string())?;
+        *pending = None;
         return Ok(None);
     };
 
@@ -297,15 +283,132 @@ pub(crate) async fn install_app_update(app: AppHandle) -> CommandResult<Option<A
         version: update.version.clone(),
         current_version: app.package_info().version.to_string(),
         notes: update.body.clone(),
-        pub_date: update.date.map(|value| value.to_string()),
+        pub_date: update.date.as_ref().map(ToString::to_string),
     };
 
-    update
-        .download_and_install(|_, _| {}, || {})
-        .await
+    let mut pending = state
+        .pending_update
+        .lock()
         .map_err(|error| error.to_string())?;
+    if pending
+        .as_ref()
+        .is_some_and(|cached| cached.info.version == info.version && cached.bytes.is_some())
+    {
+        return Ok(Some(info));
+    }
+    *pending = Some(PendingAppUpdate {
+        info: info.clone(),
+        update,
+        bytes: None,
+    });
 
     Ok(Some(info))
+}
+
+#[tauri::command]
+pub(crate) fn get_downloaded_app_update(
+    state: State<'_, AppState>,
+) -> CommandResult<Option<AppUpdateInfo>> {
+    let pending = state
+        .pending_update
+        .lock()
+        .map_err(|error| error.to_string())?;
+    Ok(pending
+        .as_ref()
+        .filter(|cached| cached.bytes.is_some())
+        .map(|cached| cached.info.clone()))
+}
+
+#[tauri::command]
+pub(crate) async fn download_app_update(
+    state: State<'_, AppState>,
+) -> CommandResult<Option<AppUpdateInfo>> {
+    let (update, info) = {
+        let pending = state
+            .pending_update
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let Some(cached) = pending.as_ref() else {
+            return Ok(None);
+        };
+        if cached.bytes.is_some() {
+            return Ok(Some(cached.info.clone()));
+        }
+        (cached.update.clone(), cached.info.clone())
+    };
+
+    if state
+        .update_download_in_progress
+        .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+        .is_err()
+    {
+        return Err(String::from("The update is already downloading."));
+    }
+
+    let result = async {
+        let bytes = update
+            .download(|_, _| {}, || {})
+            .await
+            .map_err(|error| error.to_string())?;
+        let mut pending = state
+            .pending_update
+            .lock()
+            .map_err(|error| error.to_string())?;
+        let Some(cached) = pending.as_mut() else {
+            return Err(String::from(
+                "The available update changed while downloading.",
+            ));
+        };
+        if cached.info.version != info.version {
+            return Err(String::from(
+                "The available update changed while downloading.",
+            ));
+        }
+        cached.bytes = Some(bytes);
+        Ok(Some(info))
+    }
+    .await;
+
+    state
+        .update_download_in_progress
+        .store(false, Ordering::Release);
+    result
+}
+
+fn app_update_install_allowed(status: SessionStatus) -> bool {
+    matches!(status, SessionStatus::Idle | SessionStatus::Discovering)
+}
+
+#[tauri::command]
+pub(crate) fn install_app_update(
+    state: State<'_, AppState>,
+) -> CommandResult<Option<AppUpdateInfo>> {
+    let session_guard = state.inner.lock().map_err(|error| error.to_string())?;
+    if !app_update_install_allowed(session_guard.snapshot.status) {
+        return Err(String::from(
+            "Finish the current connection before restarting MirrorSim to update.",
+        ));
+    }
+
+    let cached = state
+        .pending_update
+        .lock()
+        .map_err(|error| error.to_string())?
+        .clone();
+    let Some(cached) = cached else {
+        return Ok(None);
+    };
+    let Some(bytes) = cached.bytes else {
+        return Err(String::from("The update has not finished downloading yet."));
+    };
+
+    cached
+        .update
+        .install(bytes)
+        .map_err(|error| error.to_string())?;
+    drop(session_guard);
+
+    Ok(Some(cached.info))
 }
 
 #[tauri::command]
@@ -1232,7 +1335,8 @@ pub(crate) fn refresh_receiver_readiness(
 
 #[cfg(test)]
 mod tests {
-    use super::validated_capture_path;
+    use super::{app_update_install_allowed, validated_capture_path};
+    use crate::models::SessionStatus;
     use std::path::Path;
 
     #[test]
@@ -1247,5 +1351,14 @@ mod tests {
         for filename in ["../shot.png", "nested/shot.png", "C:/shot.png", "shot.exe"] {
             assert!(validated_capture_path(Path::new("C:/captures"), filename, "png").is_err());
         }
+    }
+
+    #[test]
+    fn updater_install_only_runs_while_stopped_or_listening() {
+        assert!(app_update_install_allowed(SessionStatus::Idle));
+        assert!(app_update_install_allowed(SessionStatus::Discovering));
+        assert!(!app_update_install_allowed(SessionStatus::Connecting));
+        assert!(!app_update_install_allowed(SessionStatus::Mirroring));
+        assert!(!app_update_install_allowed(SessionStatus::Recording));
     }
 }

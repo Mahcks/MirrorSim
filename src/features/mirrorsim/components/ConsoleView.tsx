@@ -135,7 +135,7 @@ export function ConsoleView({
   zoomMaxIndex,
 }: ConsoleViewProps) {
   return (
-    <div className="grid h-screen overflow-hidden bg-[#0e0f11] text-white [grid-template-rows:36px_1fr_48px_36px]">
+    <div className="grid h-screen overflow-hidden bg-[#0e0f11] text-white grid-rows-[36px_1fr_48px_36px]">
       <div className={cn("grid grid-cols-[auto_1fr_auto] items-center gap-2 border-b px-2.5", panelSurfaceClass)}>
         <WindowControls />
         <div className="flex h-full items-center justify-center" onMouseDown={(event) => void onStartWindowDrag(event)}>
@@ -225,7 +225,7 @@ export function ConsoleView({
           <div className="flex flex-col gap-2 border-b border-white/7 p-3.5">
             <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/25">Session</div>
             {bonjourNeedsAttention && (
-              <div className={cn("rounded-[8px] border p-2.5", bonjourToneClass)}>
+              <div className={cn("rounded-lg border p-2.5", bonjourToneClass)}>
                 <div className="text-[11px] font-medium">
                   {bonjourStatus.status === "missing" ? "Bonjour is not installed" : "Bonjour service isn't running"}
                 </div>
@@ -264,7 +264,7 @@ export function ConsoleView({
                 role={commandError ? "alert" : "status"}
                 aria-live={commandError ? "assertive" : "polite"}
                 className={cn(
-                  "rounded-[8px] border p-2.5 text-[11px] leading-4",
+                  "rounded-lg border p-2.5 text-[11px] leading-4",
                   commandError
                     ? "border-red-400/20 bg-red-500/10 text-red-100"
                     : "border-emerald-300/20 bg-emerald-500/10 text-emerald-100",
@@ -280,7 +280,7 @@ export function ConsoleView({
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <div className="truncate text-[15px] font-semibold tracking-[-0.025em] text-white/90">{sessionHeadline}</div>
+                  <div className="truncate text-[15px] font-semibold tracking-tight text-white/90">{sessionHeadline}</div>
                   <div className={cn("h-1.5 w-1.5 shrink-0 rounded-full", isLive ? "bg-emerald-400" : isTransitioningSession ? "bg-amber-300" : "bg-white/18")} />
                 </div>
                 <div className="mt-1 text-[11px] text-white/35">{sessionSecondaryLabel}</div>
@@ -351,7 +351,7 @@ export function ConsoleView({
                   <div key={capture.id} className="flex items-center gap-2 border-b border-white/7 py-2 last:border-b-0">
                     <div
                       className={cn(
-                        "flex h-[22px] w-[22px] shrink-0 items-center justify-center rounded text-[11px]",
+                        "flex h-5.5 w-5.5 shrink-0 items-center justify-center rounded text-[11px]",
                         capture.type === "screenshot"
                           ? "bg-emerald-500/12 text-emerald-400"
                           : "bg-red-500/14 text-red-300",
@@ -390,7 +390,7 @@ export function ConsoleView({
               Diagnostics
             </button>
             {diagExpanded && (
-              <div className="flex max-h-[220px] flex-col gap-1.5 overflow-y-auto px-3.5 pb-3">
+              <div className="flex max-h-55 flex-col gap-1.5 overflow-y-auto px-3.5 pb-3">
                 {diagnosticsItems.map(([label, value]) => (
                   <div key={label} className="flex items-center justify-between gap-3 text-[11px]">
                     <span className="text-white/25">{label}</span>
@@ -436,7 +436,7 @@ export function ConsoleView({
           >
             <Icon name="zoom-out" size={15} />
           </button>
-          <span className="min-w-[26px] text-center text-[11px] font-semibold tracking-[-0.03em] text-white/55">{zoom}×</span>
+          <span className="min-w-6.5 text-center text-[11px] font-semibold tracking-[-0.03em] text-white/55">{zoom}×</span>
           <button
             type="button"
             className={controlButtonClass}
@@ -469,24 +469,24 @@ export function ConsoleView({
           <>
             <div className="flex items-center gap-2 whitespace-nowrap">
               <span className="text-[11px] tracking-[-0.01em] text-white/25">Latency</span>
-              <strong className="min-w-[48px] text-right text-[11px] font-semibold tracking-[-0.02em] tabular-nums text-white/90">{`${previewLatencyMs} ms`}</strong>
+              <strong className="min-w-12 text-right text-[11px] font-semibold tracking-[-0.02em] tabular-nums text-white/90">{`${previewLatencyMs} ms`}</strong>
             </div>
             <div className="mx-3.5 h-3 w-px bg-white/7" />
             <div className="flex items-center gap-2 whitespace-nowrap">
               <span className="text-[11px] tracking-[-0.01em] text-white/25">Frame rate</span>
-              <strong className="min-w-[46px] text-right text-[11px] font-semibold tracking-[-0.02em] tabular-nums text-white/90">{`${previewFps} fps`}</strong>
+              <strong className="min-w-11.5 text-right text-[11px] font-semibold tracking-[-0.02em] tabular-nums text-white/90">{`${previewFps} fps`}</strong>
             </div>
             <div className="mx-3.5 h-3 w-px bg-white/7" />
             <div className="flex items-center gap-2 whitespace-nowrap">
               <span className="text-[11px] tracking-[-0.01em] text-white/25">Bitrate</span>
-              <strong className="min-w-[64px] text-right text-[11px] font-semibold tracking-[-0.02em] tabular-nums text-white/90">
+              <strong className="min-w-16 text-right text-[11px] font-semibold tracking-[-0.02em] tabular-nums text-white/90">
                 {`${(previewBitrateKbps / 1000).toFixed(1)} Mbps`}
               </strong>
             </div>
             <div className="mx-3.5 h-3 w-px bg-white/7" />
             <div className="flex items-center gap-2 whitespace-nowrap">
               <span className="text-[11px] tracking-[-0.01em] text-white/25">Resolution</span>
-              <strong className="min-w-[58px] text-right text-[11px] font-semibold tracking-[-0.02em] tabular-nums text-white/90">
+              <strong className="min-w-14.5 text-right text-[11px] font-semibold tracking-[-0.02em] tabular-nums text-white/90">
                 {orientation === "portrait" ? "393×852" : "852×393"}
               </strong>
             </div>
