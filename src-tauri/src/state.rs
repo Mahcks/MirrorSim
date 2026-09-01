@@ -223,6 +223,16 @@ pub(crate) fn clear_pairing(store: &mut SessionStore) {
     };
 }
 
+pub(crate) fn resume_listening_after_disconnect(store: &mut SessionStore, stream_id: String) {
+    store.snapshot.status = SessionStatus::Discovering;
+    clear_current_device_identity(store);
+    clear_pairing(store);
+    store.native_pairing_approved_for_session = false;
+    reset_preview(store);
+    prepare_live_transport(store, stream_id);
+    set_receiver_runtime_state(store, ReceiverRuntimeState::Ready);
+}
+
 pub(crate) fn resume_local_session_approval(store: &mut SessionStore) {
     store.pending_local_session_approval = false;
     store.require_local_session_approval = false;
@@ -312,7 +322,10 @@ pub(crate) fn preview_activity(size_bytes: usize) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use super::{prepare_live_transport, resume_local_session_approval, SessionStore};
+    use super::{
+        prepare_live_transport, resume_listening_after_disconnect, resume_local_session_approval,
+        SessionStore,
+    };
     use crate::models::{PairingEntryMode, PairingPhase, ReceiverRuntimeState, SessionStatus};
 
     const SAMPLE_SPS: [u8; 28] = [
@@ -370,5 +383,46 @@ mod tests {
         assert!(store.live_preview_buffer.queued_segment_count() > 0);
         assert!(matches!(store.pairing.phase, PairingPhase::Idle));
         assert!(!store.pending_local_session_approval);
+    }
+
+    #[test]
+    fn phone_disconnect_returns_the_running_receiver_to_listening() {
+        let mut store = SessionStore {
+            active_session_id: Some(String::from("session-1")),
+            require_local_session_approval: true,
+            require_known_device: true,
+            native_pairing_approved_for_session: true,
+            ..SessionStore::default()
+        };
+        store.snapshot.status = SessionStatus::Mirroring;
+        store.snapshot.device_name = String::from("Max's iPhone");
+        store.snapshot.current_device_id = Some(String::from("device-1"));
+        store.snapshot.receiver_id = Some(String::from("MirrorSim"));
+        store.snapshot.receiver_protocol_version = Some(String::from("0.4.0"));
+        store.snapshot.receiver_capabilities = vec![String::from("native-receiver-process")];
+        store.pairing.phase = PairingPhase::Paired;
+        store.preview.frame_number = 42;
+
+        resume_listening_after_disconnect(&mut store, String::from("stream-1"));
+
+        assert!(matches!(store.snapshot.status, SessionStatus::Discovering));
+        assert_eq!(store.active_session_id.as_deref(), Some("session-1"));
+        assert_eq!(store.snapshot.device_name, "Waiting for iPhone");
+        assert!(store.snapshot.current_device_id.is_none());
+        assert_eq!(store.snapshot.receiver_id.as_deref(), Some("MirrorSim"));
+        assert_eq!(
+            store.snapshot.receiver_capabilities,
+            vec![String::from("native-receiver-process")]
+        );
+        assert!(store.require_local_session_approval);
+        assert!(store.require_known_device);
+        assert!(!store.native_pairing_approved_for_session);
+        assert!(matches!(store.pairing.phase, PairingPhase::Idle));
+        assert_eq!(store.preview.frame_number, 0);
+        assert!(matches!(
+            store.receiver_runtime.state,
+            ReceiverRuntimeState::Ready
+        ));
+        assert!(store.receiver_runtime.last_error.is_none());
     }
 }

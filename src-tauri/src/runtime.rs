@@ -10,8 +10,9 @@ use crate::sidecar::ReceiverSidecarSpec;
 use crate::state::{
     clear_pairing, clear_session_identity, prepare_live_transport, preview_activity,
     preview_bitrate_kbps, preview_fps_from_duration, refresh_live_preview_descriptor,
-    reset_fixture_transport, reset_preview, resume_local_session_approval,
-    set_receiver_runtime_state, sync_preview_diagnostics, SessionStore,
+    reset_fixture_transport, reset_preview, resume_listening_after_disconnect,
+    resume_local_session_approval, set_receiver_runtime_state, sync_preview_diagnostics,
+    SessionStore,
 };
 use crate::trust::{
     apply_current_device_trust, get_trusted_devices, note_device_connected, note_device_failure,
@@ -1147,46 +1148,64 @@ fn handle_sidecar_event(
                 {
                     return Ok(());
                 }
-                prepare_live_transport(&mut guard, stream_id.clone());
-                guard.remux_blueprint.reset_live_preview(stream_id.clone());
-                guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
-                guard.receiver_runtime.queued_segments = 0;
-                guard.receiver_runtime.last_error =
-                    Some(format!("stream discontinuity: {}", reason));
+                let disconnected_device_name = guard.snapshot.device_name.clone();
+                let disconnected_device_id = guard.snapshot.current_device_id.clone();
+                let disconnected_device_model = guard.snapshot.current_device_model.clone();
+                let disconnected_device_os_name = guard.snapshot.current_device_os_name.clone();
+                let disconnected_device_os_version =
+                    guard.snapshot.current_device_os_version.clone();
+                let disconnected_device_key = guard.snapshot.current_device_key.clone();
+                let session_stopped = reason == "session_stopped";
 
-                if matches!(
-                    guard.snapshot.status,
-                    SessionStatus::Mirroring | SessionStatus::Recording
-                ) {
-                    guard.snapshot.status = SessionStatus::Connecting;
+                if session_stopped {
+                    resume_listening_after_disconnect(&mut guard, stream_id.clone());
                     emit_snapshot = true;
-                }
-
-                if requires_init_segment_refresh {
-                    reset_preview(&mut guard);
                     emit_preview = true;
                     emit_preview_stream = true;
+                    emit_pairing = true;
+                } else {
+                    prepare_live_transport(&mut guard, stream_id.clone());
+                    guard.remux_blueprint.reset_live_preview(stream_id.clone());
+                    guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
+                    guard.receiver_runtime.queued_segments = 0;
+                    guard.receiver_runtime.last_error =
+                        Some(format!("stream discontinuity: {}", reason));
 
-                    let can_request_keyframe =
-                        receiver_supports_keyframe_request(&guard.snapshot.receiver_capabilities);
-                    if can_request_keyframe {
-                        request_keyframe = Some((stream_id, reason.clone()));
-                    } else if reason != "session_stopped" {
-                        stop_session_request = guard.active_session_id.take();
-                        restart_sidecar = true;
-                        guard.require_local_session_approval = false;
-                        guard.require_known_device = false;
-                        guard.pending_local_session_approval = false;
-                        guard.native_pairing_approved_for_session = false;
-                        guard.snapshot.status = SessionStatus::Idle;
-                        clear_pairing(&mut guard);
-                        reset_fixture_transport(&mut guard);
-                        set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Idle);
-                        guard.receiver_runtime.last_error = Some(format!(
-                            "receiver lost the AirPlay stream and restarted: {}",
-                            reason
-                        ));
+                    if matches!(
+                        guard.snapshot.status,
+                        SessionStatus::Mirroring | SessionStatus::Recording
+                    ) {
+                        guard.snapshot.status = SessionStatus::Connecting;
                         emit_snapshot = true;
+                    }
+
+                    if requires_init_segment_refresh {
+                        reset_preview(&mut guard);
+                        emit_preview = true;
+                        emit_preview_stream = true;
+
+                        let can_request_keyframe = receiver_supports_keyframe_request(
+                            &guard.snapshot.receiver_capabilities,
+                        );
+                        if can_request_keyframe {
+                            request_keyframe = Some((stream_id, reason.clone()));
+                        } else {
+                            stop_session_request = guard.active_session_id.take();
+                            restart_sidecar = true;
+                            guard.require_local_session_approval = false;
+                            guard.require_known_device = false;
+                            guard.pending_local_session_approval = false;
+                            guard.native_pairing_approved_for_session = false;
+                            guard.snapshot.status = SessionStatus::Idle;
+                            clear_pairing(&mut guard);
+                            reset_fixture_transport(&mut guard);
+                            set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Idle);
+                            guard.receiver_runtime.last_error = Some(format!(
+                                "receiver lost the AirPlay stream and restarted: {}",
+                                reason
+                            ));
+                            emit_snapshot = true;
+                        }
                     }
                 }
 
@@ -1194,14 +1213,25 @@ fn handle_sidecar_event(
                     id: String::new(),
                     occurred_at: now_unix_timestamp(),
                     event: String::from("stream-discontinuity"),
-                    status: String::from("warning"),
-                    message: format!("Stream discontinuity: {}", reason),
-                    device_name: Some(guard.snapshot.device_name.clone()),
-                    device_id: guard.snapshot.current_device_id.clone(),
-                    device_model: guard.snapshot.current_device_model.clone(),
-                    device_os_name: guard.snapshot.current_device_os_name.clone(),
-                    device_os_version: guard.snapshot.current_device_os_version.clone(),
-                    device_key: guard.snapshot.current_device_key.clone(),
+                    status: if session_stopped {
+                        String::from("info")
+                    } else {
+                        String::from("warning")
+                    },
+                    message: if session_stopped {
+                        format!(
+                            "{} disconnected. MirrorSim is listening for another iPhone connection.",
+                            disconnected_device_name
+                        )
+                    } else {
+                        format!("Stream discontinuity: {}", reason)
+                    },
+                    device_name: Some(disconnected_device_name),
+                    device_id: disconnected_device_id,
+                    device_model: disconnected_device_model,
+                    device_os_name: disconnected_device_os_name,
+                    device_os_version: disconnected_device_os_version,
+                    device_key: disconnected_device_key,
                     receiver_name: guard.snapshot.receiver_id.clone(),
                 });
 

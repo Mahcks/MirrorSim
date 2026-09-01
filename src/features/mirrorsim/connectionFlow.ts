@@ -109,8 +109,8 @@ export function getConnectionPresentation({
     titlebarLabel = "Starting";
     tone = "active";
   } else if (session.status === "discovering") {
-    headline = "Ready for Screen Mirroring";
-    supportingText = `On your iPhone, open Control Center, tap Screen Mirroring, then choose ${receiverDisplayName}.`;
+    headline = "Listening for your iPhone";
+    supportingText = `MirrorSim will keep listening. On your iPhone, open Control Center, tap Screen Mirroring, then choose ${receiverDisplayName}.`;
     secondaryLabel = receiverIdentity ?? `Listening as ${receiverDisplayName}`;
     titlebarLabel = "Listening";
     tone = "active";

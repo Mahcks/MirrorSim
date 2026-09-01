@@ -55,9 +55,22 @@ describe("connection flow presentation", () => {
       session,
       receiverRuntime: { ...initialReceiverRuntime, state: "ready" },
     });
-    expect(listening.headline).toBe("Ready for Screen Mirroring");
+    expect(listening.headline).toBe("Listening for your iPhone");
+    expect(listening.supportingText).toContain("keep listening");
     expect(listening.phoneSteps[2]).toBe("Choose Demo Phone");
     expect(listening.showPhoneSteps).toBe(true);
+  });
+
+  test("a disconnected phone returns to visible listening instructions", () => {
+    const result = presentation({
+      session: { ...idleSession, status: "discovering" },
+      receiverRuntime: { ...initialReceiverRuntime, state: "ready", lastError: null },
+    });
+
+    expect(result.titlebarLabel).toBe("Listening");
+    expect(result.headline).toBe("Listening for your iPhone");
+    expect(result.showPhoneSteps).toBe(true);
+    expect(result.primaryActionLabel).toBe("Stop listening");
   });
 
   test("an attached sender is not labeled live until video arrives", () => {
