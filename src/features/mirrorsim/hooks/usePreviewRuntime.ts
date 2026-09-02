@@ -8,6 +8,7 @@ import {
   SESSION_STATUS_EVENT,
 } from "@/features/mirrorsim/constants";
 import { fmtError, readBufferedEnd } from "@/features/mirrorsim/helpers";
+import { getLivePlaybackCorrection } from "@/features/mirrorsim/livePlayback";
 import type { PreviewTelemetry, SessionSnapshot, VideoElementDiag } from "@/features/mirrorsim/types";
 import {
   attachMockPreviewStream,
@@ -343,34 +344,23 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
       return;
     }
 
-    const lead = videoDiag.bufferedEnd - videoDiag.currentTime;
-    if (videoDiag.paused || videoDiag.readyState < 2) {
-      if (videoEl.playbackRate !== 1) {
-        videoEl.playbackRate = 1;
-      }
+    const correction = getLivePlaybackCorrection({
+      currentTime: videoDiag.currentTime,
+      bufferedEnd: videoDiag.bufferedEnd,
+      paused: videoDiag.paused,
+      readyState: videoDiag.readyState,
+      catchupLeadSeconds: previewPreset.catchupLeadSeconds,
+      catchupTargetOffsetSeconds: previewPreset.catchupTargetOffsetSeconds,
+    });
+    if (Math.abs(videoEl.playbackRate - correction.playbackRate) > 0.01) {
+      videoEl.playbackRate = correction.playbackRate;
+    }
+
+    if (correction.seekTime === null) {
       return;
     }
 
-    const targetLead = previewPreset.catchupTargetOffsetSeconds;
-    const softCatchupRate = lead > previewPreset.catchupLeadSeconds ? 1.25 : 1;
-    const mediumCatchupRate = lead > Math.max(0.9, previewPreset.catchupLeadSeconds * 2) ? 1.5 : softCatchupRate;
-    const catchupRate = lead > Math.max(1.8, previewPreset.catchupLeadSeconds * 4) ? 1.75 : mediumCatchupRate;
-    const settledRate = lead <= targetLead + 0.15 ? 1 : catchupRate;
-    if (Math.abs(videoEl.playbackRate - settledRate) > 0.01) {
-      videoEl.playbackRate = settledRate;
-    }
-
-    if (lead <= Math.max(8, previewPreset.catchupLeadSeconds * 10)) {
-      return;
-    }
-
-    const edge = Math.max(0, videoDiag.bufferedEnd - Math.max(1, previewPreset.catchupTargetOffsetSeconds * 4));
-    if (edge <= videoDiag.currentTime + 0.5) {
-      return;
-    }
-
-    videoEl.playbackRate = 1.25;
-    videoEl.currentTime = edge;
+    videoEl.currentTime = correction.seekTime;
     void videoEl.play().catch((error) => {
       setSurfaceError(fmtError(error));
       setSurfaceStatus("error");
