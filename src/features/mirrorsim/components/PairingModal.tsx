@@ -14,6 +14,15 @@ type PairingModalProps = {
   onCancel: () => void;
 };
 
+export function formatPairingDeviceIdentity(deviceId: string) {
+  const normalized = deviceId.trim();
+  if (normalized.length <= 16) {
+    return normalized;
+  }
+
+  return `Device identity ending in ${normalized.slice(-8).toUpperCase()}`;
+}
+
 export function PairingModal({ pairing, approvalActionSupported, rememberTrustByDefault, commandPending, embedded = false, onConfirmTrust, onCancel }: PairingModalProps) {
   const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
   const open = isPairingModalOpen(pairing.phase);
@@ -27,7 +36,7 @@ export function PairingModal({ pairing, approvalActionSupported, rememberTrustBy
     pairing.phase === "pin-required"
       ? "AirPlay Verification Required"
       : pairing.phase === "awaiting-trust"
-        ? "Trust This iPhone"
+        ? "Trust this iPhone"
         : "Pairing Failed";
 
   const description =
@@ -68,12 +77,21 @@ export function PairingModal({ pairing, approvalActionSupported, rememberTrustBy
         <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/35">Pairing</div>
         <h2 id="mirrorsim-pairing-title" className={embedded ? "mt-2 text-[16px] font-semibold tracking-[-0.03em] text-white" : "mt-2 text-xl font-semibold tracking-[-0.03em] text-white"}>{title}</h2>
         {(pairing.deviceName || pairing.deviceId) && (
-          <div className={embedded ? "mt-2 text-[12px] text-white/55" : "mt-2 text-sm text-white/55"}>
-            {pairing.deviceName ?? "Unknown iPhone"}
-            {pairing.deviceId ? <span className="ml-2 text-white/30">{pairing.deviceId}</span> : null}
+          <div className={embedded ? "mt-2 min-w-0 text-[12px]" : "mt-2 min-w-0 text-sm"}>
+            <div className="break-words font-medium text-white/60">
+              {pairing.deviceName ?? "Unknown iPhone"}
+            </div>
+            {pairing.deviceId ? (
+              <div
+                className="mt-0.5 truncate font-mono text-[10px] tracking-[-0.01em] text-white/30"
+                title={pairing.deviceId}
+              >
+                {formatPairingDeviceIdentity(pairing.deviceId)}
+              </div>
+            ) : null}
           </div>
         )}
-        <p id="mirrorsim-pairing-description" className={embedded ? "mt-3 text-[12px] leading-5 text-white/55" : "mt-3 text-sm leading-6 text-white/55"}>{description}</p>
+        <p id="mirrorsim-pairing-description" className={embedded ? "mt-3 break-words text-[12px] leading-5 text-white/55" : "mt-3 break-words text-sm leading-6 text-white/55"}>{description}</p>
 
         {pairing.phase === "pin-required" && pairing.entryMode === "enter-on-device" && pairing.displayPin && (
           <div className="mt-4 rounded-2xl border border-white/10 bg-black/20 px-4 py-3 text-center">
@@ -99,7 +117,7 @@ export function PairingModal({ pairing, approvalActionSupported, rememberTrustBy
               onClick={onConfirmTrust}
               disabled={!approvalActionSupported || commandPending}
             >
-              {rememberTrustByDefault ? "Allow And Remember" : "Allow This Session"}
+              {rememberTrustByDefault ? "Allow & Remember" : "Allow this session"}
             </button>
           )}
         </div>

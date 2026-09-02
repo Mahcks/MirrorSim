@@ -323,20 +323,23 @@ export function SettingsModal({
               <p className={fieldNote}>{previewPresetDescription} Doesn't affect your iPhone's actual stream quality.</p>
             </div>
             <div className="py-3">
-              <div className={fieldLabel}>Name shown on iPhone</div>
+              <div className={fieldLabel}>Screen Mirroring name</div>
               <input
-                aria-label="Name shown on iPhone"
+                aria-label="Screen Mirroring name"
                 type="text"
                 className={fieldInput}
                 value={appPreferences.receiverDisplayName}
                 onChange={(event) => setAppPreference("receiverDisplayName", event.target.value)}
-                placeholder="MirrorSim"
+                placeholder="MirrorSim – Office"
+                maxLength={48}
+                autoComplete="off"
+                spellCheck={false}
                 disabled={sessionActive}
               />
               <p className={fieldNote}>
                 {sessionActive
                   ? "Stop listening before changing the name shown to nearby iPhones."
-                  : "Appears in your iPhone's Screen Mirroring list. Keep it short."}
+                  : "This is what nearby iPhones see. Use a unique name when more than one PC runs MirrorSim."}
               </p>
             </div>
             <div className="flex items-start justify-between gap-4 py-3">
