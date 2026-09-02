@@ -59,8 +59,8 @@ const RECEIVER_RUNTIME_EVENT: &str = "receiver-runtime";
 const PREVIEW_DIAGNOSTICS_EVENT: &str = "preview-diagnostics";
 const PAIRING_STATUS_EVENT: &str = "pairing-status";
 const KEYFRAME_REQUEST_CAPABILITY: &str = "keyframe-request";
-const DECODER_RECOVERY_GAP_MICROS: u32 = 250_000;
-const HARD_RECEIVER_RESET_GAP_MICROS: u32 = 5_000_000;
+const CONNECTING_MEDIA_TIMEOUT: Duration = Duration::from_secs(12);
+const CONNECTING_WATCHDOG_INTERVAL: Duration = Duration::from_millis(250);
 const EXPECTED_RECEIVER_PROTOCOL_VERSION: &str = "0.5.0";
 const MAX_RECEIVER_EVENT_LINE_BYTES: usize = 12 * 1024 * 1024;
 const MAX_VIDEO_ACCESS_UNIT_BYTES: usize = 8 * 1024 * 1024;
@@ -84,6 +84,45 @@ fn session_accepts_media(store: &SessionStore, stream_id: &str) -> bool {
         && !store.snapshot.current_device_blocked
         && (!store.require_known_device || store.snapshot.current_device_known)
         && store.receiver_runtime.stream_id == stream_id
+}
+
+fn media_timeline_restarted(previous_sample_index: Option<u32>, sample_index: u32) -> bool {
+    previous_sample_index.is_some_and(|previous| sample_index <= previous)
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum ConnectingWatchdogState {
+    Stop,
+    WaitingForApproval,
+    WaitingForMedia,
+    Healthy,
+}
+
+fn connecting_watchdog_state(
+    store: &SessionStore,
+    connection_attempt_generation: u64,
+    session_id: &str,
+    stream_id: &str,
+) -> ConnectingWatchdogState {
+    if store.connection_attempt_generation != connection_attempt_generation
+        || store.active_session_id.as_deref() != Some(session_id)
+        || store.receiver_runtime.stream_id != stream_id
+        || matches!(
+            store.snapshot.status,
+            SessionStatus::Idle | SessionStatus::Discovering
+        )
+    {
+        return ConnectingWatchdogState::Stop;
+    }
+
+    match store.snapshot.status {
+        SessionStatus::Connecting if store.pending_local_session_approval => {
+            ConnectingWatchdogState::WaitingForApproval
+        }
+        SessionStatus::Connecting => ConnectingWatchdogState::WaitingForMedia,
+        SessionStatus::Mirroring | SessionStatus::Recording => ConnectingWatchdogState::Healthy,
+        SessionStatus::Idle | SessionStatus::Discovering => ConnectingWatchdogState::Stop,
+    }
 }
 
 fn needs_local_session_approval(store: &SessionStore) -> bool {
@@ -672,11 +711,7 @@ fn handle_sidecar_event(
     // before taking the session-state mutex so UI snapshot commands are not
     // blocked behind decoding work on every video frame.
     let mut decoded_video_payload = match &event {
-        SidecarEvent::VideoAccessUnit {
-            duration,
-            payload_base64,
-            ..
-        } if *duration <= HARD_RECEIVER_RESET_GAP_MICROS => {
+        SidecarEvent::VideoAccessUnit { payload_base64, .. } => {
             if payload_base64.len() > MAX_VIDEO_ACCESS_UNIT_BYTES.saturating_mul(2) {
                 return Err(String::from(
                     "receiver video access unit exceeded the 8 MiB safety limit",
@@ -700,6 +735,7 @@ fn handle_sidecar_event(
     let mut cancel_pairing_request: Option<(String, String)> = None;
     let mut restart_sidecar = false;
     let mut receiver_media_accepted = false;
+    let mut connecting_watchdog: Option<(u64, String, String)> = None;
     let mut history_entries: Vec<ConnectionHistoryEntry> = Vec::new();
 
     let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics, pairing) = {
@@ -755,6 +791,11 @@ fn handle_sidecar_event(
                 if guard.active_session_id.as_deref() != Some(session_id.as_str()) {
                     return Ok(());
                 }
+                guard.connection_attempt_generation =
+                    guard.connection_attempt_generation.wrapping_add(1);
+                let connection_attempt_generation = guard.connection_attempt_generation;
+                let watchdog_session_id = session_id.clone();
+                let watchdog_stream_id = stream_id.clone();
                 let trusted_devices = note_device_connected(
                     app,
                     &device_name,
@@ -877,6 +918,16 @@ fn handle_sidecar_event(
 
                 emit_snapshot = true;
                 emit_preview_stream = true;
+
+                if guard.active_session_id.as_deref() == Some(watchdog_session_id.as_str())
+                    && matches!(guard.snapshot.status, SessionStatus::Connecting)
+                {
+                    connecting_watchdog = Some((
+                        connection_attempt_generation,
+                        watchdog_session_id,
+                        watchdog_stream_id,
+                    ));
+                }
 
                 history_entries.push(ConnectionHistoryEntry {
                     id: String::new(),
@@ -1124,177 +1175,123 @@ fn handle_sidecar_event(
                 let waiting_for_local_approval = guard.pending_local_session_approval;
                 let previous_sample_index = guard.preview_diagnostics.last_access_unit_index;
                 let sample_index_restarted =
-                    previous_sample_index.is_some_and(|previous| sample_index <= previous);
-                let long_media_gap = duration > DECODER_RECOVERY_GAP_MICROS;
-                let hard_receiver_reset = duration > HARD_RECEIVER_RESET_GAP_MICROS;
+                    media_timeline_restarted(previous_sample_index, sample_index);
                 let needs_decoder_recovery = guard.receiver_runtime.stream_id == stream_id
                     && guard.receiver_runtime.transport == ReceiverTransport::Airplayserver
-                    && (sample_index_restarted || long_media_gap);
+                    && sample_index_restarted;
 
-                if hard_receiver_reset {
-                    stop_session_request = guard.active_session_id.take();
-                    restart_sidecar = true;
-                    guard.require_local_session_approval = false;
-                    guard.require_known_device = false;
-                    guard.pending_local_session_approval = false;
-                    guard.native_pairing_approved_for_session = false;
-                    guard.snapshot.status = SessionStatus::Idle;
-                    clear_pairing(&mut guard);
-                    reset_preview(&mut guard);
-                    reset_fixture_transport(&mut guard);
-                    set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Idle);
-                    guard.receiver_runtime.last_error = Some(String::from(
-                        "receiver was reset after the iPhone slept for too long",
-                    ));
-                    emit_snapshot = true;
-                    emit_preview = true;
-                    emit_preview_stream = true;
-
-                    history_entries.push(ConnectionHistoryEntry {
-                        id: String::new(),
-                        occurred_at: now_unix_timestamp(),
-                        event: String::from("receiver-reset"),
-                        status: String::from("warning"),
-                        message: String::from(
-                            "Receiver was reset after a long iPhone sleep/wake media gap.",
-                        ),
-                        device_name: Some(guard.snapshot.device_name.clone()),
-                        device_id: guard.snapshot.current_device_id.clone(),
-                        device_model: guard.snapshot.current_device_model.clone(),
-                        device_os_name: guard.snapshot.current_device_os_name.clone(),
-                        device_os_version: guard.snapshot.current_device_os_version.clone(),
-                        device_key: guard.snapshot.current_device_key.clone(),
-                        receiver_name: guard.snapshot.receiver_id.clone(),
-                    });
-
-                    sync_preview_diagnostics(&mut guard);
-                } else if needs_decoder_recovery {
+                if needs_decoder_recovery {
                     prepare_live_transport(&mut guard, stream_id.clone());
                     guard.remux_blueprint.reset_live_preview(stream_id.clone());
                     guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
                     guard.receiver_runtime.queued_segments = 0;
-                    guard.receiver_runtime.last_error = Some(if sample_index_restarted {
-                        String::from("stream timeline restarted; waiting for a fresh keyframe")
-                    } else {
-                        String::from(
-                            "stream stalled after device sleep; waiting for a fresh keyframe",
-                        )
-                    });
+                    guard.receiver_runtime.last_error = Some(String::from(
+                        "stream timeline restarted; waiting for a fresh keyframe",
+                    ));
                     reset_preview(&mut guard);
                     emit_preview = true;
                     emit_preview_stream = true;
 
                     if receiver_supports_keyframe_request(&guard.snapshot.receiver_capabilities) {
-                        request_keyframe = Some((
-                            stream_id.clone(),
-                            if sample_index_restarted {
-                                String::from("stream timeline restarted")
-                            } else {
-                                String::from("stream resumed after a long media gap")
-                            },
-                        ));
+                        request_keyframe =
+                            Some((stream_id.clone(), String::from("stream timeline restarted")));
                     }
                 }
 
-                if !hard_receiver_reset {
-                    let payload = decoded_video_payload.take().ok_or_else(|| {
-                        String::from("receiver video access unit payload was unavailable")
-                    })?;
-                    let size_bytes = payload.len();
-                    guard.remux_blueprint.push_access_unit(
-                        sample_index,
-                        size_bytes,
-                        keyframe,
-                        dts,
-                        pts,
-                        duration,
-                    );
-                    let push_result = guard.live_preview_buffer.push_access_unit(
-                        sample_index,
-                        payload,
-                        keyframe,
-                        dts,
-                        pts,
-                        duration,
-                    )?;
-                    receiver_media_accepted = push_result.sample_enqueued;
-                    guard.preview_diagnostics.last_access_unit_index = Some(sample_index);
-                    guard.preview_diagnostics.last_access_unit_duration = Some(duration);
-                    if push_result.init_segment_became_available {
-                        if let Some(track) = guard.live_preview_buffer.track_config() {
-                            guard.remux_blueprint.track = track.clone();
-                            guard.remux_blueprint.mime_type =
-                                format!("video/mp4; codecs=\"{}\"", track.codec);
-                            refresh_live_preview_descriptor(&mut guard);
-                            emit_preview_stream = true;
-                        }
+                let payload = decoded_video_payload.take().ok_or_else(|| {
+                    String::from("receiver video access unit payload was unavailable")
+                })?;
+                let size_bytes = payload.len();
+                guard.remux_blueprint.push_access_unit(
+                    sample_index,
+                    size_bytes,
+                    keyframe,
+                    dts,
+                    pts,
+                    duration,
+                );
+                let push_result = guard.live_preview_buffer.push_access_unit(
+                    sample_index,
+                    payload,
+                    keyframe,
+                    dts,
+                    pts,
+                    duration,
+                )?;
+                receiver_media_accepted = push_result.sample_enqueued;
+                guard.preview_diagnostics.last_access_unit_index = Some(sample_index);
+                guard.preview_diagnostics.last_access_unit_duration = Some(duration);
+                if push_result.init_segment_became_available {
+                    if let Some(track) = guard.live_preview_buffer.track_config() {
+                        guard.remux_blueprint.track = track.clone();
+                        guard.remux_blueprint.mime_type =
+                            format!("video/mp4; codecs=\"{}\"", track.codec);
+                        refresh_live_preview_descriptor(&mut guard);
+                        emit_preview_stream = true;
                     }
-
-                    if let Some(segment) = push_result.emitted_segment {
-                        guard.preview_diagnostics.emitted_segments += 1;
-                        guard.preview_diagnostics.last_queued_sequence_number =
-                            Some(segment.sequence_number);
-                        guard.preview_diagnostics.last_queued_first_sample_index =
-                            Some(segment.first_sample_index);
-                        guard.preview_diagnostics.last_queued_last_sample_index =
-                            Some(segment.last_sample_index);
-                        guard.preview_diagnostics.last_queued_duration = Some(segment.duration);
-                    }
-
-                    if waiting_for_local_approval {
-                        guard.snapshot.status = SessionStatus::Connecting;
-                        guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
-                        guard.receiver_runtime.stream_id = stream_id;
-                        guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
-                        guard.receiver_runtime.queued_segments =
-                            guard.live_preview_buffer.queued_segment_count();
-                        guard.receiver_runtime.last_error = Some(String::from(
-                            "waiting for local approval before MirrorSim starts streaming",
-                        ));
-                        emit_snapshot = true;
-                    } else if !push_result.sample_enqueued {
-                        guard.snapshot.status = SessionStatus::Connecting;
-                        guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
-                        guard.receiver_runtime.stream_id = stream_id;
-                        guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
-                        guard.receiver_runtime.queued_segments =
-                            guard.live_preview_buffer.queued_segment_count();
-                        guard.receiver_runtime.last_error = Some(String::from(
-                            "receiver initialized; waiting for the first decodable video frame",
-                        ));
-
-                        emit_snapshot = true;
-                    } else {
-                        if guard.snapshot.status != SessionStatus::Recording {
-                            guard.snapshot.status = SessionStatus::Mirroring;
-                        }
-
-                        guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
-                        guard.receiver_runtime.stream_id = stream_id;
-                        guard.receiver_runtime.state = ReceiverRuntimeState::Streaming;
-                        guard.receiver_runtime.queued_segments =
-                            guard.live_preview_buffer.queued_segment_count();
-                        guard.receiver_runtime.last_error = None;
-
-                        guard.preview.frame_number = sample_index as u64 + 1;
-                        let preview_timescale = guard.remux_blueprint.track.timescale;
-                        let normalized_duration = normalize_preview_sample_duration(duration);
-                        guard.preview.fps =
-                            preview_fps_from_duration(normalized_duration, preview_timescale);
-                        guard.preview.bitrate_kbps = preview_bitrate_kbps(
-                            size_bytes,
-                            normalized_duration,
-                            preview_timescale,
-                        );
-                        guard.preview.latency_ms = 18 + ((sample_index % 5) as u16 * 2);
-                        guard.preview.activity = preview_activity(size_bytes);
-
-                        emit_snapshot = true;
-                        emit_preview = true;
-                    }
-
-                    sync_preview_diagnostics(&mut guard);
                 }
+
+                if let Some(segment) = push_result.emitted_segment {
+                    guard.preview_diagnostics.emitted_segments += 1;
+                    guard.preview_diagnostics.last_queued_sequence_number =
+                        Some(segment.sequence_number);
+                    guard.preview_diagnostics.last_queued_first_sample_index =
+                        Some(segment.first_sample_index);
+                    guard.preview_diagnostics.last_queued_last_sample_index =
+                        Some(segment.last_sample_index);
+                    guard.preview_diagnostics.last_queued_duration = Some(segment.duration);
+                }
+
+                if waiting_for_local_approval {
+                    guard.snapshot.status = SessionStatus::Connecting;
+                    guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
+                    guard.receiver_runtime.stream_id = stream_id;
+                    guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
+                    guard.receiver_runtime.queued_segments =
+                        guard.live_preview_buffer.queued_segment_count();
+                    guard.receiver_runtime.last_error = Some(String::from(
+                        "waiting for local approval before MirrorSim starts streaming",
+                    ));
+                    emit_snapshot = true;
+                } else if !push_result.sample_enqueued {
+                    guard.snapshot.status = SessionStatus::Connecting;
+                    guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
+                    guard.receiver_runtime.stream_id = stream_id;
+                    guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
+                    guard.receiver_runtime.queued_segments =
+                        guard.live_preview_buffer.queued_segment_count();
+                    guard.receiver_runtime.last_error = Some(String::from(
+                        "receiver initialized; waiting for the first decodable video frame",
+                    ));
+
+                    emit_snapshot = true;
+                } else {
+                    if guard.snapshot.status != SessionStatus::Recording {
+                        guard.snapshot.status = SessionStatus::Mirroring;
+                    }
+
+                    guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
+                    guard.receiver_runtime.stream_id = stream_id;
+                    guard.receiver_runtime.state = ReceiverRuntimeState::Streaming;
+                    guard.receiver_runtime.queued_segments =
+                        guard.live_preview_buffer.queued_segment_count();
+                    guard.receiver_runtime.last_error = None;
+
+                    guard.preview.frame_number = sample_index as u64 + 1;
+                    let preview_timescale = guard.remux_blueprint.track.timescale;
+                    let normalized_duration = normalize_preview_sample_duration(duration);
+                    guard.preview.fps =
+                        preview_fps_from_duration(normalized_duration, preview_timescale);
+                    guard.preview.bitrate_kbps =
+                        preview_bitrate_kbps(size_bytes, normalized_duration, preview_timescale);
+                    guard.preview.latency_ms = 18 + ((sample_index % 5) as u16 * 2);
+                    guard.preview.activity = preview_activity(size_bytes);
+
+                    emit_snapshot = true;
+                    emit_preview = true;
+                }
+
+                sync_preview_diagnostics(&mut guard);
             }
             SidecarEvent::StreamDiscontinuity {
                 stream_id,
@@ -1547,11 +1544,186 @@ fn handle_sidecar_event(
         emit_pairing_status(app, pairing)?;
     }
 
+    if let Some((connection_attempt_generation, session_id, stream_id)) = connecting_watchdog {
+        spawn_connecting_watchdog(
+            app.clone(),
+            store.clone(),
+            sidecar.clone(),
+            sidecar_generation,
+            connection_attempt_generation,
+            session_id,
+            stream_id,
+        );
+    }
+
     if !action_errors.is_empty() {
         return Err(action_errors.join("; "));
     }
 
     Ok(())
+}
+
+fn spawn_connecting_watchdog(
+    app: AppHandle,
+    store: Arc<Mutex<SessionStore>>,
+    sidecar: Arc<Mutex<Option<SidecarRuntime>>>,
+    sidecar_generation: u64,
+    connection_attempt_generation: u64,
+    session_id: String,
+    stream_id: String,
+) {
+    thread::spawn(move || {
+        let mut waiting_for_media_since: Option<Instant> = None;
+
+        loop {
+            thread::sleep(CONNECTING_WATCHDOG_INTERVAL);
+
+            if !sidecar_generation_is_current(&sidecar, sidecar_generation) {
+                return;
+            }
+
+            let watchdog_state = match store.lock() {
+                Ok(guard) => connecting_watchdog_state(
+                    &guard,
+                    connection_attempt_generation,
+                    &session_id,
+                    &stream_id,
+                ),
+                Err(_) => return,
+            };
+
+            match watchdog_state {
+                ConnectingWatchdogState::Stop => return,
+                ConnectingWatchdogState::WaitingForApproval | ConnectingWatchdogState::Healthy => {
+                    waiting_for_media_since = None;
+                    continue;
+                }
+                ConnectingWatchdogState::WaitingForMedia => {
+                    let started_at = waiting_for_media_since.get_or_insert_with(Instant::now);
+                    if started_at.elapsed() < CONNECTING_MEDIA_TIMEOUT {
+                        continue;
+                    }
+                }
+            }
+
+            let recovery = match store.lock() {
+                Ok(mut guard)
+                    if connecting_watchdog_state(
+                        &guard,
+                        connection_attempt_generation,
+                        &session_id,
+                        &stream_id,
+                    ) == ConnectingWatchdogState::WaitingForMedia =>
+                {
+                    let history_entry = ConnectionHistoryEntry {
+                        id: String::new(),
+                        occurred_at: now_unix_timestamp(),
+                        event: String::from("connection-timeout"),
+                        status: String::from("warning"),
+                        message: format!(
+                            "{} stopped before sending a decodable video frame. MirrorSim reset the receiver and resumed listening.",
+                            guard.snapshot.device_name
+                        ),
+                        device_name: Some(guard.snapshot.device_name.clone()),
+                        device_id: guard.snapshot.current_device_id.clone(),
+                        device_model: guard.snapshot.current_device_model.clone(),
+                        device_os_name: guard.snapshot.current_device_os_name.clone(),
+                        device_os_version: guard.snapshot.current_device_os_version.clone(),
+                        device_key: guard.snapshot.current_device_key.clone(),
+                        receiver_name: guard.snapshot.receiver_id.clone(),
+                    };
+
+                    guard.connection_attempt_generation =
+                        guard.connection_attempt_generation.wrapping_add(1);
+                    resume_listening_after_disconnect(&mut guard, stream_id.clone());
+
+                    Some((
+                        guard.snapshot.clone(),
+                        guard.preview.clone(),
+                        guard.preview_stream.clone(),
+                        guard.receiver_runtime.clone(),
+                        guard.preview_diagnostics.clone(),
+                        guard.pairing.clone(),
+                        history_entry,
+                    ))
+                }
+                _ => None,
+            };
+
+            let Some((
+                snapshot,
+                preview,
+                preview_stream,
+                receiver_runtime,
+                preview_diagnostics,
+                pairing,
+                history_entry,
+            )) = recovery
+            else {
+                return;
+            };
+
+            let _ = emit_state_updates(
+                &app,
+                Some(snapshot),
+                Some(preview),
+                Some(preview_stream),
+                Some(receiver_runtime),
+                Some(preview_diagnostics),
+            );
+            let _ = emit_pairing_status(&app, &pairing);
+            if let Err(error) = append_history_entry(&app, history_entry) {
+                eprintln!("[MirrorSim history] could not persist connection timeout: {error}");
+            }
+
+            let restart_command = match sidecar.lock() {
+                Ok(guard) => guard
+                    .as_ref()
+                    .filter(|runtime| runtime.generation == sidecar_generation)
+                    .and_then(|runtime| runtime.restart_command.clone()),
+                Err(_) => None,
+            };
+
+            let session_is_still_active = store.lock().is_ok_and(|guard| {
+                guard.active_session_id.as_deref() == Some(session_id.as_str())
+                    && matches!(guard.snapshot.status, SessionStatus::Discovering)
+            });
+
+            if session_is_still_active {
+                if let Some(start_command) = restart_command {
+                    let reset_result = send_sidecar_command(
+                        &sidecar,
+                        json!({
+                            "name": "stop_session",
+                            "session_id": session_id,
+                        }),
+                    )
+                    .and_then(|_| {
+                        let should_restart = store.lock().is_ok_and(|guard| {
+                            guard.active_session_id.as_deref() == Some(session_id.as_str())
+                                && matches!(guard.snapshot.status, SessionStatus::Discovering)
+                        });
+                        if should_restart {
+                            send_sidecar_command(&sidecar, start_command)
+                        } else {
+                            Ok(())
+                        }
+                    });
+
+                    if let Err(error) = reset_result {
+                        let _ = emit_runtime_error(
+                            &app,
+                            &store,
+                            format!("could not reset a stalled iPhone connection: {error}"),
+                            true,
+                        );
+                    }
+                }
+            }
+
+            return;
+        }
+    });
 }
 
 fn serde_variant_name(phase: &PairingPhase) -> &'static str {
@@ -1910,10 +2082,10 @@ pub(crate) fn ensure_bonjour_ready() -> CommandResult<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        needs_local_session_approval, pairing_policy_rejection, read_bounded_line,
-        session_accepts_media, should_reset_sidecar_restart_budget,
-        validate_pairing_event_correlation, PairingEventCorrelation,
-        SIDECAR_RESTART_STABILITY_WINDOW,
+        connecting_watchdog_state, media_timeline_restarted, needs_local_session_approval,
+        pairing_policy_rejection, read_bounded_line, session_accepts_media,
+        should_reset_sidecar_restart_budget, validate_pairing_event_correlation,
+        ConnectingWatchdogState, PairingEventCorrelation, SIDECAR_RESTART_STABILITY_WINDOW,
     };
     use crate::models::{PairingPhase, SessionStatus};
     use crate::state::{mark_pairing_challenge_closed, prepare_live_transport, SessionStore};
@@ -1944,6 +2116,46 @@ mod tests {
 
         assert!(session_accepts_media(&store, "stream-1"));
         assert!(!session_accepts_media(&store, "stale-stream"));
+    }
+
+    #[test]
+    fn media_timeline_recovery_uses_sequence_resets_not_timestamp_gaps() {
+        assert!(!media_timeline_restarted(Some(40), 41));
+        assert!(media_timeline_restarted(Some(40), 0));
+        assert!(media_timeline_restarted(Some(40), 40));
+    }
+
+    #[test]
+    fn connecting_watchdog_is_correlated_and_pauses_for_approval() {
+        let mut store = connected_store();
+        store.connection_attempt_generation = 7;
+
+        assert_eq!(
+            connecting_watchdog_state(&store, 7, "session-1", "stream-1"),
+            ConnectingWatchdogState::WaitingForMedia
+        );
+
+        store.pending_local_session_approval = true;
+        assert_eq!(
+            connecting_watchdog_state(&store, 7, "session-1", "stream-1"),
+            ConnectingWatchdogState::WaitingForApproval
+        );
+
+        store.pending_local_session_approval = false;
+        store.snapshot.status = SessionStatus::Mirroring;
+        assert_eq!(
+            connecting_watchdog_state(&store, 7, "session-1", "stream-1"),
+            ConnectingWatchdogState::Healthy
+        );
+
+        assert_eq!(
+            connecting_watchdog_state(&store, 6, "session-1", "stream-1"),
+            ConnectingWatchdogState::Stop
+        );
+        assert_eq!(
+            connecting_watchdog_state(&store, 7, "stale-session", "stream-1"),
+            ConnectingWatchdogState::Stop
+        );
     }
 
     #[test]

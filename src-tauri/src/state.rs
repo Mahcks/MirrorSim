@@ -12,6 +12,7 @@ const MAX_CLOSED_PAIRING_CHALLENGES: usize = 32;
 
 pub(crate) struct SessionStore {
     pub(crate) sequence: u64,
+    pub(crate) connection_attempt_generation: u64,
     pub(crate) active_session_id: Option<String>,
     pub(crate) require_local_session_approval: bool,
     pub(crate) require_known_device: bool,
@@ -38,6 +39,7 @@ impl Default for SessionStore {
 
         Self {
             sequence: 0,
+            connection_attempt_generation: 0,
             active_session_id: None,
             require_local_session_approval: false,
             require_known_device: false,
