@@ -107,7 +107,10 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
     let video = persistentVideoRef.current;
     if (!video) {
       video = document.createElement("video");
-      video.className = "h-full w-full object-cover";
+      // AirPlay can expose a landscape media surface without the iPhone itself
+      // rotating. Preserve the selected device frame and fit the full source;
+      // the user can rotate the frame explicitly from the title bar.
+      video.className = "h-full w-full object-contain";
       video.muted = true;
       video.playsInline = true;
       video.preload = "auto";

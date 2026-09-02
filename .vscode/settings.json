@@ -1,0 +1,9 @@
+{
+  "rust-analyzer.linkedProjects": [
+    "./src-tauri/Cargo.toml",
+    "./receivers/mirror-receiver/Cargo.toml"
+  ],
+  "rust-analyzer.cargo.extraEnv": {
+    "TAURI_CONFIG": "{\"bundle\":{\"resources\":[]}}"
+  }
+}

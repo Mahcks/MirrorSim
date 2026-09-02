@@ -642,22 +642,6 @@ export default function App() {
   }, [appPreferences, orientation, preferencesReady]);
 
   useEffect(() => {
-    if (!isLive || videoDiag.videoWidth === 0 || videoDiag.videoHeight === 0) {
-      return;
-    }
-
-    const aspectDelta = Math.abs(videoDiag.videoWidth - videoDiag.videoHeight);
-    if (aspectDelta < 16) {
-      return;
-    }
-
-    const decodedOrientation = videoDiag.videoWidth > videoDiag.videoHeight ? "landscape" : "portrait";
-    if (decodedOrientation !== orientation) {
-      setOrientation(decodedOrientation);
-    }
-  }, [isLive, orientation, videoDiag.videoHeight, videoDiag.videoWidth]);
-
-  useEffect(() => {
     if (!appPreferences.openDiagnosticsOnError) return;
     if (receiverRuntime.lastError || surfaceError || commandError) {
       setDiagExpanded(true);
@@ -889,11 +873,6 @@ export default function App() {
   }
 
   async function confirmPairingTrust(rememberDevice: boolean) {
-    if (!approvalActionSupported) {
-      setCommandError("This receiver build cannot confirm AirPlay trust from MirrorSim yet.");
-      return;
-    }
-
     setCommandPending(true);
     setCommandError(null);
 

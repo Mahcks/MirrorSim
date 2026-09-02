@@ -131,6 +131,12 @@ fn needs_local_session_approval(store: &SessionStore) -> bool {
         && !store.native_pairing_approved_for_session
 }
 
+fn should_persist_native_pairing_approval(store: &SessionStore) -> bool {
+    store.native_pairing_approved_for_session
+        && store.snapshot.current_device_key.is_some()
+        && !store.snapshot.device_name.trim().is_empty()
+}
+
 fn pairing_policy_rejection(store: &SessionStore) -> Option<String> {
     if store.snapshot.current_device_blocked {
         return Some(
@@ -965,9 +971,6 @@ fn handle_sidecar_event(
                 {
                     return Ok(());
                 }
-                let awaiting_trust_confirmation = guard.pairing.can_trust
-                    || matches!(guard.pairing.phase, PairingPhase::AwaitingTrust);
-
                 guard.pairing.session_id = Some(session_id.clone());
                 guard.pairing.challenge_id = Some(challenge_id.clone());
 
@@ -1072,7 +1075,10 @@ fn handle_sidecar_event(
                         guard.pairing.failure_message = None;
                         guard.pairing.can_trust = false;
 
-                        if awaiting_trust_confirmation && !guard.snapshot.device_name.is_empty() {
+                        // The adapter emits Verifying with can_trust=false between the user's
+                        // decision and Paired. Persist from the durable approval decision rather
+                        // than the previous, transient pairing presentation state.
+                        if should_persist_native_pairing_approval(&guard) {
                             let trusted_devices = if guard.remember_pairing_approval {
                                 trust_device(
                                     app,
@@ -2084,8 +2090,9 @@ mod tests {
     use super::{
         connecting_watchdog_state, media_timeline_restarted, needs_local_session_approval,
         pairing_policy_rejection, read_bounded_line, session_accepts_media,
-        should_reset_sidecar_restart_budget, validate_pairing_event_correlation,
-        ConnectingWatchdogState, PairingEventCorrelation, SIDECAR_RESTART_STABILITY_WINDOW,
+        should_persist_native_pairing_approval, should_reset_sidecar_restart_budget,
+        validate_pairing_event_correlation, ConnectingWatchdogState, PairingEventCorrelation,
+        SIDECAR_RESTART_STABILITY_WINDOW,
     };
     use crate::models::{PairingPhase, SessionStatus};
     use crate::state::{mark_pairing_challenge_closed, prepare_live_transport, SessionStore};
@@ -2179,6 +2186,22 @@ mod tests {
 
         store.native_pairing_approved_for_session = true;
         assert!(!needs_local_session_approval(&store));
+    }
+
+    #[test]
+    fn native_pairing_approval_survives_the_intermediate_verifying_event() {
+        let mut store = connected_store();
+        store.native_pairing_approved_for_session = true;
+        store.remember_pairing_approval = true;
+        store.pairing.phase = PairingPhase::Verifying;
+        store.pairing.can_trust = false;
+        store.snapshot.device_name = String::from("Max's iPhone");
+        store.snapshot.current_device_key = Some(String::from("authenticated-fingerprint"));
+
+        assert!(should_persist_native_pairing_approval(&store));
+
+        store.native_pairing_approved_for_session = false;
+        assert!(!should_persist_native_pairing_approval(&store));
     }
 
     #[test]

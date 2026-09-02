@@ -17,9 +17,9 @@ use crate::runtime::{
 };
 use crate::sidecar::ReceiverSidecarSpec;
 use crate::state::{
-    clear_current_device_identity, clear_pairing, clear_session_identity, prepare_live_transport,
-    reset_fixture_transport, reset_preview, resume_local_session_approval,
-    set_receiver_runtime_state, sync_preview_diagnostics, SessionStore,
+    clear_current_device_identity, clear_pairing, prepare_live_transport, reset_fixture_transport,
+    reset_preview, resume_local_session_approval, set_receiver_runtime_state,
+    sync_preview_diagnostics, SessionStore,
 };
 use crate::trust::{
     apply_current_device_trust, forget_trusted_device as forget_trusted_device_from_registry,
@@ -305,6 +305,22 @@ fn pairing_device_policy(app: &AppHandle) -> CommandResult<(Vec<String>, Vec<Str
     Ok((trusted_device_ids, blocked_device_ids))
 }
 
+fn mark_session_stopped(store: &mut SessionStore) {
+    store.sequence += 1;
+    store.active_session_id = None;
+    store.require_local_session_approval = false;
+    store.require_known_device = false;
+    store.native_pairing_approved_for_session = false;
+    store.snapshot.status = SessionStatus::Idle;
+    // The receiver process stays alive between listening sessions, so retain
+    // its identity and capabilities. Only the disconnected sender is cleared.
+    clear_current_device_identity(store);
+    clear_pairing(store);
+    reset_preview(store);
+    reset_fixture_transport(store);
+    set_receiver_runtime_state(store, crate::models::ReceiverRuntimeState::Idle);
+}
+
 fn stop_session_inner(
     app: &AppHandle,
     state: &State<'_, AppState>,
@@ -326,17 +342,7 @@ fn stop_session_inner(
 
     let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics) = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
-        guard.sequence += 1;
-        guard.active_session_id = None;
-        guard.require_local_session_approval = false;
-        guard.require_known_device = false;
-        guard.native_pairing_approved_for_session = false;
-        guard.snapshot.status = SessionStatus::Idle;
-        clear_session_identity(&mut guard);
-        clear_pairing(&mut guard);
-        reset_preview(&mut guard);
-        reset_fixture_transport(&mut guard);
-        set_receiver_runtime_state(&mut guard, crate::models::ReceiverRuntimeState::Idle);
+        mark_session_stopped(&mut guard);
         (
             guard.snapshot.clone(),
             guard.preview.clone(),
@@ -1569,7 +1575,8 @@ pub(crate) fn refresh_receiver_readiness(
 mod tests {
     use super::{
         app_update_install_allowed, begin_pairing_confirmation, capture_path_candidate,
-        persist_recording_without_overwrite, rollback_pairing_confirmation, validated_capture_path,
+        mark_session_stopped, persist_recording_without_overwrite, rollback_pairing_confirmation,
+        validated_capture_path,
     };
     use crate::models::{PairingPhase, SessionStatus};
     use crate::state::SessionStore;
@@ -1644,6 +1651,30 @@ mod tests {
         assert!(!app_update_install_allowed(SessionStatus::Connecting));
         assert!(!app_update_install_allowed(SessionStatus::Mirroring));
         assert!(!app_update_install_allowed(SessionStatus::Recording));
+    }
+
+    #[test]
+    fn stopping_a_session_preserves_the_running_receiver_capabilities() {
+        let mut store = SessionStore {
+            active_session_id: Some(String::from("session-1")),
+            ..SessionStore::default()
+        };
+        store.snapshot.status = SessionStatus::Mirroring;
+        store.snapshot.device_name = String::from("Max's iPhone");
+        store.snapshot.current_device_id = Some(String::from("phone-id"));
+        store.snapshot.receiver_id = Some(String::from("MirrorSim"));
+        store.snapshot.receiver_protocol_version = Some(String::from("0.5.0"));
+        store.snapshot.receiver_capabilities = vec![String::from("pairing-trust-control")];
+
+        mark_session_stopped(&mut store);
+
+        assert!(matches!(store.snapshot.status, SessionStatus::Idle));
+        assert!(store.snapshot.current_device_id.is_none());
+        assert_eq!(store.snapshot.receiver_id.as_deref(), Some("MirrorSim"));
+        assert_eq!(
+            store.snapshot.receiver_capabilities,
+            vec![String::from("pairing-trust-control")]
+        );
     }
 
     #[test]

@@ -69,6 +69,64 @@ fn is_device_trusted(device: &TrustedDevice) -> bool {
     device.trusted_at.is_some() && !device.is_blocked
 }
 
+fn is_authenticated_fingerprint(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
+fn is_legacy_network_identity(value: &str) -> bool {
+    let segments = value.split(':').collect::<Vec<_>>();
+    segments.len() == 6
+        && segments.iter().all(|segment| {
+            segment.len() == 2 && segment.bytes().all(|byte| byte.is_ascii_hexdigit())
+        })
+}
+
+fn migrate_legacy_trusted_identity(
+    registry: &mut TrustedDeviceRegistry,
+    device_name: &str,
+    device_id: Option<&str>,
+) {
+    let Some(authenticated_id) = device_id
+        .map(str::trim)
+        .filter(|value| is_authenticated_fingerprint(value))
+    else {
+        return;
+    };
+    let authenticated_key = authenticated_id.to_ascii_lowercase();
+
+    if registry
+        .devices
+        .iter()
+        .any(|device| device.key == authenticated_key)
+    {
+        return;
+    }
+
+    let matching_legacy_indexes = registry
+        .devices
+        .iter()
+        .enumerate()
+        .filter(|(_, device)| {
+            is_device_trusted(device)
+                && is_legacy_network_identity(&device.key)
+                && device
+                    .display_name
+                    .trim()
+                    .eq_ignore_ascii_case(device_name.trim())
+        })
+        .map(|(index, _)| index)
+        .collect::<Vec<_>>();
+
+    // The user has explicitly approved this authenticated identity. Re-key a
+    // single unambiguous legacy record so upgrades preserve its nickname and
+    // history without silently transferring trust between similarly named phones.
+    if let [index] = matching_legacy_indexes.as_slice() {
+        let device = &mut registry.devices[*index];
+        device.key = authenticated_key;
+        device.device_id = Some(authenticated_id.to_string());
+    }
+}
+
 fn apply_device_identity(
     device: &mut TrustedDevice,
     model: Option<&str>,
@@ -443,6 +501,7 @@ pub(crate) fn trust_device(
         .map_err(|error| error.to_string())?;
     let mut registry = load_registry(app)?;
     let now = now_unix_timestamp();
+    migrate_legacy_trusted_identity(&mut registry, device_name, device_id);
     if let Some(device) = upsert_device(
         &mut registry,
         device_name,
@@ -547,7 +606,32 @@ pub(crate) fn reset_trusted_devices(app: &AppHandle) -> CommandResult<Vec<Truste
 
 #[cfg(test)]
 mod tests {
-    use super::device_key_for_identity;
+    use super::{device_key_for_identity, migrate_legacy_trusted_identity, TrustedDeviceRegistry};
+    use crate::models::TrustedDevice;
+
+    fn trusted_device(key: &str, display_name: &str) -> TrustedDevice {
+        TrustedDevice {
+            key: key.to_string(),
+            device_id: Some(key.to_string()),
+            display_name: display_name.to_string(),
+            model: None,
+            os_name: None,
+            os_version: None,
+            os_build_version: None,
+            source_version: None,
+            nickname: Some(String::from("Presenter phone")),
+            first_seen_at: 1,
+            last_seen_at: 2,
+            trusted_at: Some(3),
+            last_successful_connection_at: Some(4),
+            last_pairing_at: None,
+            pending_pairing: false,
+            is_blocked: false,
+            blocked_reason: None,
+            last_failure_at: None,
+            last_failure_reason: None,
+        }
+    }
 
     #[test]
     fn persistent_trust_requires_an_authenticated_device_identity() {
@@ -557,5 +641,39 @@ mod tests {
         );
         assert_eq!(device_key_for_identity(None, "Max's iPhone"), None);
         assert_eq!(device_key_for_identity(Some("  "), "Max's iPhone"), None);
+    }
+
+    #[test]
+    fn explicit_approval_rekeys_one_matching_legacy_trust_record() {
+        let fingerprint = "a".repeat(64);
+        let mut registry = TrustedDeviceRegistry {
+            devices: vec![trusted_device("aa:bb:cc:dd:ee:ff", "Max's iPhone")],
+        };
+
+        migrate_legacy_trusted_identity(&mut registry, "Max's iPhone", Some(fingerprint.as_str()));
+
+        let device = &registry.devices[0];
+        assert_eq!(device.key, fingerprint);
+        assert_eq!(device.nickname.as_deref(), Some("Presenter phone"));
+        assert_eq!(device.first_seen_at, 1);
+        assert_eq!(device.trusted_at, Some(3));
+    }
+
+    #[test]
+    fn ambiguous_legacy_records_are_not_silently_migrated() {
+        let fingerprint = "b".repeat(64);
+        let mut registry = TrustedDeviceRegistry {
+            devices: vec![
+                trusted_device("aa:bb:cc:dd:ee:ff", "iPhone"),
+                trusted_device("11:22:33:44:55:66", "iPhone"),
+            ],
+        };
+
+        migrate_legacy_trusted_identity(&mut registry, "iPhone", Some(fingerprint.as_str()));
+
+        assert!(registry
+            .devices
+            .iter()
+            .all(|device| device.key != fingerprint));
     }
 }
