@@ -6,6 +6,7 @@ import {
   buildScreenshotFileName,
   formatAppleDeviceModel,
   mergeStoredPreferences,
+  selectFreshestStoredPreferences,
 } from "../src/features/mirrorsim/helpers";
 
 describe("capture filenames", () => {
@@ -27,6 +28,47 @@ describe("capture filenames", () => {
         timestamp,
       ),
     ).toBe("walkthrough.webm");
+  });
+});
+
+describe("preference snapshot recovery", () => {
+  test("uses a newer browser fallback after a close-before-debounce", () => {
+    const native = {
+      app: { receiverDisplayName: "Old native value" },
+      _meta: { revision: 3, updatedAt: 1_000 },
+    };
+    const browser = {
+      app: { receiverDisplayName: "Latest browser value" },
+      _meta: { revision: 4, updatedAt: 2_000 },
+    };
+
+    expect(selectFreshestStoredPreferences(native, browser)).toBe(browser);
+  });
+
+  test("keeps a newer native snapshot when the fallback is stale", () => {
+    const native = {
+      app: { receiverDisplayName: "Latest native value" },
+      _meta: { revision: 8, updatedAt: 8_000 },
+    };
+    const browser = {
+      app: { receiverDisplayName: "Stale browser value" },
+      _meta: { revision: 7, updatedAt: 7_000 },
+    };
+
+    expect(selectFreshestStoredPreferences(native, browser)).toBe(native);
+  });
+
+  test("uses monotonic revision when the system clock moves backward", () => {
+    const native = {
+      app: { receiverDisplayName: "Older revision" },
+      _meta: { revision: 10, updatedAt: 9_000 },
+    };
+    const browser = {
+      app: { receiverDisplayName: "Newer revision" },
+      _meta: { revision: 11, updatedAt: 8_000 },
+    };
+
+    expect(selectFreshestStoredPreferences(native, browser)).toBe(browser);
   });
 });
 

@@ -72,6 +72,18 @@ bun run sync:airplay-runtime
 
 `sync:airplay-runtime` looks for a sibling checkout at `..\AirPlayServer` and copies the built `MirrorSimAdapter.exe` plus required DLLs into MirrorSim.
 
+When changing the sidecar itself, build and validate the sibling repository first:
+
+```powershell
+cd ..\AirPlayServer
+msbuild AirPlay.sln /p:Configuration=Release /p:Platform=x64 /m
+cd ..\MirrorSim
+bun run sync:airplay-runtime
+bun run tauri dev
+```
+
+Runtime sync/fetch validates the exact six-file inventory, x64 PE architecture, and protocol handshake before MirrorSim accepts the files.
+
 Important: commands ending in `:fetch` download the runtime declared in `receivers/runtime-manifest.json`, which is pinned and checksum-verified. Use those when you want to validate the project's publishable state. Do not use `:fetch` when you are trying to test local changes in the sibling AirPlayServer fork — use `sync:airplay-runtime` instead so your local build is actually picked up.
 
 ---
@@ -121,11 +133,11 @@ Local-runtime packaging fails if a sibling AirPlayServer build is not available 
 
 ### Rust toolchain
 
-Release packaging uses Rust `1.88.0-x86_64-pc-windows-msvc` through the release script and CI. Normal local development can use your installed stable Rust toolchain.
+Release packaging, CI, and the checked-in Rust toolchain all use Rust `1.88.0-x86_64-pc-windows-msvc`.
 
 ### Updater signing
 
-Updater-enabled release builds require:
+Installer and `release:all` builds that create updater artifacts require:
 
 - `TAURI_SIGNING_PRIVATE_KEY`
 - `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`, if your key has a password
@@ -136,11 +148,18 @@ The GitHub release workflow (`.github/workflows/release.yml`) expects `receivers
 
 ### Versioning and tags
 
-The first public beta release uses MSI-safe numeric prerelease versions such as `v0.1.0-1`. Cut a release with a tag like:
+Release the native runtime before a MirrorSim version that changes the sidecar:
+
+1. Commit and push the AirPlayServer changes.
+2. Tag that repository (for this release, `v0.3.0`) and wait for its Build & Release workflow.
+3. Copy the published `airplay-runtime-win-x64.sha256` value into `receivers/runtime-manifest.json`, update its version and URL, then run `bun run release:prep:fetch`.
+4. Commit and push the MirrorSim runtime-manifest update only after the fetched protocol smoke test passes.
+
+Cut the MirrorSim release from the exact reviewed commit:
 
 ```powershell
-git tag v0.1.0-1
-git push origin v0.1.0-1
+git tag v0.1.3
+git push origin v0.1.3
 ```
 
 Tags matching `v*` trigger the release workflow, which builds on `windows-latest` and uploads:
@@ -150,13 +169,15 @@ Tags matching `v*` trigger the release workflow, which builds on `windows-latest
 - A portable `.zip`
 - `release/latest.json` (Tauri updater manifest)
 - `release/checksums.txt`
+- GitHub build-provenance attestations for the staged release files
 
-Before publishing, the workflow verifies that the Git tag matches the versions in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. It uses `scripts/validate-release-version.ps1` for this check. Every uploaded installer, signature, portable archive, and updater manifest must be represented in `checksums.txt`.
+Before publishing, the workflow verifies that the Git tag matches the versions in `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json`. It uses `scripts/validate-release-version.ps1` for this check. It also installs the pinned `cargo-audit` version, scans both Rust lockfiles against the current RustSec advisory database, and verifies the installer signatures against the public updater key embedded in MirrorSim. Every uploaded installer, signature, portable archive, and updater manifest must be represented in `checksums.txt`.
 
 ---
 
 ## Before you open a PR
 
-- Run `bun run check` — it runs the build, formatting, lint (Clippy), tests, and audit for both the frontend and the Rust crates.
+- Run `bun run check` — it runs the build, formatting, Clippy, tests, and Bun dependency audit.
+- Run `cargo audit --file src-tauri/Cargo.lock` and `cargo audit --file receivers/mirror-receiver/Cargo.lock` when `cargo-audit` is installed. CI and release validation always run these Rust advisory checks.
 - The CI workflow (`.github/workflows/ci.yml`) runs on pull requests and on pushes to `main`; make sure your branch passes it.
 - If your change affects versioning or release packaging, `scripts/validate-release-version.ps1` is what the release workflow uses to confirm the Git tag matches `package.json`, `src-tauri/Cargo.toml`, and `src-tauri/tauri.conf.json` — check it locally if you're touching version numbers.

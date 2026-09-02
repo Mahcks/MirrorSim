@@ -3,6 +3,7 @@ import type { CSSProperties, MouseEventHandler, ReactNode, WheelEventHandler } f
 import { cn } from "@/lib/utils";
 import { fmtDuration } from "@/features/mirrorsim/helpers";
 import type { AppMode, Orientation, SessionState } from "@/features/mirrorsim/types";
+import type { MockPreviewStreamStatus } from "@/mockPreviewStream";
 
 import { Icon } from "./Icon";
 
@@ -26,6 +27,9 @@ type DeviceFrameProps = {
   primarySessionActionLabel: string;
   primarySessionActionDisabled: boolean;
   onPrimary: () => void;
+  previewStatus: MockPreviewStreamStatus;
+  previewError: string | null;
+  onRetryPreview: () => void;
   previewDimClass: string;
   previewVideoStyle: CSSProperties;
   tone: "inactive" | "live" | "warning";
@@ -56,6 +60,9 @@ export function DeviceFrame({
   primarySessionActionLabel,
   primarySessionActionDisabled,
   onPrimary,
+  previewStatus,
+  previewError,
+  onRetryPreview,
   previewDimClass,
   previewVideoStyle,
   tone,
@@ -133,43 +140,105 @@ export function DeviceFrame({
             />
           </div>
           {overlay}
+          {isLive && previewStatus !== "ready" && (
+            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center bg-black/82 px-8 py-10 text-center">
+              <span className="text-white/35" aria-hidden="true">
+                <Icon name="phone" size={22} />
+              </span>
+              <h3 className="mt-4 text-sm font-semibold text-white/88">
+                {previewStatus === "loading" ? "Starting iPhone video..." : "Preview interrupted"}
+              </h3>
+              <p className="mt-2 max-w-60 text-xs leading-5 text-white/55">
+                {previewStatus === "loading"
+                  ? "The AirPlay connection is active. MirrorSim is waiting for a decodable video frame."
+                  : previewError ?? "MirrorSim could not continue decoding the live preview."}
+              </p>
+              {previewStatus !== "loading" && (
+                <button
+                  type="button"
+                  className="mt-5 rounded-lg border border-white/15 bg-white/8 px-4 py-2 text-xs font-semibold text-white/80 transition hover:bg-white/12 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
+                  onClick={onRetryPreview}
+                >
+                  Retry preview
+                </button>
+              )}
+            </div>
+          )}
           {!isLive && (
-            <div className="absolute inset-0 z-20 flex flex-col items-center justify-center px-7 py-8 text-center">
-              <div className="relative mb-5 flex h-10 w-10 items-center justify-center">
+            <div
+              className={cn(
+                "absolute inset-0 z-20 flex flex-col items-center justify-center text-center",
+                orientation === "portrait" ? "px-7 py-8" : "px-10 py-4",
+              )}
+              aria-live="polite"
+            >
+              <div
+                className={cn(
+                  "relative flex items-center justify-center rounded-full border",
+                  orientation === "portrait" ? "mb-5 h-14 w-14" : "mb-3 h-10 w-10",
+                  (sessionState === "discovering" || sessionState === "connecting")
+                    ? "border-cyan-300/15 bg-cyan-300/[0.045] shadow-[0_0_28px_rgba(103,232,249,0.06)]"
+                    : "border-white/[0.06] bg-white/[0.025]",
+                )}
+              >
                 {(sessionState === "discovering" || sessionState === "connecting") ? (
                   <>
-                    <span className="absolute inset-0 animate-ping rounded-full border border-white/10" />
-                    <span className="absolute inset-0.75 rounded-full border border-white/8 bg-white/4" />
-                    <span className="relative text-white/30">
-                      <Icon name="phone" size={14} />
+                    <span className="absolute inset-1 animate-ping rounded-full border border-cyan-200/15" />
+                    <span className="absolute inset-2 rounded-full border border-cyan-100/8 bg-cyan-100/[0.025]" />
+                    <span className="relative text-cyan-100/55">
+                      <Icon name="phone" size={17} />
                     </span>
                   </>
                 ) : (
-                  <span className="text-white/18">
-                    <Icon name="phone" size={24} />
+                  <span className="text-white/24">
+                    <Icon name="phone" size={21} />
                   </span>
                 )}
               </div>
-              <h3 className="text-[14px] font-semibold leading-tight tracking-[-0.022em] text-white/82">
+              <h3 className="text-[15px] font-semibold leading-tight tracking-[-0.025em] text-white/90">
                 {sessionHeadline}
               </h3>
-              <p className="mt-1.5 max-w-47.5 text-[10px] leading-[1.6] text-white/36">
+              <p className="mt-2 max-w-56 text-[11px] leading-[1.65] text-white/48">
                 {sessionSupportingText}
               </p>
               {showPhoneSteps && (
-                <ol className="mt-4 w-full max-w-45 space-y-1.5 text-left">
-                  {phoneSteps.map((step, i) => (
-                    <li key={i} className="flex items-center gap-2.5">
-                      <span className="w-3 shrink-0 text-center text-[9px] font-semibold tabular-nums text-white/20">{i + 1}</span>
-                      <span className="text-[10px] text-white/42">{step}</span>
-                    </li>
-                  ))}
-                </ol>
+                <div
+                  className={cn(
+                    "w-full rounded-xl border border-white/[0.075] bg-white/[0.025] text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]",
+                    orientation === "portrait" ? "mt-5 max-w-55 px-3.5 py-3" : "mt-3 max-w-130 px-3 py-2",
+                  )}
+                >
+                  <p className="text-[8px] font-semibold uppercase tracking-[0.14em] text-white/28">On your iPhone</p>
+                  <ol className={cn("mt-1.5", orientation === "landscape" && "grid grid-cols-3")}>
+                    {phoneSteps.map((step, i) => (
+                      <li
+                        key={i}
+                        className={cn(
+                          "flex items-center gap-2.5 py-1.5",
+                          orientation === "portrait"
+                            ? "min-h-8.5 border-b border-white/[0.055] last:border-b-0"
+                            : "min-h-7 border-r border-white/[0.055] px-3 first:pl-0 last:border-r-0 last:pr-0",
+                        )}
+                      >
+                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-cyan-200/15 bg-cyan-300/[0.065] text-[9px] font-semibold tabular-nums text-cyan-100/68">
+                          {i + 1}
+                        </span>
+                        <span className="text-[11px] font-medium text-white/68">{step}</span>
+                      </li>
+                    ))}
+                  </ol>
+                </div>
               )}
               {(isIdle || !isLive || bonjourNeedsAttention) && (
                 <button
                   type="button"
-                  className="mt-5 h-7.5 rounded-lg border border-white/10 bg-white/5 px-4 text-[11px] font-medium tracking-[-0.01em] text-white/58 transition hover:border-white/16 hover:bg-white/8 hover:text-white/82 disabled:cursor-default disabled:opacity-25"
+                  className={cn(
+                    "h-8.5 rounded-lg border px-4 text-[11px] font-semibold tracking-[-0.01em] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/55 disabled:cursor-default disabled:opacity-35",
+                    orientation === "portrait" ? "mt-5" : "mt-3",
+                    isIdle && !bonjourNeedsAttention
+                      ? "border-cyan-200/18 bg-cyan-300/10 text-cyan-50/82 hover:border-cyan-100/28 hover:bg-cyan-300/15 hover:text-white"
+                      : "border-white/10 bg-white/5 text-white/58 hover:border-white/16 hover:bg-white/8 hover:text-white/82",
+                  )}
                   onClick={onPrimary}
                   disabled={primarySessionActionDisabled}
                 >

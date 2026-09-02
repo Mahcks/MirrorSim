@@ -157,7 +157,7 @@ Preferences let you choose whether screenshots save to disk, copy to clipboard, 
 | Double-click the device | Toggle fullscreen |
 | `F1` | Toggle diagnostics, switching to Console mode if needed |
 | `H` | Hide or show the Minimal mode toolbar |
-| `Esc` | Close Preferences or the context menu |
+| `Esc` | Close the active dialog or context menu |
 
 ---
 
@@ -230,6 +230,6 @@ MirrorSim depends on work from the AirPlay reverse-engineering and open-source d
 - [airplay2-win](https://github.com/fingergit/airplay2-win) by fingergit
 - Bonjour, FFmpeg, SDL2, and related libraries used by the bundled receiver runtime
 
-MirrorSim itself is licensed under MIT. The bundled AirPlay receiver runtime includes separate third-party license terms in `LICENSES/AirPlayServer-LICENSE`.
+MirrorSim itself is licensed under MIT. The bundled AirPlay receiver runtime includes separate terms and source links documented in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and `LICENSES/`.
 
 Apple, AirPlay, and iPhone are trademarks of Apple Inc. MirrorSim is an independent project and is not affiliated with or endorsed by Apple Inc.

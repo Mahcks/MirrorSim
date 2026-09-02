@@ -1,6 +1,8 @@
-import { useEffect, useRef } from "react";
+import { useRef } from "react";
 
 import type { PairingSnapshot } from "@/receiverContract";
+import { useModalFocus } from "@/features/mirrorsim/hooks/useModalFocus";
+import { isPairingModalOpen } from "@/features/mirrorsim/modalFlow";
 
 type PairingModalProps = {
   pairing: PairingSnapshot;
@@ -14,14 +16,10 @@ type PairingModalProps = {
 
 export function PairingModal({ pairing, approvalActionSupported, rememberTrustByDefault, commandPending, embedded = false, onConfirmTrust, onCancel }: PairingModalProps) {
   const cancelButtonRef = useRef<HTMLButtonElement | null>(null);
+  const open = isPairingModalOpen(pairing.phase);
+  const dialogRef = useModalFocus(open, onCancel, cancelButtonRef);
 
-  useEffect(() => {
-    if (pairing.phase !== "idle" && pairing.phase !== "paired" && pairing.phase !== "verifying") {
-      cancelButtonRef.current?.focus();
-    }
-  }, [pairing.phase]);
-
-  if (pairing.phase === "idle" || pairing.phase === "paired" || pairing.phase === "verifying") {
+  if (!open) {
     return null;
   }
 
@@ -57,6 +55,7 @@ export function PairingModal({ pairing, approvalActionSupported, rememberTrustBy
       }
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="mirrorsim-pairing-title"

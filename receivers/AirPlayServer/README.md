@@ -16,15 +16,18 @@ Expected working directory:
 receivers/AirPlayServer/
 ```
 
-## What belongs here
+## Exact runtime inventory
 
-Before building installer or portable releases, place the adapter and any required runtime files here:
+Release validation allows exactly these native files (plus this README):
 
 - `MirrorSimAdapter.exe`
-- required DLLs
-- required config or runtime assets
+- `airplay2dll.dll`
+- `avcodec-58.dll`
+- `avutil-56.dll`
+- `msys-2.0.dll`
+- `swscale-5.dll`
 
-This folder is bundled into release artifacts through `src-tauri/tauri.conf.json`, so shipped builds can run without asking users to install a separate AirPlay receiver package.
+Every native file must be an x64 Windows PE image, and the adapter must complete the protocol `0.5.0` startup/shutdown smoke test. This folder is bundled into release artifacts through `src-tauri/tauri.conf.json`, so shipped builds can run without asking users to install a separate AirPlay receiver package.
 
 ## Sync From a Local AirPlayServer Build
 

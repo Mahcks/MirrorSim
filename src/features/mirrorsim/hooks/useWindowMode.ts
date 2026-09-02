@@ -3,7 +3,7 @@ import { useEffect, useRef, type Dispatch, type SetStateAction } from "react";
 import { LogicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 
-import { MINIMAL_WINDOW_SIZE } from "@/features/mirrorsim/constants";
+import { MINIMAL_TITLEBAR_HEIGHT, MINIMAL_WINDOW_SIZE } from "@/features/mirrorsim/constants";
 import { fmtError } from "@/features/mirrorsim/helpers";
 import type { AppMode, Orientation } from "@/features/mirrorsim/types";
 import type { ZoomLevel } from "@/features/mirrorsim/constants";
@@ -12,6 +12,7 @@ type UseWindowModeArgs = {
   appMode: AppMode;
   setAppMode: Dispatch<SetStateAction<AppMode>>;
   orientation: Orientation;
+  zoom: ZoomLevel;
   setZoom: Dispatch<SetStateAction<ZoomLevel>>;
   keepMinimalOnTop: boolean;
   useOpaqueWindowBackground: boolean;
@@ -22,6 +23,7 @@ export function useWindowMode({
   appMode,
   setAppMode,
   orientation,
+  zoom,
   setZoom,
   keepMinimalOnTop,
   useOpaqueWindowBackground,
@@ -30,17 +32,23 @@ export function useWindowMode({
   const minimalShellRef = useRef<HTMLDivElement | null>(null);
 
   function readMinimalShellSize(nextOrientation: Orientation) {
-    const fallback = MINIMAL_WINDOW_SIZE[nextOrientation];
+    const baseSize = MINIMAL_WINDOW_SIZE[nextOrientation];
+    const fallback = {
+      width: Math.ceil(baseSize.width * zoom),
+      height: Math.ceil(baseSize.height * zoom),
+    };
     const shell = minimalShellRef.current;
 
     if (!shell) {
       return fallback;
     }
 
+    // MinimalView deliberately keeps the full-width chrome outside this ref.
+    // Add its scaled height back without allowing the viewport width into Fit.
     const rect = shell.getBoundingClientRect();
     const measured = {
       width: Math.max(fallback.width, Math.ceil(rect.width)),
-      height: Math.max(fallback.height, Math.ceil(rect.height)),
+      height: Math.max(fallback.height, Math.ceil(rect.height + MINIMAL_TITLEBAR_HEIGHT * zoom)),
     };
 
     return measured;
@@ -145,7 +153,7 @@ export function useWindowMode({
       cancelled = true;
       window.cancelAnimationFrame(frameA);
     };
-  }, [appMode, orientation]);
+  }, [appMode, orientation, zoom]);
 
   return {
     minimalShellRef,

@@ -1,7 +1,9 @@
 use crate::models::{CommandResult, ConnectionHistoryEntry, DiagnosticsExport};
+use crate::persistence::durable_replace;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::fs;
+use std::fs::{self, OpenOptions};
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -56,19 +58,9 @@ fn load_registry(app: &AppHandle) -> CommandResult<ConnectionHistoryRegistry> {
 
 fn save_registry(app: &AppHandle, registry: &ConnectionHistoryRegistry) -> CommandResult<()> {
     let file_path = connection_history_path(app)?;
-    if let Some(parent) = file_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-
     let payload = serde_json::to_vec_pretty(registry).map_err(|error| error.to_string())?;
-    let temporary_path = file_path.with_extension("json.tmp");
     let backup_path = file_path.with_extension("json.bak");
-    fs::write(&temporary_path, payload).map_err(|error| error.to_string())?;
-    if file_path.exists() {
-        fs::copy(&file_path, backup_path).map_err(|error| error.to_string())?;
-        fs::remove_file(&file_path).map_err(|error| error.to_string())?;
-    }
-    fs::rename(temporary_path, file_path).map_err(|error| error.to_string())
+    durable_replace(&file_path, &backup_path, &payload)
 }
 
 pub(crate) fn append_history_entry(
@@ -122,10 +114,34 @@ pub(crate) fn export_diagnostics_value(
         .join("Diagnostics");
     fs::create_dir_all(&base_dir).map_err(|error| error.to_string())?;
 
-    let file_name = format!("mirrorsim_diagnostics_{}.json", exported_at);
-    let file_path = base_dir.join(&file_name);
     let payload = serde_json::to_vec_pretty(report).map_err(|error| error.to_string())?;
-    fs::write(&file_path, payload).map_err(|error| error.to_string())?;
+    let (file_name, file_path) = (1_u16..=999)
+        .find_map(|attempt| {
+            let suffix = if attempt == 1 {
+                String::new()
+            } else {
+                format!("-{attempt}")
+            };
+            let file_name = format!("mirrorsim_diagnostics_{exported_at}{suffix}.json");
+            let file_path = base_dir.join(&file_name);
+            match OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&file_path)
+            {
+                Ok(mut file) => match file.write_all(&payload).and_then(|_| file.sync_all()) {
+                    Ok(()) => Some(Ok((file_name, file_path))),
+                    Err(error) => {
+                        let _ = fs::remove_file(&file_path);
+                        Some(Err(error.to_string()))
+                    }
+                },
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => None,
+                Err(error) => Some(Err(error.to_string())),
+            }
+        })
+        .transpose()?
+        .ok_or_else(|| String::from("could not allocate a unique diagnostics filename"))?;
 
     let entry_count = report
         .get("history")

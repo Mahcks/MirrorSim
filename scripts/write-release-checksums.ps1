@@ -35,27 +35,6 @@ function Get-Sha256Hex {
   }
 }
 
-function Get-RelativeArtifactPath {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$BasePath,
-
-    [Parameter(Mandatory = $true)]
-    [string]$TargetPath
-  )
-
-  $baseFullPath = [System.IO.Path]::GetFullPath($BasePath)
-  if (-not $baseFullPath.EndsWith([System.IO.Path]::DirectorySeparatorChar.ToString())) {
-    $baseFullPath += [System.IO.Path]::DirectorySeparatorChar
-  }
-
-  $targetFullPath = [System.IO.Path]::GetFullPath($TargetPath)
-  $baseUri = New-Object System.Uri($baseFullPath)
-  $targetUri = New-Object System.Uri($targetFullPath)
-
-  return [System.Uri]::UnescapeDataString($baseUri.MakeRelativeUri($targetUri).ToString()).Replace('\', '/')
-}
-
 $resolvedOutputPath = if ([System.IO.Path]::IsPathRooted($OutputPath)) {
   $OutputPath
 }
@@ -95,9 +74,12 @@ New-Item -ItemType Directory -Force -Path (Split-Path -Parent $resolvedOutputPat
 
 $lines = foreach ($artifact in ($artifacts | Sort-Object FullName)) {
   $hash = Get-Sha256Hex -Path $artifact.FullName
-  $relativePath = Get-RelativeArtifactPath -BasePath $repoRoot -TargetPath $artifact.FullName
-  "$hash  $relativePath"
+  "$hash  $($artifact.Name)"
 }
 
-$lines | Set-Content -Path $resolvedOutputPath -Encoding utf8
+[System.IO.File]::WriteAllLines(
+  $resolvedOutputPath,
+  [string[]]$lines,
+  [System.Text.UTF8Encoding]::new($false)
+)
 Write-Host "Wrote release checksums to $resolvedOutputPath"

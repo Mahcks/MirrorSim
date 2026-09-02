@@ -2,6 +2,7 @@ import type { MouseEvent, ReactNode, RefObject } from "react";
 
 import { cn } from "@/lib/utils";
 import type { Orientation } from "@/features/mirrorsim/types";
+import { MINIMAL_TITLEBAR_HEIGHT, MINIMAL_WINDOW_SIZE, type ZoomLevel } from "@/features/mirrorsim/constants";
 
 import { Icon } from "./Icon";
 import { WindowControls } from "./WindowControls";
@@ -34,6 +35,7 @@ type MinimalViewProps = {
   titlebarStateDotClass: string;
   titlebarStateLabel: string;
   updateBanner: ReactNode;
+  zoom: ZoomLevel;
 };
 
 export function MinimalView({
@@ -63,27 +65,41 @@ export function MinimalView({
   titlebarStateDotClass,
   titlebarStateLabel,
   updateBanner,
+  zoom,
+  orientation,
 }: MinimalViewProps) {
+  const scaledDeviceSize = {
+    width: Math.ceil(shellWidth * zoom),
+    height: Math.ceil((MINIMAL_WINDOW_SIZE[orientation].height - MINIMAL_TITLEBAR_HEIGHT) * zoom),
+  };
+  const scaledTitlebarHeight = Math.ceil(40 * zoom);
+
   return (
     <div className="flex h-screen w-screen flex-col items-center overflow-hidden bg-transparent text-white">
-      <div ref={minimalShellRef} className="inline-flex flex-col" style={{ width: shellWidth }}>
+      <div
+        className={cn(
+          "w-full shrink-0 cursor-grab overflow-hidden border-b active:cursor-grabbing",
+          chromeHidden ? "border-white/4 bg-[#101114]" : "border-white/8 bg-[#17191d]",
+        )}
+        style={{ height: scaledTitlebarHeight }}
+        onMouseDown={(event) => void onStartWindowDrag(event)}
+      >
+        {/* The underlay spans the viewport; the reciprocal width keeps the chrome's
+            existing zoom behavior after its transform is applied. */}
         <div
-          className={cn(
-            "flex h-10 w-full shrink-0 cursor-grab items-center justify-between border-b px-2 active:cursor-grabbing",
-            chromeHidden ? "border-white/4 bg-[#101114]" : "border-white/8 bg-[#17191d]",
-          )}
-          onMouseDown={(event) => void onStartWindowDrag(event)}
+          className="flex h-10 origin-top-left items-center justify-between px-2"
+          style={{ width: `${100 / zoom}%`, transform: `scale(${zoom})` }}
         >
-          <div className="flex items-center gap-2">
+          <div className="flex min-w-0 items-center gap-2">
             {!chromeHidden && <WindowControls />}
-            <div className="flex items-center gap-2 leading-none">
-              <span className={titlebarStateDotClass} title={titlebarStateLabel} />
-              <span className="select-none text-[11px] font-semibold tracking-[-0.015em] text-white/90">{titlebarStateLabel}</span>
+            <div className="flex min-w-0 items-center gap-2 leading-none">
+              <span className={cn("shrink-0", titlebarStateDotClass)} title={titlebarStateLabel} />
+              <span className="truncate select-none text-[11px] font-semibold tracking-[-0.015em] text-white/90">{titlebarStateLabel}</span>
               {reconnectBadge}
             </div>
           </div>
           {!chromeHidden && (
-            <div className="flex cursor-default items-center gap-0.5" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="flex shrink-0 cursor-default items-center gap-0.5" onMouseDown={(event) => event.stopPropagation()}>
               <button
                 type="button"
                 className={minimalFloatingButtonClass}
@@ -133,8 +149,20 @@ export function MinimalView({
             </div>
           )}
         </div>
+      </div>
 
-        {deviceFrame}
+      <div className="flex min-h-0 w-full flex-1 justify-center overflow-hidden">
+        <div style={scaledDeviceSize}>
+          {/* Keep this ref on the phone only. Fit-to-phone must not measure a
+              manually expanded full-width title bar. */}
+          <div
+            ref={minimalShellRef}
+            className="inline-flex origin-top-left transition-transform duration-150"
+            style={{ width: shellWidth, transform: `scale(${zoom})` }}
+          >
+            {deviceFrame}
+          </div>
+        </div>
       </div>
 
       {(captureNotice || commandError) && (

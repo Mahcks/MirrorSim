@@ -27,6 +27,7 @@ const idleSession: SessionSnapshot = {
 
 function presentation(overrides: Partial<Parameters<typeof getConnectionPresentation>[0]> = {}) {
   return getConnectionPresentation({
+    initializing: false,
     session: idleSession,
     pairing: initialPairingStatus,
     receiverRuntime: initialReceiverRuntime,
@@ -37,28 +38,51 @@ function presentation(overrides: Partial<Parameters<typeof getConnectionPresenta
 }
 
 describe("connection flow presentation", () => {
-  test("idle explains how to start without claiming the receiver is listening", () => {
-    const result = presentation();
-    expect(result.titlebarLabel).toBe("Stopped");
-    expect(result.primaryActionLabel).toBe("Start AirPlay");
-    expect(result.supportingText).toContain("Demo Phone");
+  test("startup readiness is not presented as ready or listening", () => {
+    const result = presentation({ initializing: true });
+    expect(result.titlebarLabel).toBe("Getting ready");
+    expect(result.primaryActionLabel).toBe("Checking...");
+    expect(result.tone).toBe("active");
   });
 
-  test("receiver startup and listening are distinct phases", () => {
+  test("idle invites the user to listen without receiver jargon", () => {
+    const result = presentation();
+    expect(result.titlebarLabel).toBe("Not listening");
+    expect(result.headline).toBe("Mirror your iPhone");
+    expect(result.primaryActionLabel).toBe("Start listening");
+    expect(result.supportingText).toContain("Demo Phone");
+    expect(result.supportingText).not.toContain("receiver");
+  });
+
+  test("receiver startup immediately shows preparation steps", () => {
     const session = { ...idleSession, status: "discovering" as const };
-    expect(presentation({
+    const priming = presentation({
       session,
       receiverRuntime: { ...initialReceiverRuntime, state: "priming" },
-    }).headline).toBe("Starting AirPlay receiver");
+    });
+    expect(priming.headline).toBe("Getting ready to listen");
+    expect(priming.titlebarLabel).toBe("Starting");
+    expect(priming.showPhoneSteps).toBe(true);
+
+    expect(presentation({ session }).titlebarLabel).toBe("Starting");
 
     const listening = presentation({
       session,
       receiverRuntime: { ...initialReceiverRuntime, state: "ready" },
     });
     expect(listening.headline).toBe("Listening for your iPhone");
-    expect(listening.supportingText).toContain("keep listening");
+    expect(listening.supportingText).toContain("Finish these steps");
     expect(listening.phoneSteps[2]).toBe("Choose Demo Phone");
     expect(listening.showPhoneSteps).toBe(true);
+  });
+
+  test("a pending start shows setup instructions before the command returns", () => {
+    const result = presentation({ pendingSessionCommand: "start_session" });
+
+    expect(result.titlebarLabel).toBe("Starting");
+    expect(result.headline).toBe("Getting ready to listen");
+    expect(result.primaryActionLabel).toBe("Starting...");
+    expect(result.showPhoneSteps).toBe(true);
   });
 
   test("a disconnected phone returns to visible listening instructions", () => {
@@ -103,7 +127,7 @@ describe("connection flow presentation", () => {
     const result = presentation({
       receiverRuntime: { ...initialReceiverRuntime, lastError: "Receiver process exited." },
     });
-    expect(result.headline).toBe("AirPlay receiver stopped");
+    expect(result.headline).toBe("Listening stopped");
     expect(result.supportingText).toBe("Receiver process exited.");
     expect(result.tone).toBe("warning");
   });

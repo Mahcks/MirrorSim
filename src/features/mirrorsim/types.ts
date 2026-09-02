@@ -176,6 +176,10 @@ export type StoredPreferences = {
   screenshots?: Partial<ScreenshotSettings>;
   recordings?: Partial<RecordingSettings>;
   app?: Partial<AppPreferences>;
+  _meta?: {
+    revision: number;
+    updatedAt: number;
+  };
 };
 
 export type ScreenshotCaptureOverrides = Partial<

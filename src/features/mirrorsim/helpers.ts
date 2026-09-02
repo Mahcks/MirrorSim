@@ -180,6 +180,38 @@ export function mergeStoredPreferences(stored: StoredPreferences | null) {
   };
 }
 
+function storedPreferencesFreshness(preferences: StoredPreferences | null) {
+  return {
+    updatedAt: preferences?._meta?.updatedAt ?? 0,
+    revision: preferences?._meta?.revision ?? 0,
+  };
+}
+
+export function selectFreshestStoredPreferences(
+  nativePreferences: StoredPreferences | null,
+  browserPreferences: StoredPreferences | null,
+) {
+  if (!nativePreferences) return browserPreferences;
+  if (!browserPreferences) return nativePreferences;
+
+  const nativeFreshness = storedPreferencesFreshness(nativePreferences);
+  const browserFreshness = storedPreferencesFreshness(browserPreferences);
+  if (browserFreshness.revision !== nativeFreshness.revision) {
+    return browserFreshness.revision > nativeFreshness.revision
+      ? browserPreferences
+      : nativePreferences;
+  }
+  if (browserFreshness.updatedAt !== nativeFreshness.updatedAt) {
+    return browserFreshness.updatedAt > nativeFreshness.updatedAt
+      ? browserPreferences
+      : nativePreferences;
+  }
+
+  // Preserve the long-standing native-store precedence for legacy snapshots
+  // and exact mirrors with equal metadata.
+  return nativePreferences;
+}
+
 export function readBrowserStoredPreferences(): StoredPreferences | null {
   try {
     const rawPreferences = localStorage.getItem(PREFERENCES_STORAGE_KEY);

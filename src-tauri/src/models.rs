@@ -160,6 +160,8 @@ pub(crate) struct AppUpdateInfo {
 pub(crate) struct PairingSnapshot {
     pub(crate) phase: PairingPhase,
     pub(crate) entry_mode: PairingEntryMode,
+    pub(crate) session_id: Option<String>,
+    pub(crate) challenge_id: Option<String>,
     pub(crate) device_name: Option<String>,
     pub(crate) device_id: Option<String>,
     pub(crate) display_pin: Option<String>,
@@ -290,6 +292,8 @@ pub(crate) enum SidecarEvent {
         phase: PairingPhase,
         #[serde(default)]
         entry_mode: PairingEntryMode,
+        session_id: String,
+        challenge_id: String,
         #[serde(default)]
         device_name: Option<String>,
         #[serde(default)]

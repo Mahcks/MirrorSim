@@ -20,7 +20,11 @@ export type ConnectionPresentation = {
   telemetryHint: string;
 };
 
+export type PendingSessionCommand = "start_session" | "reconnect_session" | "stop_session" | null;
+
 type ConnectionPresentationInput = {
+  initializing: boolean;
+  pendingSessionCommand?: PendingSessionCommand;
   session: SessionSnapshot;
   pairing: PairingSnapshot;
   receiverRuntime: ReceiverRuntimeSnapshot;
@@ -29,6 +33,8 @@ type ConnectionPresentationInput = {
 };
 
 export function getConnectionPresentation({
+  initializing,
+  pendingSessionCommand = null,
   session,
   pairing,
   receiverRuntime,
@@ -36,6 +42,9 @@ export function getConnectionPresentation({
   receiverDisplayName,
 }: ConnectionPresentationInput): ConnectionPresentation {
   const isLive = session.status === "mirroring" || session.status === "recording";
+  const isStartingToListen = pendingSessionCommand === "start_session"
+    || pendingSessionCommand === "reconnect_session";
+  const receiverIsReady = receiverRuntime.state === "ready" || receiverRuntime.state === "streaming";
   const pairingNeedsAttention = pairing.phase === "pin-required"
     || pairing.phase === "awaiting-trust"
     || pairing.phase === "failed";
@@ -55,7 +64,19 @@ export function getConnectionPresentation({
   let titlebarLabel: string;
   let tone: ConnectionPresentation["tone"];
 
-  if (bonjourStatus.status === "missing" || bonjourStatus.status === "stopped") {
+  if (initializing) {
+    headline = "Getting things ready";
+    supportingText = "MirrorSim is checking this PC for wireless connections.";
+    secondaryLabel = "Checking connection setup";
+    titlebarLabel = "Getting ready";
+    tone = "active";
+  } else if (bonjourStatus.status === "unknown") {
+    headline = "Could not verify Bonjour";
+    supportingText = bonjourStatus.detail;
+    secondaryLabel = "Discovery status unknown";
+    titlebarLabel = "Check required";
+    tone = "warning";
+  } else if (bonjourStatus.status === "missing" || bonjourStatus.status === "stopped") {
     headline = bonjourStatus.status === "missing" ? "Bonjour is required" : "Bonjour service is stopped";
     supportingText = bonjourStatus.detail;
     secondaryLabel = "Network discovery unavailable";
@@ -102,34 +123,44 @@ export function getConnectionPresentation({
     secondaryLabel = "iPhone connected";
     titlebarLabel = "Connecting";
     tone = "active";
-  } else if (session.status === "discovering" && receiverRuntime.state === "priming") {
-    headline = "Starting AirPlay receiver";
-    supportingText = `MirrorSim is preparing ${receiverDisplayName} for your iPhone.`;
-    secondaryLabel = "Receiver starting";
+  } else if (isStartingToListen || (session.status === "discovering" && !receiverIsReady)) {
+    headline = "Getting ready to listen";
+    supportingText = "You can get your iPhone ready while MirrorSim starts listening.";
+    secondaryLabel = `Will appear as ${receiverDisplayName}`;
     titlebarLabel = "Starting";
     tone = "active";
   } else if (session.status === "discovering") {
     headline = "Listening for your iPhone";
-    supportingText = `MirrorSim will keep listening. On your iPhone, open Control Center, tap Screen Mirroring, then choose ${receiverDisplayName}.`;
-    secondaryLabel = receiverIdentity ?? `Listening as ${receiverDisplayName}`;
+    supportingText = "MirrorSim is ready for a connection. Finish these steps on your iPhone.";
+    secondaryLabel = receiverIdentity ?? `Visible as ${receiverDisplayName}`;
     titlebarLabel = "Listening";
     tone = "active";
   } else if (receiverRuntime.lastError) {
-    headline = "AirPlay receiver stopped";
+    headline = "Listening stopped";
     supportingText = receiverRuntime.lastError;
     secondaryLabel = "Connection ended";
     titlebarLabel = "Needs attention";
     tone = "warning";
   } else {
-    headline = "Ready to mirror";
-    supportingText = `Start the AirPlay receiver, then choose ${receiverDisplayName} from your iPhone's Screen Mirroring list.`;
-    secondaryLabel = "Receiver stopped";
-    titlebarLabel = "Stopped";
+    headline = "Mirror your iPhone";
+    supportingText = `Start listening, then select ${receiverDisplayName} from Screen Mirroring on your iPhone.`;
+    secondaryLabel = "Not listening";
+    titlebarLabel = "Not listening";
     tone = "idle";
   }
 
-  const primaryActionLabel = session.status === "idle"
-    ? "Start AirPlay"
+  const primaryActionLabel = initializing
+    ? "Checking..."
+    : isStartingToListen
+      ? "Starting..."
+    : session.status === "idle" && bonjourStatus.status === "missing"
+      ? "Install Bonjour"
+      : session.status === "idle" && bonjourStatus.status === "stopped"
+        ? "Open Services"
+        : session.status === "idle" && bonjourStatus.status === "unknown"
+          ? "Recheck Bonjour"
+          : session.status === "idle"
+            ? "Start listening"
     : session.status === "recording"
       ? "Stop recording"
       : session.status === "discovering"
@@ -148,8 +179,7 @@ export function getConnectionPresentation({
     tone,
     pairingNeedsAttention,
     pairingInProgress,
-    showPhoneSteps: session.status === "discovering"
-      && receiverRuntime.state === "ready"
+    showPhoneSteps: (isStartingToListen || session.status === "discovering")
       && pairing.phase === "idle",
     phoneSteps,
     telemetryHint: supportingText,

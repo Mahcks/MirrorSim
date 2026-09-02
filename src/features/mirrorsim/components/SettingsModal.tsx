@@ -14,6 +14,7 @@ import type {
   TrustedDevice,
 } from "@/features/mirrorsim/types";
 import type { BonjourStatusSnapshot, ReceiverRuntimeSnapshot } from "@/receiverContract";
+import { useModalFocus } from "@/features/mirrorsim/hooks/useModalFocus";
 
 type SettingsModalProps = {
   open: boolean;
@@ -123,13 +124,9 @@ export function SettingsModal({
 }: SettingsModalProps) {
   const [nicknameDrafts, setNicknameDrafts] = useState<Record<string, string>>({});
   const [blockReasonDrafts, setBlockReasonDrafts] = useState<Record<string, string>>({});
+  const [pendingConfirmation, setPendingConfirmation] = useState<string | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
-
-  useEffect(() => {
-    if (open) {
-      closeButtonRef.current?.focus();
-    }
-  }, [open]);
+  const dialogRef = useModalFocus(open, onClose, closeButtonRef);
 
   useEffect(() => {
     const nextNicknames: Record<string, string> = {};
@@ -142,7 +139,14 @@ export function SettingsModal({
 
     setNicknameDrafts(nextNicknames);
     setBlockReasonDrafts(nextReasons);
+    setPendingConfirmation(null);
   }, [trustedDevices]);
+
+  useEffect(() => {
+    if (!pendingConfirmation) return;
+    const timeout = window.setTimeout(() => setPendingConfirmation(null), 5_000);
+    return () => window.clearTimeout(timeout);
+  }, [pendingConfirmation]);
 
   if (!open) {
     return null;
@@ -250,6 +254,15 @@ export function SettingsModal({
     return status.charAt(0).toUpperCase() + status.slice(1);
   }
 
+  function confirmDestructiveAction(key: string, action: () => void) {
+    if (pendingConfirmation === key) {
+      setPendingConfirmation(null);
+      action();
+    } else {
+      setPendingConfirmation(key);
+    }
+  }
+
   return (
     <div
       className={embedded
@@ -259,6 +272,7 @@ export function SettingsModal({
       onMouseDown={onClose}
     >
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-labelledby="mirrorsim-settings-title"
@@ -309,9 +323,9 @@ export function SettingsModal({
               <p className={fieldNote}>{previewPresetDescription} Doesn't affect your iPhone's actual stream quality.</p>
             </div>
             <div className="py-3">
-              <div className={fieldLabel}>AirPlay receiver name</div>
+              <div className={fieldLabel}>Name shown on iPhone</div>
               <input
-                aria-label="AirPlay receiver name"
+                aria-label="Name shown on iPhone"
                 type="text"
                 className={fieldInput}
                 value={appPreferences.receiverDisplayName}
@@ -321,7 +335,7 @@ export function SettingsModal({
               />
               <p className={fieldNote}>
                 {sessionActive
-                  ? "Stop the AirPlay receiver before changing its advertised name."
+                  ? "Stop listening before changing the name shown to nearby iPhones."
                   : "Appears in your iPhone's Screen Mirroring list. Keep it short."}
               </p>
             </div>
@@ -496,10 +510,10 @@ export function SettingsModal({
           <div className="divide-y divide-white/7">
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
-                <div className="text-sm text-white/80">Start AirPlay on launch</div>
+                <div className="text-sm text-white/80">Listen automatically on launch</div>
                 <div className="mt-0.5 text-[11px] text-white/38">Automatically make MirrorSim available in Screen Mirroring when the app opens.</div>
               </div>
-              <Toggle label="Start AirPlay receiver on launch" checked={appPreferences.autoStartDiscovery} onChange={(value) => setAppPreference("autoStartDiscovery", value)} />
+              <Toggle label="Listen automatically when MirrorSim opens" checked={appPreferences.autoStartDiscovery} onChange={(value) => setAppPreference("autoStartDiscovery", value)} />
             </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
@@ -540,8 +554,13 @@ export function SettingsModal({
           <div className="mt-6 flex items-center justify-between pb-2">
             <div className={sectionHeader}>Device Trust</div>
             {hasTrustedDevices && (
-              <button type="button" className={btnSm} onClick={onResetTrustedDevices} disabled={commandPending}>
-                Reset all
+              <button
+                type="button"
+                className={pendingConfirmation === "reset-all" ? btnDestructive : btnSm}
+                onClick={() => confirmDestructiveAction("reset-all", onResetTrustedDevices)}
+                disabled={commandPending}
+              >
+                {pendingConfirmation === "reset-all" ? "Confirm reset" : "Reset all"}
               </button>
             )}
           </div>
@@ -561,7 +580,7 @@ export function SettingsModal({
               </select>
               <p className={fieldNote}>
                 {sessionActive
-                  ? "Stop the AirPlay receiver before changing its device-access policy."
+                  ? "Stop listening before changing who can connect."
                   : appPreferences.receiverAccessMode === "remember-trusted"
                   ? "Approved devices are added to this PC's trusted list and can reconnect automatically."
                   : appPreferences.receiverAccessMode === "known-only"
@@ -647,8 +666,13 @@ export function SettingsModal({
                         <div>Last seen: {formatTimestamp(device.lastSeenAt)}</div>
                       </div>
                     </div>
-                    <button type="button" className={btnSm} onClick={() => onForgetTrustedDevice(device.key)} disabled={commandPending}>
-                      Forget
+                    <button
+                      type="button"
+                      className={pendingConfirmation === `forget-${device.key}` ? btnDestructive : btnSm}
+                      onClick={() => confirmDestructiveAction(`forget-${device.key}`, () => onForgetTrustedDevice(device.key))}
+                      disabled={commandPending}
+                    >
+                      {pendingConfirmation === `forget-${device.key}` ? "Confirm forget" : "Forget"}
                     </button>
                   </div>
 

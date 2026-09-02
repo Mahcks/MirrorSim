@@ -57,6 +57,8 @@ export type PreviewDiagnosticsSnapshot = {
 export type PairingSnapshot = {
   phase: PairingPhase;
   entryMode: PairingEntryMode;
+  sessionId: string | null;
+  challengeId: string | null;
   deviceName: string | null;
   deviceId: string | null;
   displayPin: string | null;
@@ -101,6 +103,8 @@ export const initialBonjourStatus: BonjourStatusSnapshot = {
 export const initialPairingStatus: PairingSnapshot = {
   phase: "idle",
   entryMode: "none",
+  sessionId: null,
+  challengeId: null,
   deviceName: null,
   deviceId: null,
   displayPin: null,

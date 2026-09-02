@@ -6,3 +6,18 @@ pub const UPDATER_PUBKEY: &str = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYy
 pub fn updater_is_configured() -> bool {
     !UPDATER_PUBKEY.trim().is_empty()
 }
+
+#[cfg(test)]
+mod tests {
+    use super::{UPDATER_ENDPOINT, UPDATER_PUBKEY};
+
+    #[test]
+    fn runtime_updater_config_matches_tauri_bundle_config() {
+        let config: serde_json::Value =
+            serde_json::from_str(include_str!("../tauri.conf.json")).expect("tauri config json");
+        let updater = &config["plugins"]["updater"];
+
+        assert_eq!(updater["pubkey"].as_str(), Some(UPDATER_PUBKEY));
+        assert_eq!(updater["endpoints"][0].as_str(), Some(UPDATER_ENDPOINT));
+    }
+}

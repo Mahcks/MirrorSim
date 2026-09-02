@@ -20,6 +20,7 @@ import type {
   ScreenshotSettings,
   SessionSnapshot,
 } from "@/features/mirrorsim/types";
+import { getRecordingFailureRecovery } from "@/features/mirrorsim/recordingFlow";
 
 type UseCaptureActionsArgs = {
   appPreferences: AppPreferences;
@@ -31,7 +32,7 @@ type UseCaptureActionsArgs = {
   setCaptures: Dispatch<SetStateAction<Capture[]>>;
   setCaptureNotice: Dispatch<SetStateAction<string | null>>;
   setCommandError: Dispatch<SetStateAction<string | null>>;
-  setCommandPending: Dispatch<SetStateAction<boolean>>;
+  setCommandPending: (pending: boolean) => void;
   setRecordingSettings: Dispatch<SetStateAction<RecordingSettings>>;
   setScreenshotFlashActive: Dispatch<SetStateAction<boolean>>;
   setScreenshotSettings: Dispatch<SetStateAction<ScreenshotSettings>>;
@@ -61,31 +62,16 @@ export function useCaptureActions({
   videoEl,
 }: UseCaptureActionsArgs) {
   const [recElapsed, setRecElapsed] = useState(0);
+  const [localRecordingActive, setLocalRecordingActive] = useState(false);
   const recStartRef = useRef<number | null>(null);
   const recordingStreamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordingWriteSessionRef = useRef<RecordingWriteSession | null>(null);
   const recordingWriteChainRef = useRef<Promise<void>>(Promise.resolve());
   const recordingWriteErrorRef = useRef<unknown>(null);
+  const recordingElapsedRef = useRef(0);
   const captureInFlightRef = useRef(false);
   const recordingTransitionRef = useRef(false);
-
-  useEffect(() => {
-    return () => {
-      const recorder = mediaRecorderRef.current;
-      if (recorder && recorder.state !== "inactive") {
-        recorder.stop();
-      }
-      recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
-      const recordingId = recordingWriteSessionRef.current?.recordingId;
-      if (recordingId !== undefined) {
-        void invoke("abort_recording_save", { recordingId });
-      }
-      recordingStreamRef.current = null;
-      mediaRecorderRef.current = null;
-      recordingWriteSessionRef.current = null;
-    };
-  }, []);
 
   useEffect(() => {
     const recorder = mediaRecorderRef.current;
@@ -93,24 +79,15 @@ export function useCaptureActions({
       return;
     }
 
-    if (recorder.state !== "inactive") {
-      recorder.stop();
-    }
-    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
-    const recordingId = recordingWriteSessionRef.current?.recordingId;
-    if (recordingId !== undefined) {
-      void invoke("abort_recording_save", { recordingId });
-    }
-    recordingStreamRef.current = null;
-    mediaRecorderRef.current = null;
-    recordingWriteSessionRef.current = null;
-    setCaptureNotice("Recording stopped because the mirroring session ended.");
-  }, [isRec, setCaptureNotice]);
+    void finalizeInterruptedRecording("the mirroring session ended");
+  }, [isRec]);
 
   useEffect(() => {
     if (!isRec) {
       recStartRef.current = null;
-      setRecElapsed(0);
+      if (!localRecordingActive) {
+        setRecElapsed(0);
+      }
       return;
     }
 
@@ -121,7 +98,7 @@ export function useCaptureActions({
     const startedAt = recStartRef.current;
     const intervalId = window.setInterval(() => setRecElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
     return () => window.clearInterval(intervalId);
-  }, [isRec]);
+  }, [isRec, localRecordingActive]);
 
   async function captureVideoFrameBlob(): Promise<Blob> {
     if (!videoEl || videoEl.readyState < 2 || videoEl.videoWidth === 0 || videoEl.videoHeight === 0) {
@@ -288,6 +265,7 @@ export function useCaptureActions({
     mediaRecorder.start(1000);
     mediaRecorderRef.current = mediaRecorder;
     recordingStreamRef.current = previewCaptureStream;
+    setLocalRecordingActive(true);
   }
 
   async function stopLocalRecording(): Promise<SavedCaptureFile> {
@@ -296,33 +274,37 @@ export function useCaptureActions({
       throw new Error("Recording was not started in the preview surface.");
     }
 
-    await new Promise<void>((resolve, reject) => {
-      const handleStop = async () => {
-        cleanup();
-        await recordingWriteChainRef.current;
-        if (recordingWriteErrorRef.current) {
-          reject(recordingWriteErrorRef.current);
-          return;
-        }
-        resolve();
-      };
-      const handleError = () => {
-        cleanup();
-        reject(new Error("The recording session failed to finalize."));
-      };
-      const cleanup = () => {
-        mediaRecorder.removeEventListener("stop", handleStop);
-        mediaRecorder.removeEventListener("error", handleError);
-      };
+    if (mediaRecorder.state !== "inactive") {
+      await new Promise<void>((resolve, reject) => {
+        const handleStop = async () => {
+          cleanup();
+          await recordingWriteChainRef.current;
+          if (recordingWriteErrorRef.current) {
+            reject(recordingWriteErrorRef.current);
+            return;
+          }
+          resolve();
+        };
+        const handleError = () => {
+          cleanup();
+          reject(new Error("The recording session failed to finalize."));
+        };
+        const cleanup = () => {
+          mediaRecorder.removeEventListener("stop", handleStop);
+          mediaRecorder.removeEventListener("error", handleError);
+        };
 
-      mediaRecorder.addEventListener("stop", handleStop, { once: true });
-      mediaRecorder.addEventListener("error", handleError, { once: true });
-      mediaRecorder.stop();
-    });
+        mediaRecorder.addEventListener("stop", handleStop, { once: true });
+        mediaRecorder.addEventListener("error", handleError, { once: true });
+        mediaRecorder.stop();
+      });
+    } else {
+      await recordingWriteChainRef.current;
+      if (recordingWriteErrorRef.current) {
+        throw recordingWriteErrorRef.current;
+      }
+    }
 
-    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
-    recordingStreamRef.current = null;
-    mediaRecorderRef.current = null;
     const writeSession = recordingWriteSessionRef.current;
     if (!writeSession) {
       throw new Error("Recording file session is not active.");
@@ -330,8 +312,78 @@ export function useCaptureActions({
     const savedRecording = await invoke<SavedCaptureFile>("finish_recording_save", {
       recordingId: writeSession.recordingId,
     });
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    recordingStreamRef.current = null;
+    mediaRecorderRef.current = null;
     recordingWriteSessionRef.current = null;
+    recordingElapsedRef.current = 0;
+    setLocalRecordingActive(false);
     return savedRecording;
+  }
+
+  async function abortUnstartedRecording() {
+    const recordingId = recordingWriteSessionRef.current?.recordingId;
+    recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    recordingStreamRef.current = null;
+    mediaRecorderRef.current = null;
+    recordingWriteSessionRef.current = null;
+    recordingElapsedRef.current = 0;
+    setLocalRecordingActive(false);
+    if (recordingId !== undefined) {
+      await invoke("abort_recording_save", { recordingId });
+    }
+  }
+
+  function addSavedRecording(savedRecording: SavedCaptureFile, elapsed: number) {
+    setCaptures((previous) => [
+      ...previous,
+      {
+        id: crypto.randomUUID(),
+        type: "recording",
+        name: savedRecording.fileName,
+        duration: elapsed,
+        addedAt: Date.now(),
+        filePath: savedRecording.filePath,
+      },
+    ]);
+  }
+
+  async function finalizeInterruptedRecording(reason: string): Promise<SavedCaptureFile | null> {
+    if (
+      recordingTransitionRef.current
+      || !mediaRecorderRef.current
+      || !recordingWriteSessionRef.current
+    ) {
+      return null;
+    }
+
+    recordingTransitionRef.current = true;
+    setCommandPending(true);
+    setCaptureNotice(`Saving recording because ${reason}...`);
+    const elapsed = recStartRef.current === null
+      ? Math.max(recElapsed, recordingElapsedRef.current)
+      : Math.max(recElapsed, recordingElapsedRef.current, Math.floor((Date.now() - recStartRef.current) / 1000));
+    recordingElapsedRef.current = elapsed;
+
+    try {
+      const savedRecording = await stopLocalRecording();
+      addSavedRecording(savedRecording, elapsed);
+      setCaptureNotice(`Saved interrupted recording to ${savedRecording.filePath}`);
+      setCommandError(null);
+      return savedRecording;
+    } catch (error) {
+      const message = fmtError(error);
+      setCaptureNotice(`Could not finalize the interrupted recording: ${message}`);
+      setCommandError(
+        `${message} The temporary recording was retained so it is not silently lost.`,
+      );
+      return null;
+    } finally {
+      recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+      recordingStreamRef.current = null;
+      recordingTransitionRef.current = false;
+      setCommandPending(false);
+    }
   }
 
   async function revealCaptureInExplorer(capture: Capture | undefined) {
@@ -444,67 +496,108 @@ export function useCaptureActions({
   }
 
   async function doRecordToggle() {
-    if (!canRecord || recordingTransitionRef.current) {
+    const hasRecordingToFinish = recordingWriteSessionRef.current !== null;
+    if ((!canRecord && !hasRecordingToFinish) || recordingTransitionRef.current) {
       return;
     }
 
     recordingTransitionRef.current = true;
     setCommandPending(true);
     setCommandError(null);
-    setCaptureNotice(isRec ? "Stopping recording..." : "Starting recording...");
+    setCaptureNotice(isRec || hasRecordingToFinish ? "Stopping and saving recording..." : "Starting recording...");
 
-    try {
-      if (isRec) {
-        const elapsed = recElapsed;
-        setSession(await invoke<SessionSnapshot>("stop_recording"));
+    if (isRec || hasRecordingToFinish) {
+      const elapsed = isRec
+        ? Math.max(recElapsed, recordingElapsedRef.current)
+        : recordingElapsedRef.current;
+      recordingElapsedRef.current = elapsed;
+
+      try {
+        if (isRec) {
+          // Keep the local recorder running when the backend refuses to leave
+          // recording mode. The user can safely retry instead of losing data.
+          setSession(await invoke<SessionSnapshot>("stop_recording"));
+        }
         const savedRecording = await stopLocalRecording();
         console.info("[MirrorSim capture] recording save result", savedRecording);
 
-        if (recordingSettings.autoReveal || appPreferences.autoRevealSavedCaptures) {
-          await revealItemInDir(savedRecording.filePath);
-        }
+        addSavedRecording(savedRecording, elapsed);
         setCaptureNotice(`Saved recording to ${savedRecording.filePath}`);
 
-        setCaptures((previous) => [
-          ...previous,
-          {
-            id: crypto.randomUUID(),
-            type: "recording",
-            name: savedRecording.fileName,
-            duration: elapsed,
-            addedAt: Date.now(),
-            filePath: savedRecording.filePath,
-          },
-        ]);
-      } else {
-        if (recordingSettings.saveLocation === "custom" && !recordingSettings.customSavePath.trim()) {
-          throw new Error("Choose a recording folder before saving to a custom location.");
+        if (recordingSettings.autoReveal || appPreferences.autoRevealSavedCaptures) {
+          try {
+            await revealItemInDir(savedRecording.filePath);
+          } catch (error) {
+            setCommandError(`Recording was saved, but File Explorer could not open it: ${fmtError(error)}`);
+          }
         }
-
-        console.info("[MirrorSim capture] starting recording", {
-          saveLocation: recordingSettings.saveLocation,
-          customSavePath: recordingSettings.customSavePath,
-          fileNamePrefix: recordingSettings.fileNamePrefix,
+      } catch (error) {
+        // Never abort an established recording here. `finish_recording_save`
+        // intentionally retains its temporary file on failure, and keeping the
+        // refs allows another Stop/Save attempt when the backend still owns it.
+        if (mediaRecorderRef.current?.state === "inactive") {
+          recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+          recordingStreamRef.current = null;
+        }
+        const message = fmtError(error);
+        console.error("[MirrorSim capture] recording stop/save failed", {
+          message,
+          settings: recordingSettings,
+          error,
         });
-        const fileName = buildRecordingFileName(recordingSettings, new Date());
-        await startLocalRecording(fileName);
+        setCaptureNotice(`Recording could not be saved yet: ${message}`);
+        setCommandError(`${message} Retry saving the recording. Its temporary file was not deleted.`);
+      } finally {
+        recordingTransitionRef.current = false;
+        setCommandPending(false);
+      }
+      return;
+    }
+
+    try {
+      if (recordingSettings.saveLocation === "custom" && !recordingSettings.customSavePath.trim()) {
+        throw new Error("Choose a recording folder before saving to a custom location.");
+      }
+
+      console.info("[MirrorSim capture] starting recording", {
+        saveLocation: recordingSettings.saveLocation,
+        customSavePath: recordingSettings.customSavePath,
+        fileNamePrefix: recordingSettings.fileNamePrefix,
+      });
+      const fileName = buildRecordingFileName(recordingSettings, new Date());
+      await startLocalRecording(fileName);
+      try {
         setSession(await invoke<SessionSnapshot>("start_recording"));
         setCaptureNotice("Recording started");
+      } catch (error) {
+        // A local MediaRecorder is already producing data. Finalize that short
+        // clip instead of deleting it when the backend state transition fails.
+        const elapsed = Math.max(0, recordingElapsedRef.current);
+        try {
+          const savedRecording = await stopLocalRecording();
+          addSavedRecording(savedRecording, elapsed);
+          setCaptureNotice(`AirPlay recording could not start, but the captured clip was saved to ${savedRecording.filePath}`);
+        } catch (finalizeError) {
+          recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+          recordingStreamRef.current = null;
+          const message = fmtError(finalizeError);
+          setCaptureNotice(`Recording startup failed and the captured clip could not be saved yet: ${message}`);
+          setCommandError(`${fmtError(error)} The temporary clip was retained; use Record again to retry saving it.`);
+        }
       }
     } catch (error) {
-      if (!isRec && mediaRecorderRef.current) {
-        mediaRecorderRef.current.stop();
+      // If MediaRecorder never started, the empty workspace is safe to remove.
+      // Once a recorder exists, preserve it for the retry path above.
+      const recovery = getRecordingFailureRecovery("starting", mediaRecorderRef.current !== null);
+      if (recovery.abortWorkspace && recordingWriteSessionRef.current) {
+        try {
+          await abortUnstartedRecording();
+        } catch (abortError) {
+          console.error("[MirrorSim capture] empty recording cleanup failed", abortError);
+        }
       }
-      recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
-      recordingStreamRef.current = null;
-      mediaRecorderRef.current = null;
-      const recordingId = recordingWriteSessionRef.current?.recordingId;
-      if (recordingId !== undefined) {
-        void invoke("abort_recording_save", { recordingId });
-      }
-      recordingWriteSessionRef.current = null;
       const message = fmtError(error);
-      console.error("[MirrorSim capture] recording failed", {
+      console.error("[MirrorSim capture] recording start failed", {
         message,
         settings: recordingSettings,
         error,
@@ -519,6 +612,8 @@ export function useCaptureActions({
 
   return {
     recElapsed,
+    localRecordingActive,
+    finalizeInterruptedRecording,
     chooseScreenshotFolder,
     chooseRecordingFolder,
     revealCaptureInExplorer,

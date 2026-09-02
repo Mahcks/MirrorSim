@@ -1,4 +1,4 @@
-import type { MouseEvent, ReactNode } from "react";
+import { useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } from "react";
 
 import { cn } from "@/lib/utils";
 import type { ZoomLevel } from "@/features/mirrorsim/constants";
@@ -134,6 +134,29 @@ export function ConsoleView({
   zoomIndex,
   zoomMaxIndex,
 }: ConsoleViewProps) {
+  const previewStageRef = useRef<HTMLDivElement | null>(null);
+  const previewFrameRef = useRef<HTMLDivElement | null>(null);
+  const [fitScale, setFitScale] = useState(1);
+
+  useLayoutEffect(() => {
+    const stage = previewStageRef.current;
+    const frame = previewFrameRef.current;
+    if (!stage || !frame) return;
+
+    const updateFit = () => {
+      const width = frame.offsetWidth;
+      const height = frame.offsetHeight;
+      if (width === 0 || height === 0) return;
+      setFitScale(Math.min(1, Math.max(0.1, (stage.clientWidth - 24) / width, 0.1), Math.max(0.1, (stage.clientHeight - 24) / height, 0.1)));
+    };
+
+    const observer = new ResizeObserver(updateFit);
+    observer.observe(stage);
+    observer.observe(frame);
+    updateFit();
+    return () => observer.disconnect();
+  }, [orientation]);
+
   return (
     <div className="grid h-screen overflow-hidden bg-[#0e0f11] text-white grid-rows-[36px_1fr_48px_36px]">
       <div className={cn("grid grid-cols-[auto_1fr_auto] items-center gap-2 border-b px-2.5", panelSurfaceClass)}>
@@ -210,13 +233,18 @@ export function ConsoleView({
         </aside>
 
         <div
+          ref={previewStageRef}
           className="relative flex items-center justify-center overflow-hidden bg-[#0e0f11]"
           onWheel={(event) => {
             event.preventDefault();
             onAdjustZoom(event.deltaY < 0 ? 1 : -1);
           }}
         >
-          <div className="origin-center transition-transform duration-200" style={{ transform: `scale(${zoom})` }}>
+          <div
+            ref={previewFrameRef}
+            className="origin-center transition-transform duration-200"
+            style={{ transform: `scale(${zoom * fitScale})` }}
+          >
             {deviceFrame}
           </div>
         </div>

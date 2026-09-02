@@ -1,0 +1,33 @@
+version: 2
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      github-actions:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /src-tauri
+    schedule:
+      interval: monthly
+    groups:
+      rust-desktop:
+        patterns: ["*"]
+
+  - package-ecosystem: cargo
+    directory: /receivers/mirror-receiver
+    schedule:
+      interval: monthly
+    groups:
+      rust-receiver:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: monthly
+    groups:
+      frontend:
+        patterns: ["*"]

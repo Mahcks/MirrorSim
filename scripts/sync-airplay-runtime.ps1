@@ -54,9 +54,14 @@ if (-not (Test-Path $SourceDir)) {
   throw "Source directory does not exist: $SourceDir"
 }
 
+& (Join-Path $repoRoot 'scripts\validate-airplay-runtime.ps1') -RuntimeDir $SourceDir
+if (-not $?) {
+  throw "AirPlay runtime failed inventory or protocol validation."
+}
+
 New-Item -ItemType Directory -Force -Path $DestinationDir | Out-Null
 
-$patterns = @('*.exe', '*.dll', '*.json', '*.ini', '*.conf', '*.txt', '*.md', 'LICENSE*', 'COPYING*')
+$patterns = @('*.exe', '*.dll')
 if ($IncludeDebugSymbols) {
   $patterns += '*.pdb'
 }

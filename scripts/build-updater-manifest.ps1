@@ -58,6 +58,11 @@ $manifest = [ordered]@{
 }
 
 New-Item -ItemType Directory -Force -Path $releaseRoot | Out-Null
-$manifest | ConvertTo-Json -Depth 6 | Set-Content -Path $manifestPath -Encoding utf8
+$manifestJson = $manifest | ConvertTo-Json -Depth 6
+[System.IO.File]::WriteAllText(
+  $manifestPath,
+  $manifestJson,
+  [System.Text.UTF8Encoding]::new($false)
+)
 
 Write-Host "Updater manifest created: $manifestPath"

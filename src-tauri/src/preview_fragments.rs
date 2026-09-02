@@ -40,6 +40,7 @@ pub struct LivePreviewBuffer {
     init_segment: Option<Vec<u8>>,
     pending_samples: Vec<EncodedAccessUnit>,
     emitted_segments: VecDeque<QueuedPreviewSegment>,
+    queue_requires_random_access: bool,
     next_sequence_number: u32,
     last_emitted_segment: Option<FragmentedMp4SegmentDescriptor>,
     next_media_timestamp: u64,
@@ -52,6 +53,7 @@ impl LivePreviewBuffer {
             init_segment: None,
             pending_samples: Vec::new(),
             emitted_segments: VecDeque::new(),
+            queue_requires_random_access: false,
             next_sequence_number: 1,
             last_emitted_segment: None,
             next_media_timestamp: 0,
@@ -117,6 +119,7 @@ impl LivePreviewBuffer {
                 if config_changed {
                     self.pending_samples.clear();
                     self.emitted_segments.clear();
+                    self.queue_requires_random_access = false;
                     self.next_sequence_number = 1;
                     self.last_emitted_segment = None;
                     self.next_media_timestamp = 0;
@@ -173,8 +176,7 @@ impl LivePreviewBuffer {
             },
         };
 
-        let should_flush_before_push =
-            is_random_access && self.pending_samples.len() >= MIN_SEGMENT_SAMPLES;
+        let should_flush_before_push = is_random_access && !self.pending_samples.is_empty();
         if should_flush_before_push && self.flush_pending_segment()? {
             emitted_segment = self.last_emitted_segment_descriptor();
         }
@@ -202,8 +204,16 @@ impl LivePreviewBuffer {
 
         let segment = build_media_segment(self.next_sequence_number, &self.pending_samples)?;
         self.next_sequence_number += 1;
+
+        if self.queue_requires_random_access && !segment.descriptor.starts_with_keyframe {
+            self.pending_samples.clear();
+            return Ok(false);
+        }
+
+        self.queue_requires_random_access = false;
         self.last_emitted_segment = Some(segment.descriptor.clone());
         self.emitted_segments.push_back(segment);
+        let mut evicted = false;
         while self.emitted_segments.len() > MAX_QUEUED_SEGMENTS
             || self
                 .emitted_segments
@@ -213,6 +223,17 @@ impl LivePreviewBuffer {
                 > MAX_QUEUED_SEGMENT_BYTES
         {
             self.emitted_segments.pop_front();
+            evicted = true;
+        }
+        if evicted {
+            while self
+                .emitted_segments
+                .front()
+                .is_some_and(|segment| !segment.descriptor.starts_with_keyframe)
+            {
+                self.emitted_segments.pop_front();
+            }
+            self.queue_requires_random_access = self.emitted_segments.is_empty();
         }
         self.pending_samples.clear();
         Ok(true)
@@ -240,7 +261,7 @@ fn track_config_from_parameter_sets(
         width,
         height,
         timescale: LIVE_TRACK_TIMESCALE,
-        decoder_config_hex: avcc.iter().map(|byte| format!("{:02x}", byte)).collect(),
+        decoder_config_hex: avcc.iter().map(|byte| format!("{byte:02x}")).collect(),
     };
 
     let init_segment = build_init_segment(&track, &avcc);
@@ -432,7 +453,7 @@ fn build_media_segment(
     Ok(QueuedPreviewSegment {
         descriptor: FragmentedMp4SegmentDescriptor {
             sequence_number,
-            file_path: format!("memory://live-preview/segment-{:05}.m4s", sequence_number),
+            file_path: format!("memory://live-preview/segment-{sequence_number:05}.m4s"),
             first_sample_index: first_sample.descriptor.sample_index,
             last_sample_index: last_sample.descriptor.sample_index,
             decode_time: base_decode_time,
@@ -786,6 +807,9 @@ impl BitReader {
     }
 
     fn read_bits(&mut self, count: usize) -> Option<u32> {
+        if count > u32::BITS as usize {
+            return None;
+        }
         let mut value = 0u32;
         for _ in 0..count {
             value = (value << 1) | u32::from(self.read_bit()?);
@@ -797,6 +821,9 @@ impl BitReader {
         let mut leading_zero_bits = 0usize;
         while self.read_bit()? == 0 {
             leading_zero_bits += 1;
+            if leading_zero_bits >= u32::BITS as usize {
+                return None;
+            }
         }
 
         let suffix = if leading_zero_bits == 0 {
@@ -804,15 +831,15 @@ impl BitReader {
         } else {
             self.read_bits(leading_zero_bits)?
         };
-        Some(((1u32 << leading_zero_bits) - 1) + suffix)
+        (1u32.checked_shl(leading_zero_bits as u32)? - 1).checked_add(suffix)
     }
 
     fn read_se(&mut self) -> Option<i32> {
-        let code_num = self.read_ue()? as i32;
+        let code_num = i32::try_from(self.read_ue()?).ok()?;
         if code_num % 2 == 0 {
             Some(-(code_num / 2))
         } else {
-            Some((code_num + 1) / 2)
+            Some(code_num.checked_add(1)? / 2)
         }
     }
 }
@@ -830,6 +857,9 @@ fn parse_sps_dimensions(sps: &[u8]) -> Option<(u16, u16)> {
         100 | 110 | 122 | 244 | 44 | 83 | 86 | 118 | 128 | 138 | 139 | 134 | 135
     ) {
         chroma_format_idc = reader.read_ue()?;
+        if chroma_format_idc > 3 {
+            return None;
+        }
         if chroma_format_idc == 3 {
             reader.read_bit()?;
         }
@@ -857,6 +887,9 @@ fn parse_sps_dimensions(sps: &[u8]) -> Option<(u16, u16)> {
         reader.read_se()?;
         reader.read_se()?;
         let cycle = reader.read_ue()?;
+        if cycle > 256 {
+            return None;
+        }
         for _ in 0..cycle {
             reader.read_se()?;
         }
@@ -885,10 +918,10 @@ fn parse_sps_dimensions(sps: &[u8]) -> Option<(u16, u16)> {
         (0, 0, 0, 0)
     };
 
-    let frame_height_in_mbs =
-        (2 - u32::from(frame_mbs_only_flag)) * (pic_height_in_map_units_minus1 + 1);
-    let mut width = (pic_width_in_mbs_minus1 + 1) * 16;
-    let mut height = frame_height_in_mbs * 16;
+    let frame_height_in_mbs = (2 - u32::from(frame_mbs_only_flag))
+        .checked_mul(pic_height_in_map_units_minus1.checked_add(1)?)?;
+    let mut width = pic_width_in_mbs_minus1.checked_add(1)?.checked_mul(16)?;
+    let mut height = frame_height_in_mbs.checked_mul(16)?;
 
     let (crop_unit_x, crop_unit_y) = match chroma_format_idc {
         0 => (1, 2 - u32::from(frame_mbs_only_flag)),
@@ -898,10 +931,20 @@ fn parse_sps_dimensions(sps: &[u8]) -> Option<(u16, u16)> {
         _ => (1, 1),
     };
 
-    width = width.saturating_sub((crop_left + crop_right) * crop_unit_x);
-    height = height.saturating_sub((crop_top + crop_bottom) * crop_unit_y);
+    let horizontal_crop = crop_left
+        .checked_add(crop_right)?
+        .checked_mul(crop_unit_x)?;
+    let vertical_crop = crop_top
+        .checked_add(crop_bottom)?
+        .checked_mul(crop_unit_y)?;
+    width = width.checked_sub(horizontal_crop)?;
+    height = height.checked_sub(vertical_crop)?;
 
-    Some((width as u16, height as u16))
+    if width == 0 || height == 0 || width > 16_384 || height > 16_384 {
+        return None;
+    }
+
+    Some((u16::try_from(width).ok()?, u16::try_from(height).ok()?))
 }
 
 fn skip_scaling_list(reader: &mut BitReader, size: usize) -> Option<()> {
@@ -928,8 +971,8 @@ fn skip_scaling_list(reader: &mut BitReader, size: usize) -> Option<()> {
 mod tests {
     use super::{
         extract_parameter_sets, normalize_preview_sample_duration, parse_h264_payload,
-        LivePreviewBuffer, DEFAULT_PREVIEW_SAMPLE_DURATION, MAX_PREVIEW_SAMPLE_DURATION,
-        MAX_QUEUED_SEGMENTS,
+        parse_sps_dimensions, LivePreviewBuffer, DEFAULT_PREVIEW_SAMPLE_DURATION,
+        MAX_PREVIEW_SAMPLE_DURATION, MAX_QUEUED_SEGMENTS,
     };
 
     const SAMPLE_SPS: [u8; 28] = [
@@ -1006,7 +1049,7 @@ mod tests {
             let result = buffer
                 .push_access_unit(
                     index,
-                    avcc_sample(),
+                    avcc_non_idr_sample(),
                     index == 15,
                     index as u64 * 3_000,
                     index as u64 * 3_000,
@@ -1088,7 +1131,7 @@ mod tests {
             buffer
                 .push_access_unit(
                     index,
-                    avcc_sample(),
+                    avcc_non_idr_sample(),
                     false,
                     index as u64 * 3_000,
                     index as u64 * 3_000,
@@ -1120,10 +1163,15 @@ mod tests {
         let mut buffer = LivePreviewBuffer::new();
 
         for index in 0..240 {
+            let payload = if index % 30 == 0 {
+                avcc_sample()
+            } else {
+                avcc_non_idr_sample()
+            };
             buffer
                 .push_access_unit(
                     index,
-                    avcc_sample(),
+                    payload,
                     index % 30 == 0,
                     index as u64 * 3_000,
                     index as u64 * 3_000,
@@ -1132,9 +1180,10 @@ mod tests {
                 .expect("push sample");
         }
 
-        assert_eq!(buffer.queued_segment_count(), MAX_QUEUED_SEGMENTS);
+        assert!(buffer.queued_segment_count() <= MAX_QUEUED_SEGMENTS);
         let segment = buffer.take_next_segment().expect("queued media segment");
         assert!(segment.descriptor.sequence_number > 1);
+        assert!(segment.descriptor.starts_with_keyframe);
     }
 
     #[test]
@@ -1148,5 +1197,11 @@ mod tests {
             normalize_preview_sample_duration(500_000),
             MAX_PREVIEW_SAMPLE_DURATION
         );
+    }
+
+    #[test]
+    fn malformed_exp_golomb_values_do_not_panic_the_sps_parser() {
+        let malformed_sps = [0x67, 0x64, 0x00, 0x1F, 0, 0, 0, 0, 0, 0, 0, 0];
+        assert_eq!(parse_sps_dimensions(&malformed_sps), None);
     }
 }

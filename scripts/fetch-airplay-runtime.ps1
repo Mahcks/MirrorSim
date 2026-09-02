@@ -94,6 +94,11 @@ try {
     throw "Downloaded runtime bundle does not contain MirrorSimAdapter.exe at its root."
   }
 
+  & (Join-Path $repoRoot 'scripts\validate-airplay-runtime.ps1') -RuntimeDir $sourceRoot
+  if (-not $?) {
+    throw "Downloaded AirPlay runtime failed inventory or protocol validation."
+  }
+
   & (Join-Path $repoRoot 'scripts\sync-airplay-runtime.ps1') -SourceDir $sourceRoot -DestinationDir $DestinationDir
   if (-not $?) {
     throw "sync-airplay-runtime.ps1 failed. See the output above for details."

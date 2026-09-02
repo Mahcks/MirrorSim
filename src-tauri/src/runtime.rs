@@ -8,11 +8,11 @@ use crate::models::{
 use crate::preview_fragments::normalize_preview_sample_duration;
 use crate::sidecar::ReceiverSidecarSpec;
 use crate::state::{
-    clear_pairing, clear_session_identity, prepare_live_transport, preview_activity,
-    preview_bitrate_kbps, preview_fps_from_duration, refresh_live_preview_descriptor,
-    reset_fixture_transport, reset_preview, resume_listening_after_disconnect,
-    resume_local_session_approval, set_receiver_runtime_state, sync_preview_diagnostics,
-    SessionStore,
+    clear_pairing, clear_session_identity, mark_pairing_challenge_closed,
+    pairing_challenge_is_closed, prepare_live_transport, preview_activity, preview_bitrate_kbps,
+    preview_fps_from_duration, refresh_live_preview_descriptor, reset_fixture_transport,
+    reset_preview, resume_listening_after_disconnect, resume_local_session_approval,
+    set_receiver_runtime_state, sync_preview_diagnostics, SessionStore,
 };
 use crate::trust::{
     apply_current_device_trust, get_trusted_devices, note_device_connected, note_device_failure,
@@ -23,22 +23,30 @@ use serde_json::json;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 #[cfg(windows)]
-use std::os::windows::io::AsRawHandle;
-#[cfg(windows)]
 use std::os::windows::process::CommandExt;
+#[cfg(windows)]
+use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+use windows_sys::Win32::Foundation::{
+    CloseHandle, GetLastError, ERROR_SERVICE_DOES_NOT_EXIST, HANDLE,
+};
 #[cfg(windows)]
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+};
+#[cfg(windows)]
+use windows_sys::Win32::System::Services::{
+    CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, SC_MANAGER_CONNECT,
+    SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_STATUS,
 };
 
 #[cfg(windows)]
@@ -51,16 +59,20 @@ const RECEIVER_RUNTIME_EVENT: &str = "receiver-runtime";
 const PREVIEW_DIAGNOSTICS_EVENT: &str = "preview-diagnostics";
 const PAIRING_STATUS_EVENT: &str = "pairing-status";
 const KEYFRAME_REQUEST_CAPABILITY: &str = "keyframe-request";
-const NATIVE_RECEIVER_CAPABILITY: &str = "native-receiver-process";
 const DECODER_RECOVERY_GAP_MICROS: u32 = 250_000;
 const HARD_RECEIVER_RESET_GAP_MICROS: u32 = 5_000_000;
-const EXPECTED_RECEIVER_PROTOCOL_VERSION: &str = "0.4.0";
-const MAX_RECEIVER_EVENT_LINE_BYTES: usize = 24 * 1024 * 1024;
+const EXPECTED_RECEIVER_PROTOCOL_VERSION: &str = "0.5.0";
+const MAX_RECEIVER_EVENT_LINE_BYTES: usize = 12 * 1024 * 1024;
+const MAX_VIDEO_ACCESS_UNIT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_SIDECAR_RESTART_ATTEMPTS: u8 = 3;
+const SIDECAR_RESTART_STABILITY_WINDOW: Duration = Duration::from_secs(10);
+const MAX_RETAINED_SIDECAR_LOG_LINES: usize = 200;
+const MAX_RETAINED_SIDECAR_LOG_CHARS: usize = 2_000;
 
 fn receiver_supports_keyframe_request(capabilities: &[String]) -> bool {
-    capabilities.iter().any(|capability| {
-        capability == KEYFRAME_REQUEST_CAPABILITY || capability == NATIVE_RECEIVER_CAPABILITY
-    })
+    capabilities
+        .iter()
+        .any(|capability| capability == KEYFRAME_REQUEST_CAPABILITY)
 }
 
 fn session_accepts_media(store: &SessionStore, stream_id: &str) -> bool {
@@ -101,6 +113,63 @@ fn pairing_policy_rejection(store: &SessionStore) -> Option<String> {
     }
 
     None
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum PairingEventCorrelation {
+    Accept,
+    IgnoreStale,
+    IgnoreClosedReplay,
+}
+
+fn validate_pairing_event_correlation(
+    store: &SessionStore,
+    phase: PairingPhase,
+    session_id: Option<&str>,
+    challenge_id: Option<&str>,
+) -> CommandResult<PairingEventCorrelation> {
+    let session_id = session_id
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| String::from("pairing event is missing its session identity"))?;
+    let challenge_id = challenge_id
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| String::from("pairing event is missing its challenge identity"))?;
+
+    if store.active_session_id.as_deref() != Some(session_id) {
+        return Ok(PairingEventCorrelation::IgnoreStale);
+    }
+
+    if pairing_challenge_is_closed(store, session_id, challenge_id) {
+        return Ok(PairingEventCorrelation::IgnoreClosedReplay);
+    }
+
+    if let (Some(current_session_id), Some(current_challenge_id)) = (
+        store.pairing.session_id.as_deref(),
+        store.pairing.challenge_id.as_deref(),
+    ) {
+        let current_pairing_is_terminal = matches!(
+            store.pairing.phase,
+            PairingPhase::Idle | PairingPhase::Paired | PairingPhase::Failed
+        );
+        if !current_pairing_is_terminal
+            && (current_session_id != session_id || current_challenge_id != challenge_id)
+        {
+            return Err(format!(
+                "pairing event challenge does not match the active {} pairing challenge",
+                serde_variant_name(&phase)
+            ));
+        }
+    }
+
+    Ok(PairingEventCorrelation::Accept)
+}
+
+fn should_reset_sidecar_restart_budget(
+    restart_attempt: u8,
+    uptime: Duration,
+    accepted_media: bool,
+) -> bool {
+    restart_attempt > 0 && accepted_media && uptime >= SIDECAR_RESTART_STABILITY_WINDOW
 }
 
 fn sidecar_generation_is_current(
@@ -182,6 +251,9 @@ pub(crate) struct SidecarRuntime {
     generation: u64,
     child: Child,
     stdin: ChildStdin,
+    restart_command: Option<serde_json::Value>,
+    restart_attempt: u8,
+    started_at: Instant,
     #[cfg(windows)]
     _job: SidecarJob,
 }
@@ -192,7 +264,15 @@ impl SidecarRuntime {
         self.stdin
             .write_all(b"\n")
             .map_err(|error| error.to_string())?;
-        self.stdin.flush().map_err(|error| error.to_string())
+        self.stdin.flush().map_err(|error| error.to_string())?;
+
+        match command.get("name").and_then(serde_json::Value::as_str) {
+            Some("start_session") => self.restart_command = Some(command),
+            Some("stop_session" | "shutdown") => self.restart_command = None,
+            _ => {}
+        }
+
+        Ok(())
     }
 }
 
@@ -207,7 +287,7 @@ impl Drop for SidecarRuntime {
 pub(crate) struct AppState {
     pub(crate) inner: Arc<Mutex<SessionStore>>,
     pub(crate) sidecar: Arc<Mutex<Option<SidecarRuntime>>>,
-    next_sidecar_generation: AtomicU64,
+    next_sidecar_generation: Arc<AtomicU64>,
     pub(crate) recording_file: Arc<Mutex<Option<RecordingFileRuntime>>>,
     pub(crate) next_recording_id: AtomicU64,
     pub(crate) pending_update: Arc<Mutex<Option<PendingAppUpdate>>>,
@@ -235,7 +315,7 @@ impl Default for AppState {
         Self {
             inner: Arc::new(Mutex::new(SessionStore::default())),
             sidecar: Arc::new(Mutex::new(None)),
-            next_sidecar_generation: AtomicU64::new(1),
+            next_sidecar_generation: Arc::new(AtomicU64::new(1)),
             recording_file: Arc::new(Mutex::new(None)),
             next_recording_id: AtomicU64::new(1),
             pending_update: Arc::new(Mutex::new(None)),
@@ -411,9 +491,7 @@ fn resolve_sidecar_path(app: &AppHandle, relative_path: &str) -> CommandResult<P
         .join(", ");
 
     Err(format!(
-        "unable to resolve receiver sidecar path '{}'. Place the receiver runtime under receivers/AirPlayServer for development and bundle it for release. Searched: {}",
-        relative_path,
-        searched_paths
+        "unable to resolve receiver sidecar path '{relative_path}'. Place the receiver runtime under receivers/AirPlayServer for development and bundle it for release. Searched: {searched_paths}"
     ))
 }
 
@@ -474,64 +552,82 @@ pub(crate) fn emit_runtime_error(
 #[cfg(windows)]
 pub(crate) fn query_bonjour_status() -> BonjourStatusSnapshot {
     const SERVICE_NAME: &str = "Bonjour Service";
+    let service_name = std::ffi::OsStr::new(SERVICE_NAME)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
 
-    let mut command = Command::new("sc");
-    command
-        .args(["query", SERVICE_NAME])
-        .creation_flags(CREATE_NO_WINDOW);
-
-    let output = command.output();
-
-    match output {
-        Ok(output) => {
-            let stdout = String::from_utf8_lossy(&output.stdout).to_lowercase();
-            let stderr = String::from_utf8_lossy(&output.stderr).to_lowercase();
-            let combined = format!("{}\n{}", stdout, stderr);
-
-            if combined.contains("does not exist as an installed service") {
-                return BonjourStatusSnapshot {
-                    status: BonjourStatusKind::Missing,
-                    service_name: SERVICE_NAME.to_string(),
-                    detail: String::from(
-                        "Bonjour for Windows is not installed. Install it so your iPhone can discover this PC over AirPlay.",
-                    ),
-                };
-            }
-
-            if combined.contains("state") && combined.contains("running") {
-                return BonjourStatusSnapshot {
-                    status: BonjourStatusKind::Ready,
-                    service_name: SERVICE_NAME.to_string(),
-                    detail: String::from("Bonjour Service is installed and running."),
-                };
-            }
-
-            if combined.contains("state") {
-                return BonjourStatusSnapshot {
-                    status: BonjourStatusKind::Stopped,
-                    service_name: SERVICE_NAME.to_string(),
-                    detail: String::from(
-                        "Bonjour Service is installed but not running. Start the service in Windows Services before using discovery.",
-                    ),
-                };
-            }
-
-            BonjourStatusSnapshot {
-                status: BonjourStatusKind::Unknown,
-                service_name: SERVICE_NAME.to_string(),
-                detail: String::from(
-                    "MirrorSim could not determine whether Bonjour Service is available. If discovery fails, verify Bonjour is installed and running.",
-                ),
-            }
-        }
-        Err(error) => BonjourStatusSnapshot {
+    let manager = unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT) };
+    if manager.is_null() {
+        let error = unsafe { GetLastError() };
+        return BonjourStatusSnapshot {
             status: BonjourStatusKind::Unknown,
             service_name: SERVICE_NAME.to_string(),
             detail: format!(
-                "MirrorSim could not query Bonjour Service ({}). If discovery fails, verify Bonjour is installed and running.",
-                error
+                "MirrorSim could not open Windows Service Control Manager (error {error}). If discovery fails, verify Bonjour is installed and running."
             ),
-        },
+        };
+    }
+
+    let service = unsafe { OpenServiceW(manager, service_name.as_ptr(), SERVICE_QUERY_STATUS) };
+    if service.is_null() {
+        let error = unsafe { GetLastError() };
+        unsafe { CloseServiceHandle(manager) };
+        if error == ERROR_SERVICE_DOES_NOT_EXIST {
+            return BonjourStatusSnapshot {
+                status: BonjourStatusKind::Missing,
+                service_name: SERVICE_NAME.to_string(),
+                detail: String::from(
+                    "Bonjour for Windows is not installed. Install it so your iPhone can discover this PC over AirPlay.",
+                ),
+            };
+        }
+
+        return BonjourStatusSnapshot {
+            status: BonjourStatusKind::Unknown,
+            service_name: SERVICE_NAME.to_string(),
+            detail: format!(
+                "MirrorSim could not open Bonjour Service (error {error}). If discovery fails, verify Bonjour is installed and running."
+            ),
+        };
+    }
+
+    let mut status = SERVICE_STATUS::default();
+    let queried = unsafe { QueryServiceStatus(service, &mut status) };
+    let error = if queried == 0 {
+        Some(unsafe { GetLastError() })
+    } else {
+        None
+    };
+    unsafe {
+        CloseServiceHandle(service);
+        CloseServiceHandle(manager);
+    }
+
+    if let Some(error) = error {
+        return BonjourStatusSnapshot {
+            status: BonjourStatusKind::Unknown,
+            service_name: SERVICE_NAME.to_string(),
+            detail: format!(
+                "MirrorSim could not query Bonjour Service (error {error}). If discovery fails, verify Bonjour is installed and running."
+            ),
+        };
+    }
+
+    if status.dwCurrentState == SERVICE_RUNNING {
+        BonjourStatusSnapshot {
+            status: BonjourStatusKind::Ready,
+            service_name: SERVICE_NAME.to_string(),
+            detail: String::from("Bonjour Service is installed and running."),
+        }
+    } else {
+        BonjourStatusSnapshot {
+            status: BonjourStatusKind::Stopped,
+            service_name: SERVICE_NAME.to_string(),
+            detail: String::from(
+                "Bonjour Service is installed but not running. Start the service in Windows Services before using discovery.",
+            ),
+        }
     }
 }
 
@@ -565,10 +661,45 @@ fn handle_sidecar_event(
         return Ok(());
     }
 
+    if let SidecarEvent::VideoAccessUnit { stream_id, .. } = &event {
+        let guard = store.lock().map_err(|error| error.to_string())?;
+        if !session_accepts_media(&guard, stream_id) {
+            return Ok(());
+        }
+    }
+
+    // Base64 decoding is CPU-heavy for full-resolution access units. Do it
+    // before taking the session-state mutex so UI snapshot commands are not
+    // blocked behind decoding work on every video frame.
+    let mut decoded_video_payload = match &event {
+        SidecarEvent::VideoAccessUnit {
+            duration,
+            payload_base64,
+            ..
+        } if *duration <= HARD_RECEIVER_RESET_GAP_MICROS => {
+            if payload_base64.len() > MAX_VIDEO_ACCESS_UNIT_BYTES.saturating_mul(2) {
+                return Err(String::from(
+                    "receiver video access unit exceeded the 8 MiB safety limit",
+                ));
+            }
+            let payload = BASE64_STANDARD
+                .decode(payload_base64.as_bytes())
+                .map_err(|error| format!("failed to decode receiver payload: {error}"))?;
+            if payload.len() > MAX_VIDEO_ACCESS_UNIT_BYTES {
+                return Err(String::from(
+                    "receiver video access unit exceeded the 8 MiB safety limit",
+                ));
+            }
+            Some(payload)
+        }
+        _ => None,
+    };
+
     let mut request_keyframe: Option<(String, String)> = None;
     let mut stop_session_request: Option<String> = None;
-    let mut cancel_pairing_request: Option<String> = None;
+    let mut cancel_pairing_request: Option<(String, String)> = None;
     let mut restart_sidecar = false;
+    let mut receiver_media_accepted = false;
     let mut history_entries: Vec<ConnectionHistoryEntry> = Vec::new();
 
     let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics, pairing) = {
@@ -595,8 +726,7 @@ fn handle_sidecar_event(
                     reset_fixture_transport(&mut guard);
                     set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Idle);
                     guard.receiver_runtime.last_error = Some(format!(
-                        "receiver protocol mismatch: expected {}, received {}",
-                        EXPECTED_RECEIVER_PROTOCOL_VERSION, protocol_version
+                        "receiver protocol mismatch: expected {EXPECTED_RECEIVER_PROTOCOL_VERSION}, received {protocol_version}"
                     ));
                     emit_snapshot = true;
                     emit_preview = true;
@@ -683,8 +813,7 @@ fn handle_sidecar_event(
                     (
                         String::from("warning"),
                         format!(
-                            "{} was rejected because this iPhone is blocked on this PC.",
-                            device_name
+                            "{device_name} was rejected because this iPhone is blocked on this PC."
                         ),
                     )
                 } else if guard.require_known_device && !guard.snapshot.current_device_known {
@@ -712,8 +841,7 @@ fn handle_sidecar_event(
                     (
                         String::from("warning"),
                         format!(
-                            "{} was rejected because it is not known on this PC yet.",
-                            device_name
+                            "{device_name} was rejected because it is not known on this PC yet."
                         ),
                     )
                 } else if needs_local_session_approval(&guard) {
@@ -734,10 +862,7 @@ fn handle_sidecar_event(
                     emit_pairing = true;
                     (
                         String::from("info"),
-                        format!(
-                            "{} connected and is waiting for local approval.",
-                            device_name
-                        ),
+                        format!("{device_name} connected and is waiting for local approval."),
                     )
                 } else {
                     guard.receiver_runtime.last_error = Some(String::from(
@@ -746,7 +871,7 @@ fn handle_sidecar_event(
                     emit_pairing = true;
                     (
                         String::from("success"),
-                        format!("{} connected to MirrorSim.", device_name),
+                        format!("{device_name} connected to MirrorSim."),
                     )
                 };
 
@@ -771,6 +896,8 @@ fn handle_sidecar_event(
             SidecarEvent::PairingStateChanged {
                 phase,
                 entry_mode,
+                session_id,
+                challenge_id,
                 device_name,
                 device_id,
                 display_pin,
@@ -778,11 +905,20 @@ fn handle_sidecar_event(
                 failure_message,
                 can_trust,
             } => {
-                if guard.active_session_id.is_none() {
+                if validate_pairing_event_correlation(
+                    &guard,
+                    phase,
+                    Some(session_id.as_str()),
+                    Some(challenge_id.as_str()),
+                )? != PairingEventCorrelation::Accept
+                {
                     return Ok(());
                 }
                 let awaiting_trust_confirmation = guard.pairing.can_trust
                     || matches!(guard.pairing.phase, PairingPhase::AwaitingTrust);
+
+                guard.pairing.session_id = Some(session_id.clone());
+                guard.pairing.challenge_id = Some(challenge_id.clone());
 
                 if let Some(device_name) = device_name {
                     guard.snapshot.device_name = device_name.clone();
@@ -803,6 +939,7 @@ fn handle_sidecar_event(
 
                 let policy_rejection = pairing_policy_rejection(&guard);
 
+                let pairing_was_policy_rejected = policy_rejection.is_some();
                 if let Some(rejection) = policy_rejection {
                     if !matches!(phase, PairingPhase::Idle) {
                         guard.pairing.phase = PairingPhase::Failed;
@@ -819,7 +956,11 @@ fn handle_sidecar_event(
                                 PairingPhase::PinRequired | PairingPhase::AwaitingTrust
                             )
                         {
-                            cancel_pairing_request = guard.active_session_id.clone();
+                            cancel_pairing_request = guard
+                                .pairing
+                                .session_id
+                                .clone()
+                                .zip(guard.pairing.challenge_id.clone());
                         }
 
                         history_entries.push(ConnectionHistoryEntry {
@@ -956,6 +1097,15 @@ fn handle_sidecar_event(
                     });
                 }
 
+                if pairing_was_policy_rejected
+                    || matches!(
+                        phase,
+                        PairingPhase::Idle | PairingPhase::Paired | PairingPhase::Failed
+                    )
+                {
+                    mark_pairing_challenge_closed(&mut guard, &session_id, &challenge_id);
+                }
+
                 emit_pairing = true;
             }
             SidecarEvent::VideoAccessUnit {
@@ -965,7 +1115,7 @@ fn handle_sidecar_event(
                 pts,
                 dts,
                 duration,
-                payload_base64,
+                payload_base64: _,
             } => {
                 if !session_accepts_media(&guard, &stream_id) {
                     return Ok(());
@@ -1047,9 +1197,9 @@ fn handle_sidecar_event(
                 }
 
                 if !hard_receiver_reset {
-                    let payload = BASE64_STANDARD
-                        .decode(payload_base64.as_bytes())
-                        .map_err(|error| format!("failed to decode receiver payload: {}", error))?;
+                    let payload = decoded_video_payload.take().ok_or_else(|| {
+                        String::from("receiver video access unit payload was unavailable")
+                    })?;
                     let size_bytes = payload.len();
                     guard.remux_blueprint.push_access_unit(
                         sample_index,
@@ -1067,6 +1217,7 @@ fn handle_sidecar_event(
                         pts,
                         duration,
                     )?;
+                    receiver_media_accepted = push_result.sample_enqueued;
                     guard.preview_diagnostics.last_access_unit_index = Some(sample_index);
                     guard.preview_diagnostics.last_access_unit_duration = Some(duration);
                     if push_result.init_segment_became_available {
@@ -1167,8 +1318,10 @@ fn handle_sidecar_event(
                     guard.snapshot.current_device_os_version.clone();
                 let disconnected_device_key = guard.snapshot.current_device_key.clone();
                 let session_stopped = reason == "session_stopped";
+                let sender_disconnected = reason == "sender_disconnected";
+                let should_resume_listening = session_stopped || sender_disconnected;
 
-                if session_stopped {
+                if should_resume_listening {
                     resume_listening_after_disconnect(&mut guard, stream_id.clone());
                     emit_snapshot = true;
                     emit_preview = true;
@@ -1180,7 +1333,7 @@ fn handle_sidecar_event(
                     guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
                     guard.receiver_runtime.queued_segments = 0;
                     guard.receiver_runtime.last_error =
-                        Some(format!("stream discontinuity: {}", reason));
+                        Some(format!("stream discontinuity: {reason}"));
 
                     if matches!(
                         guard.snapshot.status,
@@ -1212,8 +1365,7 @@ fn handle_sidecar_event(
                             reset_fixture_transport(&mut guard);
                             set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Idle);
                             guard.receiver_runtime.last_error = Some(format!(
-                                "receiver lost the AirPlay stream and restarted: {}",
-                                reason
+                                "receiver lost the AirPlay stream and restarted: {reason}"
                             ));
                             emit_snapshot = true;
                         }
@@ -1224,18 +1376,17 @@ fn handle_sidecar_event(
                     id: String::new(),
                     occurred_at: now_unix_timestamp(),
                     event: String::from("stream-discontinuity"),
-                    status: if session_stopped {
+                    status: if should_resume_listening {
                         String::from("info")
                     } else {
                         String::from("warning")
                     },
-                    message: if session_stopped {
+                    message: if should_resume_listening {
                         format!(
-                            "{} disconnected. MirrorSim is listening for another iPhone connection.",
-                            disconnected_device_name
+                            "{disconnected_device_name} disconnected. MirrorSim is listening for another iPhone connection."
                         )
                     } else {
-                        format!("Stream discontinuity: {}", reason)
+                        format!("Stream discontinuity: {reason}")
                     },
                     device_name: Some(disconnected_device_name),
                     device_id: disconnected_device_id,
@@ -1284,7 +1435,7 @@ fn handle_sidecar_event(
                         } else {
                             String::from("error")
                         },
-                        message: format!("{}: {}", code, message),
+                        message: format!("{code}: {message}"),
                         device_name: Some(snapshot.device_name),
                         device_id: snapshot.current_device_id,
                         device_model: snapshot.current_device_model,
@@ -1296,7 +1447,7 @@ fn handle_sidecar_event(
                 );
 
                 let result =
-                    emit_runtime_error(app, store, format!("{}: {}", code, message), recoverable);
+                    emit_runtime_error(app, store, format!("{code}: {message}"), recoverable);
                 if !recoverable {
                     stop_sidecar_runtime(sidecar);
                 }
@@ -1314,6 +1465,76 @@ fn handle_sidecar_event(
         )
     };
 
+    if receiver_media_accepted {
+        if let Ok(mut sidecar_guard) = sidecar.lock() {
+            if let Some(runtime) = sidecar_guard
+                .as_mut()
+                .filter(|runtime| runtime.generation == sidecar_generation)
+            {
+                if should_reset_sidecar_restart_budget(
+                    runtime.restart_attempt,
+                    runtime.started_at.elapsed(),
+                    true,
+                ) {
+                    runtime.restart_attempt = 0;
+                }
+            }
+        }
+    }
+
+    let mut action_errors = Vec::new();
+    if let Some((stream_id, reason)) = request_keyframe {
+        if let Err(error) = send_sidecar_command(
+            sidecar,
+            json!({
+                "name": "request_keyframe",
+                "stream_id": stream_id,
+                "reason": reason,
+            }),
+        ) {
+            action_errors.push(format!("could not request a recovery keyframe: {error}"));
+        }
+    }
+
+    if let Some(session_id) = stop_session_request {
+        if let Err(error) = send_sidecar_command(
+            sidecar,
+            json!({
+                "name": "stop_session",
+                "session_id": session_id,
+            }),
+        ) {
+            action_errors.push(format!(
+                "could not stop the failed receiver session: {error}"
+            ));
+        }
+    }
+
+    if let Some((session_id, challenge_id)) = cancel_pairing_request {
+        if let Err(error) = send_sidecar_command(
+            sidecar,
+            json!({
+                "name": "cancel_pairing",
+                "session_id": session_id,
+                "challenge_id": challenge_id,
+            }),
+        ) {
+            action_errors.push(format!(
+                "could not cancel the rejected pairing request: {error}"
+            ));
+        }
+    }
+
+    if restart_sidecar {
+        stop_sidecar_runtime(sidecar);
+    }
+
+    for entry in history_entries {
+        if let Err(error) = append_history_entry(app, entry) {
+            eprintln!("[MirrorSim history] could not persist receiver event: {error}");
+        }
+    }
+
     emit_state_updates(
         app,
         snapshot,
@@ -1326,43 +1547,8 @@ fn handle_sidecar_event(
         emit_pairing_status(app, pairing)?;
     }
 
-    if let Some((stream_id, reason)) = request_keyframe {
-        let _ = send_sidecar_command(
-            sidecar,
-            json!({
-                "name": "request_keyframe",
-                "stream_id": stream_id,
-                "reason": reason,
-            }),
-        );
-    }
-
-    if let Some(session_id) = stop_session_request {
-        let _ = send_sidecar_command(
-            sidecar,
-            json!({
-                "name": "stop_session",
-                "session_id": session_id,
-            }),
-        );
-    }
-
-    if let Some(session_id) = cancel_pairing_request {
-        let _ = send_sidecar_command(
-            sidecar,
-            json!({
-                "name": "cancel_pairing",
-                "session_id": session_id,
-            }),
-        );
-    }
-
-    if restart_sidecar {
-        stop_sidecar_runtime(sidecar);
-    }
-
-    for entry in history_entries {
-        let _ = append_history_entry(app, entry);
+    if !action_errors.is_empty() {
+        return Err(action_errors.join("; "));
     }
 
     Ok(())
@@ -1383,6 +1569,7 @@ fn spawn_sidecar_stdout_loop(
     app: AppHandle,
     store: Arc<Mutex<SessionStore>>,
     sidecar: Arc<Mutex<Option<SidecarRuntime>>>,
+    next_sidecar_generation: Arc<AtomicU64>,
     sidecar_generation: u64,
     stdout: ChildStdout,
 ) {
@@ -1398,7 +1585,7 @@ fn spawn_sidecar_stdout_loop(
                         let _ = emit_runtime_error(
                             &app,
                             &store,
-                            format!("receiver output error: {}", error),
+                            format!("receiver output error: {error}"),
                             true,
                         );
                     }
@@ -1412,14 +1599,25 @@ fn spawn_sidecar_stdout_loop(
 
             match serde_json::from_str::<SidecarEvent>(&line) {
                 Ok(event) => {
-                    let _ = handle_sidecar_event(&app, &store, &sidecar, sidecar_generation, event);
+                    if let Err(error) =
+                        handle_sidecar_event(&app, &store, &sidecar, sidecar_generation, event)
+                    {
+                        if sidecar_generation_is_current(&sidecar, sidecar_generation) {
+                            let _ = emit_runtime_error(
+                                &app,
+                                &store,
+                                format!("receiver event failed: {error}"),
+                                true,
+                            );
+                        }
+                    }
                 }
                 Err(error) => {
                     if sidecar_generation_is_current(&sidecar, sidecar_generation) {
                         let _ = emit_runtime_error(
                             &app,
                             &store,
-                            format!("receiver emitted malformed event: {}", error),
+                            format!("receiver emitted malformed event: {error}"),
                             true,
                         );
                     }
@@ -1427,37 +1625,70 @@ fn spawn_sidecar_stdout_loop(
             }
         }
 
-        let cleared_current = if let Ok(mut guard) = sidecar.lock() {
+        let restart_plan = if let Ok(mut guard) = sidecar.lock() {
             if guard
                 .as_ref()
                 .is_some_and(|runtime| runtime.generation == sidecar_generation)
             {
+                let restart_plan = guard.as_ref().and_then(|runtime| {
+                    runtime
+                        .restart_command
+                        .clone()
+                        .map(|command| (command, runtime.restart_attempt))
+                });
                 *guard = None;
-                true
+                Some(restart_plan)
             } else {
-                false
+                None
             }
         } else {
-            false
+            None
         };
 
-        if !cleared_current {
+        let Some(restart_plan) = restart_plan else {
             return;
-        }
+        };
 
         let is_idle = match store.lock() {
             Ok(guard) => guard.snapshot.status == SessionStatus::Idle,
             Err(_) => true,
         };
 
-        if !is_idle {
-            let _ = emit_runtime_error(
-                &app,
-                &store,
-                String::from("receiver sidecar exited unexpectedly"),
-                false,
-            );
+        if is_idle {
+            return;
         }
+
+        if let Some((restart_command, restart_attempt)) = restart_plan {
+            let spec = ReceiverSidecarSpec::direct_receiver_boundary();
+            if spec.launch.restart_on_crash && restart_attempt < MAX_SIDECAR_RESTART_ATTEMPTS {
+                let next_attempt = restart_attempt + 1;
+                let backoff_ms = 250_u64 * (1_u64 << restart_attempt);
+                thread::sleep(std::time::Duration::from_millis(backoff_ms));
+
+                match launch_sidecar_runtime(
+                    &app,
+                    &store,
+                    &sidecar,
+                    &next_sidecar_generation,
+                    Some(restart_command),
+                    next_attempt,
+                ) {
+                    Ok(_) => return,
+                    Err(error) => {
+                        eprintln!(
+                            "[MirrorSim receiver] restart attempt {next_attempt} failed: {error}"
+                        );
+                    }
+                }
+            }
+        }
+
+        let _ = emit_runtime_error(
+            &app,
+            &store,
+            String::from("receiver sidecar exited unexpectedly and could not be restarted"),
+            false,
+        );
     });
 }
 
@@ -1511,7 +1742,7 @@ fn read_bounded_line<R: BufRead>(
     }
 }
 
-fn spawn_sidecar_stderr_loop(stderr: ChildStderr) {
+fn spawn_sidecar_stderr_loop(stderr: ChildStderr, store: Arc<Mutex<SessionStore>>) {
     thread::spawn(move || {
         let reader = BufReader::new(stderr);
 
@@ -1526,21 +1757,38 @@ fn spawn_sidecar_stderr_loop(stderr: ChildStderr) {
                 continue;
             }
 
-            eprintln!("[MirrorSim receiver] {}", trimmed);
+            eprintln!("[MirrorSim receiver] {trimmed}");
+            if let Ok(mut guard) = store.lock() {
+                let retained = trimmed
+                    .chars()
+                    .take(MAX_RETAINED_SIDECAR_LOG_CHARS)
+                    .collect::<String>();
+                guard
+                    .sidecar_logs
+                    .push_back(format!("[{}] {}", now_unix_timestamp(), retained));
+                while guard.sidecar_logs.len() > MAX_RETAINED_SIDECAR_LOG_LINES {
+                    guard.sidecar_logs.pop_front();
+                }
+            }
         }
     });
 }
 
-pub(crate) fn ensure_sidecar_runtime(app: &AppHandle, state: &AppState) -> CommandResult<bool> {
-    let mut sidecar_guard = state.sidecar.lock().map_err(|error| error.to_string())?;
+fn launch_sidecar_runtime(
+    app: &AppHandle,
+    store: &Arc<Mutex<SessionStore>>,
+    sidecar: &Arc<Mutex<Option<SidecarRuntime>>>,
+    next_sidecar_generation: &Arc<AtomicU64>,
+    restart_command: Option<serde_json::Value>,
+    restart_attempt: u8,
+) -> CommandResult<bool> {
+    let mut sidecar_guard = sidecar.lock().map_err(|error| error.to_string())?;
     if sidecar_guard.is_some() {
         return Ok(false);
     }
 
     let spec = ReceiverSidecarSpec::direct_receiver_boundary();
-    let sidecar_generation = state
-        .next_sidecar_generation
-        .fetch_add(1, Ordering::Relaxed);
+    let sidecar_generation = next_sidecar_generation.fetch_add(1, Ordering::Relaxed);
     let executable = resolve_sidecar_path(app, &spec.launch.executable)?;
     let working_directory = resolve_sidecar_path(app, &spec.launch.working_directory)?;
 
@@ -1590,19 +1838,46 @@ pub(crate) fn ensure_sidecar_runtime(app: &AppHandle, state: &AppState) -> Comma
         generation: sidecar_generation,
         child,
         stdin,
+        restart_command: None,
+        restart_attempt,
+        started_at: Instant::now(),
         #[cfg(windows)]
         _job: sidecar_job,
     });
 
+    drop(sidecar_guard);
+
     spawn_sidecar_stdout_loop(
         app.clone(),
-        state.inner.clone(),
-        state.sidecar.clone(),
+        store.clone(),
+        sidecar.clone(),
+        next_sidecar_generation.clone(),
         sidecar_generation,
         stdout,
     );
-    spawn_sidecar_stderr_loop(stderr);
+    spawn_sidecar_stderr_loop(stderr, store.clone());
+
+    if let Some(command) = restart_command {
+        if let Err(error) = send_sidecar_command(sidecar, command) {
+            stop_sidecar_runtime(sidecar);
+            return Err(format!(
+                "could not restore receiver session after restart: {error}"
+            ));
+        }
+    }
+
     Ok(true)
+}
+
+pub(crate) fn ensure_sidecar_runtime(app: &AppHandle, state: &AppState) -> CommandResult<bool> {
+    launch_sidecar_runtime(
+        app,
+        &state.inner,
+        &state.sidecar,
+        &state.next_sidecar_generation,
+        None,
+        0,
+    )
 }
 
 pub(crate) fn send_sidecar_command(
@@ -1636,10 +1911,13 @@ pub(crate) fn ensure_bonjour_ready() -> CommandResult<()> {
 mod tests {
     use super::{
         needs_local_session_approval, pairing_policy_rejection, read_bounded_line,
-        session_accepts_media,
+        session_accepts_media, should_reset_sidecar_restart_budget,
+        validate_pairing_event_correlation, PairingEventCorrelation,
+        SIDECAR_RESTART_STABILITY_WINDOW,
     };
-    use crate::models::SessionStatus;
-    use crate::state::{prepare_live_transport, SessionStore};
+    use crate::models::{PairingPhase, SessionStatus};
+    use crate::state::{mark_pairing_challenge_closed, prepare_live_transport, SessionStore};
+    use std::time::Duration;
 
     fn connected_store() -> SessionStore {
         let mut store = SessionStore {
@@ -1712,6 +1990,178 @@ mod tests {
 
         store.snapshot.current_device_known = true;
         assert!(pairing_policy_rejection(&store).is_none());
+    }
+
+    #[test]
+    fn every_pairing_phase_requires_both_correlation_ids() {
+        let store = connected_store();
+        for (session_id, challenge_id) in [
+            (None, Some("challenge-1")),
+            (Some(""), Some("challenge-1")),
+            (Some("session-1"), None),
+            (Some("session-1"), Some("   ")),
+        ] {
+            assert!(validate_pairing_event_correlation(
+                &store,
+                PairingPhase::AwaitingTrust,
+                session_id,
+                challenge_id,
+            )
+            .is_err());
+        }
+        assert!(validate_pairing_event_correlation(
+            &store,
+            PairingPhase::Idle,
+            Some("session-1"),
+            None,
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn pairing_event_correlation_ignores_stale_sessions_and_rejects_mismatched_challenges() {
+        let mut store = connected_store();
+        store.pairing.phase = PairingPhase::AwaitingTrust;
+        store.pairing.session_id = Some(String::from("session-1"));
+        store.pairing.challenge_id = Some(String::from("challenge-1"));
+
+        assert_eq!(
+            validate_pairing_event_correlation(
+                &store,
+                PairingPhase::AwaitingTrust,
+                Some("session-1"),
+                Some("challenge-1"),
+            )
+            .expect("current event"),
+            PairingEventCorrelation::Accept
+        );
+        assert_eq!(
+            validate_pairing_event_correlation(
+                &store,
+                PairingPhase::AwaitingTrust,
+                Some("stale-session"),
+                Some("challenge-1"),
+            )
+            .expect("stale event"),
+            PairingEventCorrelation::IgnoreStale
+        );
+        assert!(validate_pairing_event_correlation(
+            &store,
+            PairingPhase::Verifying,
+            Some("session-1"),
+            Some("different-challenge"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn closed_pairing_challenge_replays_are_ignored() {
+        let mut store = connected_store();
+        mark_pairing_challenge_closed(&mut store, "session-1", "challenge-1");
+
+        assert_eq!(
+            validate_pairing_event_correlation(
+                &store,
+                PairingPhase::Failed,
+                Some("session-1"),
+                Some("challenge-1"),
+            )
+            .expect("closed challenge replay"),
+            PairingEventCorrelation::IgnoreClosedReplay
+        );
+    }
+
+    #[test]
+    fn legitimate_verifying_and_paired_sequence_keeps_one_challenge() {
+        let mut store = connected_store();
+        assert_eq!(
+            validate_pairing_event_correlation(
+                &store,
+                PairingPhase::AwaitingTrust,
+                Some("session-1"),
+                Some("challenge-1"),
+            )
+            .expect("new challenge"),
+            PairingEventCorrelation::Accept
+        );
+
+        store.pairing.phase = PairingPhase::AwaitingTrust;
+        store.pairing.session_id = Some(String::from("session-1"));
+        store.pairing.challenge_id = Some(String::from("challenge-1"));
+        for phase in [PairingPhase::Verifying, PairingPhase::Paired] {
+            assert_eq!(
+                validate_pairing_event_correlation(
+                    &store,
+                    phase,
+                    Some("session-1"),
+                    Some("challenge-1"),
+                )
+                .expect("continued challenge"),
+                PairingEventCorrelation::Accept
+            );
+            store.pairing.phase = phase;
+        }
+
+        assert_eq!(
+            validate_pairing_event_correlation(
+                &store,
+                PairingPhase::Verifying,
+                Some("session-1"),
+                Some("challenge-2"),
+            )
+            .expect("new challenge after terminal state"),
+            PairingEventCorrelation::Accept
+        );
+    }
+
+    #[test]
+    fn idle_pairing_event_must_correlate_to_the_current_challenge() {
+        let mut store = connected_store();
+        store.pairing.phase = PairingPhase::AwaitingTrust;
+        store.pairing.session_id = Some(String::from("session-1"));
+        store.pairing.challenge_id = Some(String::from("challenge-1"));
+
+        assert_eq!(
+            validate_pairing_event_correlation(
+                &store,
+                PairingPhase::Idle,
+                Some("session-1"),
+                Some("challenge-1"),
+            )
+            .expect("correlated idle event"),
+            PairingEventCorrelation::Accept
+        );
+        assert!(validate_pairing_event_correlation(
+            &store,
+            PairingPhase::Idle,
+            Some("session-1"),
+            Some("different-challenge"),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn restart_budget_resets_only_after_stable_media() {
+        assert!(!should_reset_sidecar_restart_budget(
+            1,
+            SIDECAR_RESTART_STABILITY_WINDOW,
+            false,
+        ));
+        assert!(!should_reset_sidecar_restart_budget(
+            1,
+            SIDECAR_RESTART_STABILITY_WINDOW - Duration::from_millis(1),
+            true,
+        ));
+        assert!(should_reset_sidecar_restart_budget(
+            1,
+            SIDECAR_RESTART_STABILITY_WINDOW,
+            true,
+        ));
+        assert!(!should_reset_sidecar_restart_budget(
+            0,
+            SIDECAR_RESTART_STABILITY_WINDOW,
+            true,
+        ));
     }
 
     #[test]

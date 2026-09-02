@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -15,7 +15,11 @@ import {
   fmtError,
 } from "@/features/mirrorsim/helpers";
 import { ConsoleView } from "@/features/mirrorsim/components/ConsoleView";
-import { getConnectionPresentation } from "@/features/mirrorsim/connectionFlow";
+import {
+  getConnectionPresentation,
+  type PendingSessionCommand,
+} from "@/features/mirrorsim/connectionFlow";
+import { getModalVisibility } from "@/features/mirrorsim/modalFlow";
 import {
   getUpdatePrimaryAction,
   isUpdateRestartSafe,
@@ -84,7 +88,12 @@ export default function App() {
   const [appMode, setAppMode] = useState<AppMode>("minimal");
   const [orientation, setOrientation] = useState<Orientation>("portrait");
   const [zoom, setZoom] = useState<ZoomLevel>(1);
-  const [commandPending, setCommandPending] = useState(false);
+  const [pendingOperationCount, setPendingOperationCount] = useState(0);
+  const [pendingSessionCommand, setPendingSessionCommand] = useState<PendingSessionCommand>(null);
+  const commandPending = pendingOperationCount > 0;
+  const setCommandPending = useCallback((pending: boolean) => {
+    setPendingOperationCount((count) => pending ? count + 1 : Math.max(0, count - 1));
+  }, []);
   const [commandError, setCommandError] = useState<string | null>(null);
   const [captureNotice, setCaptureNotice] = useState<string | null>(null);
   const [diagExpanded, setDiagExpanded] = useState(false);
@@ -112,6 +121,7 @@ export default function App() {
 
   const {
     preferencesReady,
+    preferencesSaveError,
     screenshotSettings,
     setScreenshotSettings,
     setScreenshotSetting,
@@ -123,7 +133,14 @@ export default function App() {
     setAppPreference,
   } = usePreferencesState();
 
+  useEffect(() => {
+    if (preferencesSaveError) {
+      setCommandError(preferencesSaveError);
+    }
+  }, [preferencesSaveError]);
+
   const {
+    initializing: runtimeInitializing,
     session,
     setSession,
     preview,
@@ -139,6 +156,7 @@ export default function App() {
     videoDiag,
     surfaceStatus,
     surfaceError,
+    retryPreview,
     videoEl,
     setVideoHost,
   } = usePreviewRuntime({
@@ -150,6 +168,7 @@ export default function App() {
     appMode,
     setAppMode,
     orientation,
+    zoom,
     setZoom,
     keepMinimalOnTop: appPreferences.keepMinimalOnTop,
     useOpaqueWindowBackground: appPreferences.useOpaqueWindowBackground,
@@ -158,6 +177,8 @@ export default function App() {
 
   const {
     recElapsed,
+    localRecordingActive,
+    finalizeInterruptedRecording,
     chooseScreenshotFolder,
     chooseRecordingFolder,
     revealCaptureInExplorer,
@@ -181,12 +202,55 @@ export default function App() {
     videoEl,
   });
 
+  const localRecordingActiveRef = useRef(localRecordingActive);
+  const finalizeInterruptedRecordingRef = useRef(finalizeInterruptedRecording);
+  useEffect(() => {
+    localRecordingActiveRef.current = localRecordingActive;
+    finalizeInterruptedRecordingRef.current = finalizeInterruptedRecording;
+  }, [finalizeInterruptedRecording, localRecordingActive]);
+
+  useEffect(() => {
+    const appWindow = getCurrentWindow();
+    const unlistenPromise = appWindow.onCloseRequested(async (event) => {
+      if (!localRecordingActiveRef.current) {
+        return;
+      }
+
+      event.preventDefault();
+      const shouldSave = window.confirm(
+        "A recording is still active. Stop and save it before closing MirrorSim?",
+      );
+      if (!shouldSave) {
+        return;
+      }
+
+      const savedRecording = await finalizeInterruptedRecordingRef.current(
+        "MirrorSim is closing",
+      );
+      if (savedRecording) {
+        await appWindow.destroy();
+      } else if (localRecordingActiveRef.current) {
+        const closeWithRecoveryFile = window.confirm(
+          "MirrorSim could not finish saving the recording. Close anyway and keep the temporary recovery file on disk?",
+        );
+        if (closeWithRecoveryFile) {
+          await appWindow.destroy();
+        }
+      }
+    });
+
+    return () => {
+      void unlistenPromise.then((unlisten) => unlisten());
+    };
+  }, []);
+
   // derived
   const ss = session.status;
   const isIdle = ss === "idle";
   const isLive = ss === "mirroring" || ss === "recording";
   const isConnected = isLive;
   const isRec = ss === "recording";
+  const recordingBusy = isRec || localRecordingActive;
   const isTransitioningSession = ss === "discovering" || ss === "connecting";
   const bonjourNeedsAttention = bonjourStatus.status === "missing" || bonjourStatus.status === "stopped";
   const receiverDisplayName = appPreferences.receiverDisplayName.trim() || "MirrorSim";
@@ -213,12 +277,15 @@ export default function App() {
       ? `${session.receiverCapabilities.length} receiver features`
       : null;
   const connectionPresentation = getConnectionPresentation({
+    initializing: runtimeInitializing,
+    pendingSessionCommand,
     session,
     pairing,
     receiverRuntime,
     bonjourStatus,
     receiverDisplayName,
   });
+  const modalVisibility = getModalVisibility(settingsOpen, pairing.phase);
   const pairingNeedsAttention = connectionPresentation.pairingNeedsAttention;
   const sessionHeadline = connectionPresentation.headline;
   const sessionSupportingText = connectionPresentation.supportingText;
@@ -252,13 +319,15 @@ export default function App() {
           ? "bg-cyan-300"
           : "bg-white/35",
   );
-  const primarySessionActionLabel = connectionPresentation.primaryActionLabel;
-  const primarySessionActionDisabled = commandPending || (isIdle && bonjourNeedsAttention);
+  const primarySessionActionLabel = localRecordingActive && !isRec
+    ? "Retry saving recording"
+    : connectionPresentation.primaryActionLabel;
+  const primarySessionActionDisabled = commandPending || runtimeInitializing;
   const primarySessionActionTitle = connectionPresentation.primaryActionTitle;
   const idleTelemetryHint = connectionPresentation.telemetryHint;
   const showRetryConnection = isIdle && !bonjourNeedsAttention && Boolean(receiverRuntime.lastError);
   const canCapture = isLive;
-  const canRecord = isLive;
+  const canRecord = isLive || localRecordingActive;
   const tone: "inactive" | "live" | "warning" =
     connectionPresentation.tone === "warning" || surfaceStatus === "error" || surfaceStatus === "unsupported"
       ? "warning"
@@ -270,7 +339,7 @@ export default function App() {
   const reconnectCountdownSeconds = reconnectNextRetryAt === null ? null : Math.max(0, Math.ceil((reconnectNextRetryAt - Date.now()) / 1000));
   const releasePageUrl = "https://github.com/Mahcks/MirrorSim/releases/latest";
   const shouldShowUpdateBadge = ["downloading", "available", "ready", "installing"].includes(updateState);
-  const updateRestartSafe = isUpdateRestartSafe(ss);
+  const updateRestartSafe = isUpdateRestartSafe(ss) && !localRecordingActive;
   const updatePrimaryAction = getUpdatePrimaryAction({
     updateState,
     sessionState: ss,
@@ -290,7 +359,7 @@ export default function App() {
   const screenFrameClass = cn(
     "relative overflow-hidden bg-[#050506] shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]",
     orientation === "portrait" ? "aspect-[393/852] rounded-[46px]" : "aspect-[852/393] rounded-[34px]",
-    isRec && "shadow-[0_0_0_1.5px_rgba(239,68,68,0.48),0_0_40px_rgba(239,68,68,0.10)]",
+    recordingBusy && "shadow-[0_0_0_1.5px_rgba(239,68,68,0.48),0_0_40px_rgba(239,68,68,0.10)]",
   );
   const deviceFrameWidth = DEVICE_RENDER_WIDTH[orientation];
   const deviceWidthClass = orientation === "portrait" ? "rounded-[52px]" : "rounded-[40px]";
@@ -313,6 +382,19 @@ export default function App() {
       >
         <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
         {content}
+        <button
+          type="button"
+          className="ml-0.5 rounded px-1 text-amber-100/70 transition hover:bg-amber-100/10 hover:text-amber-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-200"
+          onClick={() => {
+            shouldMaintainConnectionRef.current = false;
+            reconnectAttemptRef.current = 0;
+            clearAutoReconnectTimer();
+            setReconnectUiState(null);
+          }}
+          aria-label="Cancel automatic reconnect"
+        >
+          Cancel
+        </button>
       </span>
     );
   }
@@ -516,6 +598,12 @@ export default function App() {
   }, [captureNotice]);
 
   useEffect(() => {
+    if (modalVisibility.pairingOpen && settingsOpen) {
+      setSettingsOpen(false);
+    }
+  }, [modalVisibility.pairingOpen, settingsOpen]);
+
+  useEffect(() => {
     if (appPreferences.rememberLastMode && appPreferences.lastMode !== appMode) {
       setAppPreferences((previous) => ({ ...previous, lastMode: appMode }));
     }
@@ -639,6 +727,10 @@ export default function App() {
     const onKey = (e: KeyboardEvent) => {
       if (isEditableShortcutTarget(e.target)) return;
 
+      // Dialogs own the keyboard while open. This prevents capture, mode, and
+      // window shortcuts from mutating the app behind an aria-modal surface.
+      if (modalVisibility.pairingOpen || modalVisibility.settingsOpen) return;
+
       const key = e.key.toLowerCase();
 
       if (key === "escape") {
@@ -704,6 +796,7 @@ export default function App() {
   }
 
   async function runSessionCommand(command: Extract<SessionCommand, "start_session" | "reconnect_session" | "stop_session">, silent = false) {
+    setPendingSessionCommand(command);
     setCommandPending(true);
     if (!silent) {
       setCommandError(null);
@@ -726,6 +819,7 @@ export default function App() {
       }
       return false;
     } finally {
+      setPendingSessionCommand(null);
       setCommandPending(false);
     }
   }
@@ -964,6 +1058,9 @@ export default function App() {
   }
 
   function openScreenshotSettings() {
+    if (modalVisibility.pairingOpen) {
+      return;
+    }
     setSettingsOpen((value) => !value);
   }
 
@@ -988,8 +1085,20 @@ export default function App() {
   }
 
   function doPrimary() {
-    if (ss === "idle") void startSessionFlow("start_session", "manual");
-    else if (isRec) void doRecordToggle();
+    if (runtimeInitializing) return;
+    if (recordingBusy) {
+      void doRecordToggle();
+    }
+    else if (ss === "idle" && bonjourStatus.status === "missing") {
+      void openUrl("https://support.apple.com/kb/DL999").catch((error) => setCommandError(fmtError(error)));
+    }
+    else if (ss === "idle" && bonjourStatus.status === "stopped") {
+      void invoke("open_windows_services").catch((error) => setCommandError(fmtError(error)));
+    }
+    else if (ss === "idle" && bonjourStatus.status === "unknown") {
+      void refreshBonjourStatus().catch((error) => setCommandError(fmtError(error)));
+    }
+    else if (ss === "idle") void startSessionFlow("start_session", "manual");
     else void stopSessionFlow();
   }
 
@@ -1004,7 +1113,7 @@ export default function App() {
     if (!appPreferences.autoReconnectOnDrop
       || !shouldMaintainConnectionRef.current
       || !hasReachedLiveSessionRef.current
-      || isRec) {
+      || recordingBusy) {
       return;
     }
 
@@ -1018,10 +1127,16 @@ export default function App() {
     }
 
     const attempt = reconnectAttemptRef.current + 1;
+    if (attempt > 5) {
+      shouldMaintainConnectionRef.current = false;
+      setReconnectUiState(null);
+      setReconnectNextRetryAt(null);
+      setCommandError("MirrorSim could not reconnect after 5 attempts. Start listening again when the phone and network are ready.");
+      return;
+    }
     const delayMs = Math.min(8000, 1000 * 2 ** Math.min(attempt - 1, 3));
     const nextRetryAt = Date.now() + delayMs;
 
-    setCommandError(`Connection dropped. Reconnecting${attempt > 1 ? ` (attempt ${attempt})` : ""} in ${Math.round(delayMs / 1000)}s.`);
     setReconnectUiState({ attempt, phase: "scheduled" });
     setReconnectNextRetryAt(nextRetryAt);
 
@@ -1036,7 +1151,7 @@ export default function App() {
         autoReconnectInFlightRef.current = false;
       });
     }, delayMs);
-  }, [appPreferences.autoReconnectOnDrop, commandPending, isRec, receiverRuntime.lastError, ss]);
+  }, [appPreferences.autoReconnectOnDrop, commandPending, receiverRuntime.lastError, recordingBusy, ss]);
 
   function adjustZoom(delta: 1 | -1) {
     setZoom((prev) => {
@@ -1169,7 +1284,7 @@ export default function App() {
   function renderSettingsModal(embedded = false) {
     return (
     <SettingsModal
-      open={settingsOpen}
+      open={modalVisibility.settingsOpen}
       embedded={embedded}
       appPreferences={appPreferences}
       screenshotSettings={screenshotSettings}
@@ -1247,10 +1362,10 @@ export default function App() {
       orientation={orientation}
       screenFrameClass={screenFrameClass}
       screenshotFlashActive={screenshotFlashActive}
-      sessionState={ss}
+      sessionState={pendingSessionCommand === "start_session" || pendingSessionCommand === "reconnect_session" ? "discovering" : ss}
       isLive={isLive}
       isIdle={isIdle}
-      isRec={isRec}
+      isRec={recordingBusy}
       recElapsed={recElapsed}
       bonjourNeedsAttention={bonjourNeedsAttention}
       sessionHeadline={sessionHeadline}
@@ -1260,6 +1375,9 @@ export default function App() {
       primarySessionActionLabel={primarySessionActionLabel}
       primarySessionActionDisabled={primarySessionActionDisabled}
       onPrimary={doPrimary}
+      previewStatus={surfaceStatus}
+      previewError={surfaceError}
+      onRetryPreview={retryPreview}
       previewDimClass={previewDimClass}
       previewVideoStyle={previewVideoStyle}
       tone={tone}
@@ -1277,10 +1395,10 @@ export default function App() {
       orientation={orientation}
       screenFrameClass={screenFrameClass}
       screenshotFlashActive={screenshotFlashActive}
-      sessionState={ss}
+      sessionState={pendingSessionCommand === "start_session" || pendingSessionCommand === "reconnect_session" ? "discovering" : ss}
       isLive={isLive}
       isIdle={isIdle}
-      isRec={isRec}
+      isRec={recordingBusy}
       recElapsed={recElapsed}
       bonjourNeedsAttention={bonjourNeedsAttention}
       sessionHeadline={sessionHeadline}
@@ -1290,10 +1408,17 @@ export default function App() {
       primarySessionActionLabel={primarySessionActionLabel}
       primarySessionActionDisabled={primarySessionActionDisabled}
       onPrimary={doPrimary}
+      previewStatus={surfaceStatus}
+      previewError={surfaceError}
+      onRetryPreview={retryPreview}
       previewDimClass={previewDimClass}
       previewVideoStyle={previewVideoStyle}
       tone={tone}
-      overlay={settingsOpen ? renderSettingsModal(true) : renderPairingModal(true)}
+      overlay={modalVisibility.pairingOpen
+        ? renderPairingModal(true)
+        : modalVisibility.settingsOpen
+          ? renderSettingsModal(true)
+          : null}
       onDoubleClick={handleDeviceDoubleClick}
       setVideoHost={setVideoHost}
       onContextMenu={(event) => {
@@ -1329,7 +1454,7 @@ export default function App() {
           idleTelemetryHint={idleTelemetryHint}
           isConnected={isConnected}
           isLive={isLive}
-          isRec={isRec}
+          isRec={recordingBusy}
           isTransitioningSession={isTransitioningSession}
           onAdjustZoom={adjustZoom}
           onCapture={() => void doCapture()}
@@ -1361,7 +1486,7 @@ export default function App() {
           sessionSecondaryLabel={sessionSecondaryLabel}
           sessionSupportingText={sessionSupportingText}
           showRetryConnection={showRetryConnection}
-          settingsOpen={settingsOpen}
+          settingsOpen={modalVisibility.settingsOpen}
           settingsModal={settingsModal}
           technicalDetails={renderTechnicalDetails()}
           trustedDevicesCount={trustedDevices.length}
@@ -1389,7 +1514,7 @@ export default function App() {
             canCapture={canCapture}
             canRecord={canRecord}
             contextMenu={contextMenu}
-            isRec={isRec}
+            isRec={recordingBusy}
             latestSavedCapture={latestSavedCapture}
             onCapture={() => void doCapture()}
             onClose={() => setContextMenu(null)}
@@ -1408,7 +1533,7 @@ export default function App() {
         )}
         deviceFrame={minimalDeviceFrame}
         chromeHidden={minimalChromeHidden}
-        isRec={isRec}
+        isRec={recordingBusy}
         minimalFloatingButtonClass={minimalFloatingButtonClass}
         minimalShellRef={minimalShellRef}
         onCapture={() => void doCapture()}
@@ -1434,13 +1559,14 @@ export default function App() {
         onStartWindowDrag={startWindowDrag}
         orientation={orientation}
         reconnectBadge={renderReconnectBadge(true)}
-        settingsOpen={settingsOpen}
+        settingsOpen={modalVisibility.settingsOpen}
         settingsModal={null}
         showConsoleBadge={shouldShowUpdateBadge}
         shellWidth={MINIMAL_SHELL_WIDTH[orientation]}
         titlebarStateDotClass={cn("h-1.5 w-1.5 rounded-full", titlebarStateDotClass)}
         titlebarStateLabel={titlebarStateLabel}
         updateBanner={renderUpdateBanner(true)}
+        zoom={zoom}
       />
     </>
   );

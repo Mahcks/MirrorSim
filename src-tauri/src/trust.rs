@@ -1,6 +1,7 @@
 #![allow(clippy::too_many_arguments)] // Receiver identity fields mirror the external protocol.
 
 use crate::models::{CommandResult, SessionSnapshot, TrustedDevice};
+use crate::persistence::durable_replace;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::PathBuf;
@@ -50,19 +51,9 @@ fn load_registry(app: &AppHandle) -> CommandResult<TrustedDeviceRegistry> {
 
 fn save_registry(app: &AppHandle, registry: &TrustedDeviceRegistry) -> CommandResult<()> {
     let file_path = trust_registry_path(app)?;
-    if let Some(parent) = file_path.parent() {
-        fs::create_dir_all(parent).map_err(|error| error.to_string())?;
-    }
-
     let payload = serde_json::to_vec_pretty(registry).map_err(|error| error.to_string())?;
-    let temporary_path = file_path.with_extension("json.tmp");
     let backup_path = file_path.with_extension("json.bak");
-    fs::write(&temporary_path, payload).map_err(|error| error.to_string())?;
-    if file_path.exists() {
-        fs::copy(&file_path, backup_path).map_err(|error| error.to_string())?;
-        fs::remove_file(&file_path).map_err(|error| error.to_string())?;
-    }
-    fs::rename(temporary_path, file_path).map_err(|error| error.to_string())
+    durable_replace(&file_path, &backup_path, &payload)
 }
 
 fn display_label(device: &TrustedDevice) -> String {
@@ -225,25 +216,14 @@ fn upsert_device<'a>(
     registry.devices.last_mut()
 }
 
-pub(crate) fn device_key_for_name(device_name: &str) -> Option<String> {
-    let trimmed = device_name.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    Some(trimmed.to_ascii_lowercase())
-}
-
 pub(crate) fn device_key_for_identity(
     device_id: Option<&str>,
-    device_name: &str,
+    _device_name: &str,
 ) -> Option<String> {
-    let normalized_device_id = device_id
+    device_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
-        .map(|value| value.to_ascii_lowercase());
-
-    normalized_device_id.or_else(|| device_key_for_name(device_name))
+        .map(|value| value.to_ascii_lowercase())
 }
 
 pub(crate) fn apply_current_device_trust(
@@ -563,4 +543,19 @@ pub(crate) fn reset_trusted_devices(app: &AppHandle) -> CommandResult<Vec<Truste
         .map_err(|error| error.to_string())?;
     save_registry(app, &TrustedDeviceRegistry::default())?;
     Ok(Vec::new())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::device_key_for_identity;
+
+    #[test]
+    fn persistent_trust_requires_an_authenticated_device_identity() {
+        assert_eq!(
+            device_key_for_identity(Some("  ABCDEF  "), "Max's iPhone").as_deref(),
+            Some("abcdef")
+        );
+        assert_eq!(device_key_for_identity(None, "Max's iPhone"), None);
+        assert_eq!(device_key_for_identity(Some("  "), "Max's iPhone"), None);
+    }
 }

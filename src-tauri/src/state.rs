@@ -5,8 +5,10 @@ use crate::models::{
 };
 use crate::preview_fragments::LivePreviewBuffer;
 use crate::remux::RemuxBlueprint;
+use std::collections::VecDeque;
 
 const IDLE_DEVICE_NAME: &str = "Waiting for iPhone";
+const MAX_CLOSED_PAIRING_CHALLENGES: usize = 32;
 
 pub(crate) struct SessionStore {
     pub(crate) sequence: u64,
@@ -16,6 +18,7 @@ pub(crate) struct SessionStore {
     pub(crate) pending_local_session_approval: bool,
     pub(crate) native_pairing_approved_for_session: bool,
     pub(crate) remember_pairing_approval: bool,
+    pub(crate) closed_pairing_challenges: VecDeque<(String, String)>,
     pub(crate) snapshot: SessionSnapshot,
     pub(crate) pairing: PairingSnapshot,
     pub(crate) preview: PreviewTelemetry,
@@ -24,6 +27,7 @@ pub(crate) struct SessionStore {
     pub(crate) remux_blueprint: RemuxBlueprint,
     pub(crate) receiver_runtime: ReceiverRuntimeSnapshot,
     pub(crate) preview_diagnostics: PreviewDiagnosticsSnapshot,
+    pub(crate) sidecar_logs: VecDeque<String>,
 }
 
 impl Default for SessionStore {
@@ -40,6 +44,7 @@ impl Default for SessionStore {
             pending_local_session_approval: false,
             native_pairing_approved_for_session: false,
             remember_pairing_approval: false,
+            closed_pairing_challenges: VecDeque::new(),
             snapshot: SessionSnapshot {
                 status: SessionStatus::Idle,
                 capture_count: 0,
@@ -63,6 +68,8 @@ impl Default for SessionStore {
             pairing: PairingSnapshot {
                 phase: PairingPhase::Idle,
                 entry_mode: PairingEntryMode::None,
+                session_id: None,
+                challenge_id: None,
                 device_name: None,
                 device_id: None,
                 display_pin: None,
@@ -105,6 +112,7 @@ impl Default for SessionStore {
                 last_delivered_first_sample_index: None,
                 last_delivered_last_sample_index: None,
             },
+            sidecar_logs: VecDeque::new(),
         }
     }
 }
@@ -209,11 +217,19 @@ pub(crate) fn clear_session_identity(store: &mut SessionStore) {
 }
 
 pub(crate) fn clear_pairing(store: &mut SessionStore) {
+    if let (Some(session_id), Some(challenge_id)) = (
+        store.pairing.session_id.clone(),
+        store.pairing.challenge_id.clone(),
+    ) {
+        mark_pairing_challenge_closed(store, &session_id, &challenge_id);
+    }
     store.pending_local_session_approval = false;
     store.remember_pairing_approval = false;
     store.pairing = PairingSnapshot {
         phase: PairingPhase::Idle,
         entry_mode: PairingEntryMode::None,
+        session_id: None,
+        challenge_id: None,
         device_name: None,
         device_id: None,
         display_pin: None,
@@ -221,6 +237,36 @@ pub(crate) fn clear_pairing(store: &mut SessionStore) {
         failure_message: None,
         can_trust: false,
     };
+}
+
+pub(crate) fn pairing_challenge_is_closed(
+    store: &SessionStore,
+    session_id: &str,
+    challenge_id: &str,
+) -> bool {
+    store
+        .closed_pairing_challenges
+        .iter()
+        .any(|(closed_session_id, closed_challenge_id)| {
+            closed_session_id == session_id && closed_challenge_id == challenge_id
+        })
+}
+
+pub(crate) fn mark_pairing_challenge_closed(
+    store: &mut SessionStore,
+    session_id: &str,
+    challenge_id: &str,
+) {
+    if pairing_challenge_is_closed(store, session_id, challenge_id) {
+        return;
+    }
+
+    store
+        .closed_pairing_challenges
+        .push_back((session_id.to_string(), challenge_id.to_string()));
+    while store.closed_pairing_challenges.len() > MAX_CLOSED_PAIRING_CHALLENGES {
+        store.closed_pairing_challenges.pop_front();
+    }
 }
 
 pub(crate) fn resume_listening_after_disconnect(store: &mut SessionStore, stream_id: String) {
@@ -323,8 +369,9 @@ pub(crate) fn preview_activity(size_bytes: usize) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::{
-        prepare_live_transport, resume_listening_after_disconnect, resume_local_session_approval,
-        SessionStore,
+        mark_pairing_challenge_closed, pairing_challenge_is_closed, prepare_live_transport,
+        resume_listening_after_disconnect, resume_local_session_approval, SessionStore,
+        MAX_CLOSED_PAIRING_CHALLENGES,
     };
     use crate::models::{PairingEntryMode, PairingPhase, ReceiverRuntimeState, SessionStatus};
 
@@ -424,5 +471,28 @@ mod tests {
             ReceiverRuntimeState::Ready
         ));
         assert!(store.receiver_runtime.last_error.is_none());
+    }
+
+    #[test]
+    fn closed_pairing_challenge_history_is_bounded() {
+        let mut store = SessionStore::default();
+        for index in 0..(MAX_CLOSED_PAIRING_CHALLENGES + 5) {
+            mark_pairing_challenge_closed(&mut store, "session-1", &format!("challenge-{index}"));
+        }
+
+        assert_eq!(
+            store.closed_pairing_challenges.len(),
+            MAX_CLOSED_PAIRING_CHALLENGES
+        );
+        assert!(!pairing_challenge_is_closed(
+            &store,
+            "session-1",
+            "challenge-0"
+        ));
+        assert!(pairing_challenge_is_closed(
+            &store,
+            "session-1",
+            &format!("challenge-{}", MAX_CLOSED_PAIRING_CHALLENGES + 4)
+        ));
     }
 }

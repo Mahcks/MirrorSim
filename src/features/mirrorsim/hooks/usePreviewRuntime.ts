@@ -44,6 +44,7 @@ type UsePreviewRuntimeArgs = {
 };
 
 export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreviewRuntimeArgs) {
+  const [initializing, setInitializing] = useState(true);
   const [session, setSession] = useState<SessionSnapshot>({
     status: "idle",
     captureCount: 0,
@@ -92,6 +93,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
   });
   const [surfaceStatus, setSurfaceStatus] = useState<MockPreviewStreamStatus>("loading");
   const [surfaceError, setSurfaceError] = useState<string | null>(null);
+  const [previewRetryNonce, setPreviewRetryNonce] = useState(0);
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
   const persistentVideoRef = useRef<HTMLVideoElement | null>(null);
   const isLive = session.status === "mirroring" || session.status === "recording";
@@ -120,6 +122,12 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
   useEffect(() => {
     let alive = true;
     const unsubs: Array<() => void> = [];
+    let telemetryTimeoutId: number | null = null;
+    let runtimeTimeoutId: number | null = null;
+    let diagnosticsTimeoutId: number | null = null;
+    let pendingTelemetry: PreviewTelemetry | null = null;
+    let pendingRuntime: ReceiverRuntimeSnapshot | null = null;
+    let pendingDiagnostics: PreviewDiagnosticsSnapshot | null = null;
     const eventSeen = {
       session: false,
       preview: false,
@@ -150,7 +158,14 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
           await listen<PreviewTelemetry>(PREVIEW_TELEMETRY_EVENT, (event) => {
             if (alive) {
               eventSeen.preview = true;
-              setPreview(event.payload);
+              pendingTelemetry = event.payload;
+              if (telemetryTimeoutId === null) {
+                telemetryTimeoutId = window.setTimeout(() => {
+                  telemetryTimeoutId = null;
+                  if (alive && pendingTelemetry) setPreview(pendingTelemetry);
+                  pendingTelemetry = null;
+                }, 150);
+              }
             }
           }),
         );
@@ -166,7 +181,14 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
           await listen<PreviewDiagnosticsSnapshot>(PREVIEW_DIAGNOSTICS_EVENT, (event) => {
             if (alive) {
               eventSeen.diagnostics = true;
-              setPreviewDiag(event.payload);
+              pendingDiagnostics = event.payload;
+              if (diagnosticsTimeoutId === null) {
+                diagnosticsTimeoutId = window.setTimeout(() => {
+                  diagnosticsTimeoutId = null;
+                  if (alive && pendingDiagnostics) setPreviewDiag(pendingDiagnostics);
+                  pendingDiagnostics = null;
+                }, 250);
+              }
             }
           }),
         );
@@ -174,7 +196,14 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
           await listen<ReceiverRuntimeSnapshot>(RECEIVER_RUNTIME_EVENT, (event) => {
             if (alive) {
               eventSeen.runtime = true;
-              setReceiverRuntime(event.payload);
+              pendingRuntime = event.payload;
+              if (runtimeTimeoutId === null) {
+                runtimeTimeoutId = window.setTimeout(() => {
+                  runtimeTimeoutId = null;
+                  if (alive && pendingRuntime) setReceiverRuntime(pendingRuntime);
+                  pendingRuntime = null;
+                }, 250);
+              }
             }
           }),
         );
@@ -187,7 +216,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
           }),
         );
 
-        const [snap, telemetry, runtime, diagnostics, stream, bonjour, initialPairing] = await Promise.all([
+        const results = await Promise.allSettled([
           invoke<SessionSnapshot>("get_session_snapshot"),
           invoke<PreviewTelemetry>("get_preview_telemetry"),
           invoke<ReceiverRuntimeSnapshot>("refresh_receiver_readiness"),
@@ -198,23 +227,36 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
         ]);
 
         if (alive) {
-          if (!eventSeen.session) setSession(snap);
-          if (!eventSeen.preview) setPreview(telemetry);
-          if (!eventSeen.runtime) setReceiverRuntime(runtime);
-          if (!eventSeen.diagnostics) setPreviewDiag(diagnostics);
-          if (!eventSeen.stream) setPreviewStream(stream);
-          setBonjourStatus(bonjour);
-          if (!eventSeen.pairing) setPairing(initialPairing);
+          const [snap, telemetry, runtime, diagnostics, stream, bonjour, initialPairing] = results;
+          if (snap.status === "fulfilled" && !eventSeen.session) setSession(snap.value);
+          if (telemetry.status === "fulfilled" && !eventSeen.preview) setPreview(telemetry.value);
+          if (runtime.status === "fulfilled" && !eventSeen.runtime) setReceiverRuntime(runtime.value);
+          if (diagnostics.status === "fulfilled" && !eventSeen.diagnostics) setPreviewDiag(diagnostics.value);
+          if (stream.status === "fulfilled" && !eventSeen.stream) setPreviewStream(stream.value);
+          if (bonjour.status === "fulfilled") setBonjourStatus(bonjour.value);
+          if (initialPairing.status === "fulfilled" && !eventSeen.pairing) setPairing(initialPairing.value);
+
+          const failures = results
+            .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+            .map((result) => fmtError(result.reason));
+          if (failures.length > 0) {
+            setCommandError(`MirrorSim started with incomplete runtime state: ${failures.join("; ")}`);
+          }
         }
       } catch (error) {
         if (alive) {
           setCommandError(fmtError(error));
         }
+      } finally {
+        if (alive) setInitializing(false);
       }
     })();
 
     return () => {
       alive = false;
+      if (telemetryTimeoutId !== null) window.clearTimeout(telemetryTimeoutId);
+      if (runtimeTimeoutId !== null) window.clearTimeout(runtimeTimeoutId);
+      if (diagnosticsTimeoutId !== null) window.clearTimeout(diagnosticsTimeoutId);
       unsubs.forEach((unsubscribe) => unsubscribe());
     };
   }, [setCommandError]);
@@ -249,7 +291,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
       onError: (message) => setSurfaceError(message),
       onDiagnosticsChange: (diagnostics) => setPreviewClientDiag(diagnostics),
     });
-  }, [previewStream, videoEl]);
+  }, [previewRetryNonce, previewStream, videoEl]);
 
   useEffect(() => {
     if (!videoEl) {
@@ -272,7 +314,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
     };
 
     sync();
-    const intervalId = window.setInterval(sync, 250);
+    const intervalId = window.setInterval(sync, 500);
     return () => window.clearInterval(intervalId);
   }, [previewStream?.streamId, surfaceStatus, videoEl]);
 
@@ -336,6 +378,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
   }, [isLive, previewPreset.catchupLeadSeconds, previewPreset.catchupTargetOffsetSeconds, surfaceStatus, videoDiag, videoEl]);
 
   return {
+    initializing,
     session,
     setSession,
     preview,
@@ -353,6 +396,11 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
     setSurfaceStatus,
     surfaceError,
     setSurfaceError,
+    retryPreview: () => {
+      setSurfaceError(null);
+      setSurfaceStatus("loading");
+      setPreviewRetryNonce((value) => value + 1);
+    },
     videoEl,
     setVideoHost,
   };

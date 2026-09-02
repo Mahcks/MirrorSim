@@ -84,23 +84,12 @@ function Assert-UpdaterReleaseConfig {
 }
 
 function Resolve-ReleaseExecutable {
-  $candidateNames = @('MirrorSim.exe', 'mirrorsim.exe')
-
-  foreach ($candidateName in $candidateNames) {
-    $candidatePath = Join-Path $releaseTargetDir $candidateName
-    if (Test-Path $candidatePath) {
-      return $candidatePath
-    }
+  $candidatePath = Join-Path $releaseTargetDir 'MirrorSim.exe'
+  if (Test-Path -LiteralPath $candidatePath -PathType Leaf) {
+    return $candidatePath
   }
 
-  $exeCandidates = Get-ChildItem -Path $releaseTargetDir -File -Filter '*.exe' -ErrorAction SilentlyContinue |
-    Sort-Object LastWriteTimeUtc -Descending
-
-  if ($exeCandidates.Count -gt 0) {
-    return $exeCandidates[0].FullName
-  }
-
-  throw "Release executable not found under $releaseTargetDir"
+  throw "Expected release executable was not produced: $candidatePath"
 }
 
 function Invoke-Prep {
@@ -131,7 +120,6 @@ function Invoke-InstallerBuild {
 }
 
 function Invoke-PortableBuild {
-  Assert-UpdaterReleaseConfig
   Invoke-Step 'bunx tauri build --no-bundle' -RustToolchain $releaseRustToolchain
 
   $releaseExe = Resolve-ReleaseExecutable
@@ -160,7 +148,8 @@ function Invoke-PortableBuild {
   Copy-Item $releaseExe (Join-Path $portableFolder 'MirrorSim.exe') -Force
   Copy-Item (Join-Path $repoRoot 'README.md') (Join-Path $portableFolder 'README.md') -Force
   Copy-Item (Join-Path $repoRoot 'LICENSE') (Join-Path $portableFolder 'LICENSE') -Force
-  Copy-Item (Join-Path $repoRoot 'LICENSES\AirPlayServer-LICENSE') (Join-Path $portableFolder 'AirPlayServer-LICENSE') -Force
+  Copy-Item (Join-Path $repoRoot 'LICENSES') (Join-Path $portableFolder 'LICENSES') -Recurse -Force
+  Copy-Item (Join-Path $repoRoot 'THIRD_PARTY_NOTICES.md') (Join-Path $portableFolder 'THIRD_PARTY_NOTICES.md') -Force
 
   if (Test-Path $releaseSupportDir) {
     Copy-Item $releaseSupportDir (Join-Path $portableFolder '_up_') -Recurse -Force

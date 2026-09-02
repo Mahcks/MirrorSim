@@ -57,7 +57,7 @@ pub struct ReceiverSidecarSpec {
 impl ReceiverSidecarSpec {
     pub fn direct_receiver_boundary() -> Self {
         Self {
-            protocol_version: String::from("0.4.0"),
+            protocol_version: String::from("0.5.0"),
             launch: SidecarLaunchSpec {
                 executable: String::from("receivers/AirPlayServer/MirrorSimAdapter.exe"),
                 args: vec![],
@@ -78,12 +78,12 @@ impl ReceiverSidecarSpec {
                 },
                 SidecarCommandSpec {
                     name: String::from("confirm_pairing_trust"),
-                    payload_shape: String::from("{ sessionId, rememberDevice }"),
-                    description: String::from("Approve the current sender so the receiver can finish the native setup flow."),
+                    payload_shape: String::from("{ sessionId, challengeId, rememberDevice }"),
+                    description: String::from("Approve exactly the pending sender challenge for the active receiver session."),
                 },
                 SidecarCommandSpec {
                     name: String::from("cancel_pairing"),
-                    payload_shape: String::from("{ sessionId }"),
+                    payload_shape: String::from("{ sessionId, challengeId }"),
                     description: String::from("Cancel the current pairing or trust challenge without closing the whole receiver runtime."),
                 },
                 SidecarCommandSpec {
@@ -110,7 +110,7 @@ impl ReceiverSidecarSpec {
                 },
                 SidecarEventSpec {
                     name: String::from("pairing_state_changed"),
-                    payload_shape: String::from("{ phase, entryMode?, deviceName?, deviceId?, displayPin?, prompt?, failureMessage?, canTrust? }"),
+                    payload_shape: String::from("{ phase, entryMode?, sessionId, challengeId, deviceName?, deviceId?, displayPin?, prompt?, failureMessage?, canTrust? }"),
                     description: String::from("Reports PIN prompts, trust confirmation requests, verification progress, and pairing failures from the receiver runtime."),
                 },
                 SidecarEventSpec {
@@ -148,7 +148,7 @@ mod tests {
     fn direct_receiver_boundary_prefers_stdio_jsonl() {
         let spec = ReceiverSidecarSpec::direct_receiver_boundary();
 
-        assert_eq!(spec.protocol_version, "0.4.0");
+        assert_eq!(spec.protocol_version, "0.5.0");
         assert_eq!(
             spec.launch.transport,
             SidecarProcessTransport::StdioJsonLines

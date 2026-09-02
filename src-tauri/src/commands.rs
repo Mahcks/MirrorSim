@@ -19,7 +19,7 @@ use crate::sidecar::ReceiverSidecarSpec;
 use crate::state::{
     clear_current_device_identity, clear_pairing, clear_session_identity, prepare_live_transport,
     reset_fixture_transport, reset_preview, resume_local_session_approval,
-    set_receiver_runtime_state, sync_preview_diagnostics,
+    set_receiver_runtime_state, sync_preview_diagnostics, SessionStore,
 };
 use crate::trust::{
     apply_current_device_trust, forget_trusted_device as forget_trusted_device_from_registry,
@@ -32,7 +32,7 @@ use crate::updater_config::{updater_is_configured, UPDATER_ENDPOINT};
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 use serde_json::json;
 use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::io::{ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::Ordering;
@@ -40,10 +40,89 @@ use tauri::{AppHandle, State};
 use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
+#[cfg(windows)]
+use std::os::windows::ffi::OsStrExt;
+#[cfg(windows)]
+use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+
 const KEYFRAME_REQUEST_CAPABILITY: &str = "keyframe-request";
-const NATIVE_RECEIVER_CAPABILITY: &str = "native-receiver-process";
 const MAX_SCREENSHOT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RECORDING_CHUNK_BYTES: usize = 16 * 1024 * 1024;
+const MAX_CAPTURE_NAME_ATTEMPTS: usize = 10_000;
+
+struct PairingConfirmationTransition {
+    session_id: String,
+    challenge_id: String,
+    previous_pairing: PairingSnapshot,
+    previous_native_pairing_approved: bool,
+    previous_remember_pairing_approval: bool,
+}
+
+fn begin_pairing_confirmation(
+    store: &mut SessionStore,
+    remember_device: bool,
+) -> CommandResult<PairingConfirmationTransition> {
+    if !store.pairing.can_trust {
+        return Err(String::from(
+            "there is no trust confirmation waiting right now",
+        ));
+    }
+
+    let session_id = store
+        .pairing
+        .session_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| String::from("pairing request is missing its session identity"))?
+        .to_string();
+    let challenge_id = store
+        .pairing
+        .challenge_id
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| String::from("pairing request is missing its challenge identity"))?
+        .to_string();
+
+    if store.active_session_id.as_deref() != Some(session_id.as_str()) {
+        return Err(String::from(
+            "pairing request does not belong to the active receiver session",
+        ));
+    }
+
+    let transition = PairingConfirmationTransition {
+        session_id,
+        challenge_id,
+        previous_pairing: store.pairing.clone(),
+        previous_native_pairing_approved: store.native_pairing_approved_for_session,
+        previous_remember_pairing_approval: store.remember_pairing_approval,
+    };
+
+    // The native adapter emits session_started immediately before its final
+    // paired event. Remember this decision now so SessionStarted does not
+    // display a second approval prompt or erase the remember choice.
+    store.native_pairing_approved_for_session = true;
+    store.remember_pairing_approval = remember_device;
+    store.pairing.phase = PairingPhase::Verifying;
+    store.pairing.entry_mode = PairingEntryMode::ConfirmOnly;
+    store.pairing.failure_message = None;
+
+    Ok(transition)
+}
+
+fn rollback_pairing_confirmation(
+    store: &mut SessionStore,
+    transition: &PairingConfirmationTransition,
+) {
+    let transition_is_still_current = store.pairing.phase == PairingPhase::Verifying
+        && store.pairing.session_id.as_deref() == Some(transition.session_id.as_str())
+        && store.pairing.challenge_id.as_deref() == Some(transition.challenge_id.as_str());
+
+    if transition_is_still_current {
+        store.pairing = transition.previous_pairing.clone();
+        store.native_pairing_approved_for_session = transition.previous_native_pairing_approved;
+        store.remember_pairing_approval = transition.previous_remember_pairing_approval;
+    }
+}
 
 fn validated_capture_path(
     directory: &Path,
@@ -62,18 +141,144 @@ fn validated_capture_path(
 
     if trimmed.is_empty() || !is_single_normal_component || !has_expected_extension {
         return Err(format!(
-            "capture filename must be a plain .{} filename",
-            expected_extension
+            "capture filename must be a plain .{expected_extension} filename"
         ));
     }
 
     Ok(directory.join(path))
 }
 
+fn capture_path_candidate(path: &Path, attempt: usize) -> CommandResult<PathBuf> {
+    if attempt == 1 {
+        return Ok(path.to_path_buf());
+    }
+
+    let stem = path
+        .file_stem()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| String::from("capture filename is not valid Unicode"))?;
+    let extension = path
+        .extension()
+        .and_then(|value| value.to_str())
+        .ok_or_else(|| String::from("capture filename is missing an extension"))?;
+    let file_name = format!("{stem} ({attempt}).{extension}");
+    Ok(path.with_file_name(file_name))
+}
+
+fn create_unique_capture_file(path: &Path) -> CommandResult<(fs::File, PathBuf)> {
+    for attempt in 1..=MAX_CAPTURE_NAME_ATTEMPTS {
+        let candidate = capture_path_candidate(path, attempt)?;
+        match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&candidate)
+        {
+            Ok(file) => return Ok((file, candidate)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+
+    Err(String::from(
+        "could not allocate a unique capture filename after 10,000 attempts",
+    ))
+}
+
+fn create_unique_recording_temp_file(
+    directory: &Path,
+    recording_id: u64,
+) -> CommandResult<(fs::File, PathBuf)> {
+    for attempt in 1..=MAX_CAPTURE_NAME_ATTEMPTS {
+        let file_name = format!(
+            ".mirrorsim-recording-{}-{recording_id}-{attempt}.webm.part",
+            std::process::id()
+        );
+        let temporary_path = directory.join(file_name);
+        match OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .open(&temporary_path)
+        {
+            Ok(file) => return Ok((file, temporary_path)),
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+
+    Err(String::from(
+        "could not allocate a unique recording workspace after 10,000 attempts",
+    ))
+}
+
+fn persist_recording_without_overwrite(
+    temporary_path: &Path,
+    requested_path: &Path,
+) -> CommandResult<PathBuf> {
+    for attempt in 1..=MAX_CAPTURE_NAME_ATTEMPTS {
+        let candidate = capture_path_candidate(requested_path, attempt)?;
+        match move_file_without_overwrite(temporary_path, &candidate) {
+            Ok(()) => {
+                return Ok(candidate);
+            }
+            Err(error) if error.kind() == ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error.to_string()),
+        }
+    }
+
+    Err(String::from(
+        "could not allocate a unique recording filename after 10,000 attempts",
+    ))
+}
+
+#[cfg(windows)]
+fn move_file_without_overwrite(source: &Path, destination: &Path) -> std::io::Result<()> {
+    let wide = |path: &Path| {
+        path.as_os_str()
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect::<Vec<_>>()
+    };
+    let source_wide = wide(source);
+    let destination_wide = wide(destination);
+    let moved = unsafe {
+        MoveFileExW(
+            source_wide.as_ptr(),
+            destination_wide.as_ptr(),
+            MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(not(windows))]
+fn move_file_without_overwrite(source: &Path, destination: &Path) -> std::io::Result<()> {
+    let mut source_file = fs::File::open(source)?;
+    let mut destination_file = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(destination)?;
+    let result = std::io::copy(&mut source_file, &mut destination_file)
+        .and_then(|_| destination_file.sync_all());
+    drop(destination_file);
+    if let Err(error) = result {
+        let _ = fs::remove_file(destination);
+        return Err(error);
+    }
+    if let Err(error) = fs::remove_file(source) {
+        let _ = fs::remove_file(destination);
+        return Err(error);
+    }
+    Ok(())
+}
+
 fn receiver_supports_keyframe_request(capabilities: &[String]) -> bool {
-    capabilities.iter().any(|capability| {
-        capability == KEYFRAME_REQUEST_CAPABILITY || capability == NATIVE_RECEIVER_CAPABILITY
-    })
+    capabilities
+        .iter()
+        .any(|capability| capability == KEYFRAME_REQUEST_CAPABILITY)
 }
 
 fn ensure_updater_is_configured() -> CommandResult<()> {
@@ -676,15 +881,24 @@ pub(crate) fn save_screenshot(
         resolve_capture_directory(&app, request.location, request.custom_directory.as_deref())?;
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
 
-    let file_path = validated_capture_path(&directory, &request.file_name, "png")?;
+    let requested_path = validated_capture_path(&directory, &request.file_name, "png")?;
+    let (mut file, file_path) = create_unique_capture_file(&requested_path)?;
     eprintln!(
         "[MirrorSim capture] saving screenshot to {}",
         file_path.display()
     );
-    fs::write(&file_path, png_bytes).map_err(|error| error.to_string())?;
+    if let Err(error) = file.write_all(&png_bytes).and_then(|_| file.sync_all()) {
+        drop(file);
+        let _ = fs::remove_file(&file_path);
+        return Err(error.to_string());
+    }
 
     Ok(SavedScreenshot {
-        file_name: request.file_name,
+        file_name: file_path
+            .file_name()
+            .and_then(|value| value.to_str())
+            .unwrap_or(&request.file_name)
+            .to_string(),
         file_path: file_path.to_string_lossy().into_owned(),
     })
 }
@@ -699,7 +913,6 @@ pub(crate) fn begin_recording_save(
         resolve_capture_directory(&app, request.location, request.custom_directory.as_deref())?;
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
     let final_path = validated_capture_path(&directory, &request.file_name, "webm")?;
-    let temporary_path = final_path.with_extension("webm.part");
     let mut guard = state
         .recording_file
         .lock()
@@ -708,13 +921,8 @@ pub(crate) fn begin_recording_save(
         return Err(String::from("a recording file is already open"));
     }
 
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(true)
-        .write(true)
-        .open(&temporary_path)
-        .map_err(|error| error.to_string())?;
     let recording_id = state.next_recording_id.fetch_add(1, Ordering::Relaxed);
+    let (file, temporary_path) = create_unique_recording_temp_file(&directory, recording_id)?;
     *guard = Some(RecordingFileRuntime {
         recording_id,
         file_name: request.file_name.clone(),
@@ -771,35 +979,66 @@ pub(crate) fn finish_recording_save(
     state: State<'_, AppState>,
     recording_id: u64,
 ) -> CommandResult<SavedScreenshot> {
-    let recording = {
-        let mut guard = state
-            .recording_file
-            .lock()
-            .map_err(|error| error.to_string())?;
-        if guard.as_ref().map(|value| value.recording_id) != Some(recording_id) {
-            return Err(String::from("recording file is not active"));
-        }
-        if guard.as_ref().map(|value| value.bytes_written) == Some(0) {
-            return Err(String::from("recording did not produce any media data"));
-        }
-        guard
-            .take()
-            .ok_or_else(|| String::from("recording file is not active"))?
-    };
+    // Keep this lock until persistence finishes so a new recording cannot race
+    // the previous recording's final move/retry operation.
+    let mut guard = state
+        .recording_file
+        .lock()
+        .map_err(|error| error.to_string())?;
+    if guard.as_ref().map(|value| value.recording_id) != Some(recording_id) {
+        return Err(String::from("recording file is not active"));
+    }
+    if guard.as_ref().map(|value| value.bytes_written) == Some(0) {
+        return Err(String::from("recording did not produce any media data"));
+    }
+    guard
+        .as_mut()
+        .ok_or_else(|| String::from("recording file is not active"))?
+        .file
+        .sync_all()
+        .map_err(|error| error.to_string())?;
+
+    let recording = guard.take().expect("recording was checked above");
 
     let RecordingFileRuntime {
+        recording_id,
         file_name,
         final_path,
         temporary_path,
         file,
-        ..
+        bytes_written,
     } = recording;
-    file.sync_all().map_err(|error| error.to_string())?;
     drop(file);
-    if final_path.exists() {
-        fs::remove_file(&final_path).map_err(|error| error.to_string())?;
-    }
-    fs::rename(&temporary_path, &final_path).map_err(|error| error.to_string())?;
+    let final_path = match persist_recording_without_overwrite(&temporary_path, &final_path) {
+        Ok(final_path) => final_path,
+        Err(persist_error) => match OpenOptions::new().append(true).open(&temporary_path) {
+            Ok(file) => {
+                let recovery_path = temporary_path.to_string_lossy().into_owned();
+                *guard = Some(RecordingFileRuntime {
+                    recording_id,
+                    file_name,
+                    final_path,
+                    temporary_path,
+                    file,
+                    bytes_written,
+                });
+                return Err(format!(
+                        "could not finalize the recording: {persist_error}. The temporary recording is retained at '{recovery_path}' and finalization can be retried."
+                    ));
+            }
+            Err(reopen_error) => {
+                return Err(format!(
+                        "could not finalize the recording: {persist_error}. The temporary recording remains at '{}' but could not be reopened for retry: {reopen_error}",
+                        temporary_path.display()
+                    ));
+            }
+        },
+    };
+    let file_name = final_path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or(&file_name)
+        .to_string();
 
     Ok(SavedScreenshot {
         file_name,
@@ -812,16 +1051,16 @@ pub(crate) fn abort_recording_save(
     state: State<'_, AppState>,
     recording_id: u64,
 ) -> CommandResult<()> {
-    let recording = {
-        let mut guard = state
-            .recording_file
-            .lock()
-            .map_err(|error| error.to_string())?;
-        if guard.as_ref().map(|value| value.recording_id) != Some(recording_id) {
-            return Ok(());
-        }
-        guard.take()
-    };
+    // Keep the state lock through deletion so a new recording cannot reuse a
+    // path that this abort is still cleaning up.
+    let mut guard = state
+        .recording_file
+        .lock()
+        .map_err(|error| error.to_string())?;
+    if guard.as_ref().map(|value| value.recording_id) != Some(recording_id) {
+        return Ok(());
+    }
+    let recording = guard.take();
 
     if let Some(recording) = recording {
         drop(recording.file);
@@ -992,14 +1231,8 @@ pub(crate) fn confirm_pairing_trust(
                 apply_current_device_trust(&mut guard.snapshot, &trusted_devices);
             }
 
-            let should_confirm_sidecar = guard
-                .snapshot
-                .receiver_capabilities
-                .iter()
-                .any(|capability| capability == "pairing-trust-control");
             let should_request_keyframe =
                 receiver_supports_keyframe_request(&guard.snapshot.receiver_capabilities);
-            let session_id = guard.active_session_id.clone();
             let stream_id = guard.receiver_runtime.stream_id.clone();
 
             resume_local_session_approval(&mut guard);
@@ -1008,9 +1241,7 @@ pub(crate) fn confirm_pairing_trust(
                 guard.snapshot.clone(),
                 guard.receiver_runtime.clone(),
                 guard.preview_diagnostics.clone(),
-                session_id,
                 stream_id,
-                should_confirm_sidecar,
                 should_request_keyframe,
             ))
         } else {
@@ -1023,9 +1254,7 @@ pub(crate) fn confirm_pairing_trust(
         snapshot,
         receiver_runtime,
         preview_diagnostics,
-        session_id,
         stream_id,
-        should_confirm_sidecar,
         should_request_keyframe,
     )) = local_resume_state
     {
@@ -1038,17 +1267,6 @@ pub(crate) fn confirm_pairing_trust(
             Some(receiver_runtime),
             Some(preview_diagnostics),
         )?;
-
-        if should_confirm_sidecar {
-            let _ = send_sidecar_command(
-                &state.sidecar,
-                json!({
-                    "name": "confirm_pairing_trust",
-                    "session_id": session_id,
-                    "remember_device": remember_device,
-                }),
-            );
-        }
 
         if should_request_keyframe {
             let _ = send_sidecar_command(
@@ -1078,37 +1296,36 @@ pub(crate) fn confirm_pairing_trust(
         }
     }
 
-    let (pairing, session_id) = {
+    let transition = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
-        if !guard.pairing.can_trust {
-            return Err(String::from(
-                "there is no trust confirmation waiting right now",
-            ));
-        }
-
-        // The native adapter emits session_started immediately before its final
-        // paired event. Remember this decision now so SessionStarted does not
-        // display a second approval prompt or erase the remember choice.
-        guard.native_pairing_approved_for_session = true;
-        guard.remember_pairing_approval = remember_device;
-
-        guard.pairing.phase = PairingPhase::Verifying;
-        guard.pairing.entry_mode = PairingEntryMode::ConfirmOnly;
-        guard.pairing.failure_message = None;
-
-        (guard.pairing.clone(), guard.active_session_id.clone())
+        begin_pairing_confirmation(&mut guard, remember_device)?
     };
 
-    emit_pairing_status(&app, &pairing)?;
-
-    send_sidecar_command(
+    if let Err(send_error) = send_sidecar_command(
         &state.sidecar,
         json!({
             "name": "confirm_pairing_trust",
-            "session_id": session_id,
+            "session_id": transition.session_id.clone(),
+            "challenge_id": transition.challenge_id.clone(),
             "remember_device": remember_device,
         }),
-    )?;
+    ) {
+        let pairing = {
+            let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
+            rollback_pairing_confirmation(&mut guard, &transition);
+            guard.pairing.clone()
+        };
+        let _ = emit_pairing_status(&app, &pairing);
+        return Err(format!(
+            "could not confirm pairing trust with the receiver: {send_error}"
+        ));
+    }
+
+    let pairing = {
+        let guard = state.inner.lock().map_err(|error| error.to_string())?;
+        guard.pairing.clone()
+    };
+    emit_pairing_status(&app, &pairing)?;
 
     Ok(pairing)
 }
@@ -1128,8 +1345,10 @@ pub(crate) fn cancel_pairing(
         }
     }
 
-    let (pairing, session_id, snapshot) = {
+    let (pairing, session_id, challenge_id, snapshot) = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
+        let session_id = guard.pairing.session_id.clone();
+        let challenge_id = guard.pairing.challenge_id.clone();
         clear_pairing(&mut guard);
         let snapshot = if matches!(
             guard.snapshot.status,
@@ -1140,11 +1359,7 @@ pub(crate) fn cancel_pairing(
         } else {
             None
         };
-        (
-            guard.pairing.clone(),
-            guard.active_session_id.clone(),
-            snapshot,
-        )
+        (guard.pairing.clone(), session_id, challenge_id, snapshot)
     };
 
     emit_pairing_status(&app, &pairing)?;
@@ -1152,13 +1367,16 @@ pub(crate) fn cancel_pairing(
         emit_session_status(&app, snapshot)?;
     }
 
-    send_sidecar_command(
-        &state.sidecar,
-        json!({
-            "name": "cancel_pairing",
-            "session_id": session_id,
-        }),
-    )?;
+    if let (Some(session_id), Some(challenge_id)) = (session_id, challenge_id) {
+        send_sidecar_command(
+            &state.sidecar,
+            json!({
+                "name": "cancel_pairing",
+                "session_id": session_id,
+                "challenge_id": challenge_id,
+            }),
+        )?;
+    }
 
     Ok(pairing)
 }
@@ -1289,19 +1507,32 @@ pub(crate) fn export_diagnostics_report(
     let history = get_saved_connection_history(&app)?;
     let trusted_devices = get_trusted_devices_from_registry(&app)?;
     let bonjour = query_bonjour_status();
-    let (session, pairing, receiver_runtime, preview_diagnostics) = {
+    let (session, pairing, receiver_runtime, preview_diagnostics, sidecar_logs) = {
         let guard = state.inner.lock().map_err(|error| error.to_string())?;
         (
             guard.snapshot.clone(),
             guard.pairing.clone(),
             guard.receiver_runtime.clone(),
             guard.preview_diagnostics.clone(),
+            guard.sidecar_logs.iter().cloned().collect::<Vec<_>>(),
         )
     };
+    let sidecar_spec = ReceiverSidecarSpec::direct_receiver_boundary();
+    let runtime_manifest: serde_json::Value =
+        serde_json::from_str(include_str!("../../receivers/runtime-manifest.json"))
+            .map_err(|error| format!("bundled runtime manifest is invalid: {error}"))?;
 
     let report = json!({
         "exportedAt": now_unix_timestamp(),
+        "application": {
+            "name": "MirrorSim",
+            "version": env!("CARGO_PKG_VERSION"),
+            "targetOs": std::env::consts::OS,
+            "targetArchitecture": std::env::consts::ARCH,
+        },
         "receiverName": receiver_name,
+        "receiverContract": sidecar_spec,
+        "runtimeManifest": runtime_manifest,
         "bonjour": bonjour,
         "session": session,
         "pairing": pairing,
@@ -1309,6 +1540,7 @@ pub(crate) fn export_diagnostics_report(
         "previewDiagnostics": preview_diagnostics,
         "trustedDevices": trusted_devices,
         "history": history,
+        "sidecarLogs": sidecar_logs,
     });
 
     export_diagnostics_value(&app, &report)
@@ -1335,9 +1567,15 @@ pub(crate) fn refresh_receiver_readiness(
 
 #[cfg(test)]
 mod tests {
-    use super::{app_update_install_allowed, validated_capture_path};
-    use crate::models::SessionStatus;
+    use super::{
+        app_update_install_allowed, begin_pairing_confirmation, capture_path_candidate,
+        persist_recording_without_overwrite, rollback_pairing_confirmation, validated_capture_path,
+    };
+    use crate::models::{PairingPhase, SessionStatus};
+    use crate::state::SessionStore;
+    use std::fs;
     use std::path::Path;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn capture_path_accepts_a_plain_expected_filename() {
@@ -1354,11 +1592,103 @@ mod tests {
     }
 
     #[test]
+    fn capture_path_candidates_add_a_no_clobber_suffix() {
+        let requested = Path::new("C:/captures/MirrorSim Capture.png");
+        assert_eq!(
+            capture_path_candidate(requested, 1).expect("first candidate"),
+            requested
+        );
+        assert_eq!(
+            capture_path_candidate(requested, 2).expect("second candidate"),
+            Path::new("C:/captures/MirrorSim Capture (2).png")
+        );
+    }
+
+    #[test]
+    fn recording_persistence_moves_without_requiring_hard_links_or_overwriting() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "mirrorsim-recording-persistence-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).expect("create recording test directory");
+
+        let temporary = directory.join(".recording.webm.part");
+        let requested = directory.join("MirrorSim Recording.webm");
+        fs::write(&temporary, b"new recording").expect("write temporary recording");
+        fs::write(&requested, b"existing recording").expect("write collision fixture");
+
+        let saved = persist_recording_without_overwrite(&temporary, &requested)
+            .expect("move recording without overwriting");
+        assert_eq!(saved, directory.join("MirrorSim Recording (2).webm"));
+        assert_eq!(
+            fs::read(&requested).expect("read original recording"),
+            b"existing recording"
+        );
+        assert_eq!(
+            fs::read(&saved).expect("read saved recording"),
+            b"new recording"
+        );
+        assert!(!temporary.exists());
+
+        fs::remove_dir_all(directory).expect("remove recording test directory");
+    }
+
+    #[test]
     fn updater_install_only_runs_while_stopped_or_listening() {
         assert!(app_update_install_allowed(SessionStatus::Idle));
         assert!(app_update_install_allowed(SessionStatus::Discovering));
         assert!(!app_update_install_allowed(SessionStatus::Connecting));
         assert!(!app_update_install_allowed(SessionStatus::Mirroring));
         assert!(!app_update_install_allowed(SessionStatus::Recording));
+    }
+
+    #[test]
+    fn pairing_confirmation_validates_correlation_before_mutating() {
+        let mut store = SessionStore {
+            active_session_id: Some(String::from("session-1")),
+            ..SessionStore::default()
+        };
+        store.pairing.phase = PairingPhase::AwaitingTrust;
+        store.pairing.can_trust = true;
+        store.pairing.session_id = Some(String::from("session-1"));
+
+        assert!(begin_pairing_confirmation(&mut store, true).is_err());
+        assert!(matches!(store.pairing.phase, PairingPhase::AwaitingTrust));
+        assert!(!store.native_pairing_approved_for_session);
+        assert!(!store.remember_pairing_approval);
+
+        store.pairing.challenge_id = Some(String::from("challenge-1"));
+        store.pairing.session_id = Some(String::from("stale-session"));
+        assert!(begin_pairing_confirmation(&mut store, true).is_err());
+        assert!(matches!(store.pairing.phase, PairingPhase::AwaitingTrust));
+        assert!(!store.native_pairing_approved_for_session);
+    }
+
+    #[test]
+    fn failed_pairing_confirmation_send_can_roll_back_transition() {
+        let mut store = SessionStore {
+            active_session_id: Some(String::from("session-1")),
+            ..SessionStore::default()
+        };
+        store.pairing.phase = PairingPhase::AwaitingTrust;
+        store.pairing.can_trust = true;
+        store.pairing.session_id = Some(String::from("session-1"));
+        store.pairing.challenge_id = Some(String::from("challenge-1"));
+
+        let transition =
+            begin_pairing_confirmation(&mut store, true).expect("valid pairing transition");
+        assert!(matches!(store.pairing.phase, PairingPhase::Verifying));
+        assert!(store.native_pairing_approved_for_session);
+        assert!(store.remember_pairing_approval);
+
+        rollback_pairing_confirmation(&mut store, &transition);
+        assert!(matches!(store.pairing.phase, PairingPhase::AwaitingTrust));
+        assert!(store.pairing.can_trust);
+        assert!(!store.native_pairing_approved_for_session);
+        assert!(!store.remember_pairing_approval);
     }
 }
