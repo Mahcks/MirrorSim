@@ -97,6 +97,7 @@ export const defaultAppPreferences: AppPreferences = {
   useOpaqueWindowBackground: false,
   rememberLastMode: true,
   rememberLastOrientation: true,
+  autoRotateFromIphone: true,
   keepMinimalOnTop: false,
   autoRevealSavedCaptures: false,
   screenshotFlashEnabled: true,

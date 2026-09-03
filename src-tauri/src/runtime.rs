@@ -1,9 +1,10 @@
+use crate::discovery::{receiver_hardware_address_hex, stop_discovery, DiscoveryRuntime};
 use crate::history::{append_history_entry, now_unix_timestamp};
 use crate::models::{
-    AppUpdateInfo, BonjourStatusKind, BonjourStatusSnapshot, CommandResult, ConnectionHistoryEntry,
-    PairingPhase, PairingSnapshot, PreviewAudioFramePayload, PreviewDiagnosticsSnapshot,
-    PreviewStreamDescriptor, PreviewTelemetry, ReceiverRuntimeSnapshot, ReceiverRuntimeState,
-    ReceiverTransport, ScreenshotSaveLocation, SessionSnapshot, SessionStatus, SidecarEvent,
+    AppUpdateInfo, CommandResult, ConnectionHistoryEntry, PairingPhase, PairingSnapshot,
+    PreviewAudioFramePayload, PreviewDiagnosticsSnapshot, PreviewStreamDescriptor,
+    PreviewTelemetry, ReceiverRuntimeSnapshot, ReceiverRuntimeState, ReceiverTransport,
+    ScreenshotSaveLocation, SessionSnapshot, SessionStatus, SidecarEvent, VideoGeometrySnapshot,
 };
 use crate::preview_fragments::normalize_preview_sample_duration;
 use crate::sidecar::ReceiverSidecarSpec;
@@ -24,9 +25,9 @@ use serde_json::json;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Write};
 #[cfg(windows)]
-use std::os::windows::process::CommandExt;
+use std::os::windows::io::AsRawHandle;
 #[cfg(windows)]
-use std::os::windows::{ffi::OsStrExt, io::AsRawHandle};
+use std::os::windows::process::CommandExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -35,21 +36,13 @@ use std::thread;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, Manager};
 #[cfg(windows)]
-use windows_sys::Win32::Foundation::{
-    CloseHandle, GetLastError, ERROR_SERVICE_DOES_NOT_EXIST, HANDLE,
-};
+use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
 #[cfg(windows)]
 use windows_sys::Win32::System::JobObjects::{
     AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
     SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
     JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
 };
-#[cfg(windows)]
-use windows_sys::Win32::System::Services::{
-    CloseServiceHandle, OpenSCManagerW, OpenServiceW, QueryServiceStatus, SC_MANAGER_CONNECT,
-    SERVICE_QUERY_STATUS, SERVICE_RUNNING, SERVICE_STATUS,
-};
-
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -63,7 +56,7 @@ const KEYFRAME_REQUEST_CAPABILITY: &str = "keyframe-request";
 const MIRROR_TRANSPORT_INTERRUPTED_REASON: &str = "mirror_transport_interrupted";
 const CONNECTING_MEDIA_TIMEOUT: Duration = Duration::from_secs(12);
 const CONNECTING_WATCHDOG_INTERVAL: Duration = Duration::from_millis(250);
-const EXPECTED_RECEIVER_PROTOCOL_VERSION: &str = "0.7.0";
+const EXPECTED_RECEIVER_PROTOCOL_VERSION: &str = "0.8.0";
 const MAX_RECEIVER_EVENT_LINE_BYTES: usize = 12 * 1024 * 1024;
 const MAX_VIDEO_ACCESS_UNIT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_AUDIO_FRAME_BYTES: usize = 1024 * 1024;
@@ -367,6 +360,7 @@ impl Drop for SidecarRuntime {
 pub(crate) struct AppState {
     pub(crate) inner: Arc<Mutex<SessionStore>>,
     pub(crate) sidecar: Arc<Mutex<Option<SidecarRuntime>>>,
+    pub(crate) discovery: Arc<Mutex<DiscoveryRuntime>>,
     next_sidecar_generation: Arc<AtomicU64>,
     pub(crate) recording_file: Arc<Mutex<Option<RecordingFileRuntime>>>,
     pub(crate) next_recording_id: AtomicU64,
@@ -395,6 +389,7 @@ impl Default for AppState {
         Self {
             inner: Arc::new(Mutex::new(SessionStore::default())),
             sidecar: Arc::new(Mutex::new(None)),
+            discovery: Arc::new(Mutex::new(DiscoveryRuntime::default())),
             next_sidecar_generation: Arc::new(AtomicU64::new(1)),
             recording_file: Arc::new(Mutex::new(None)),
             next_recording_id: AtomicU64::new(1),
@@ -650,104 +645,6 @@ fn emit_runtime_warning_preserving_session(
     )
 }
 
-#[cfg(windows)]
-pub(crate) fn query_bonjour_status() -> BonjourStatusSnapshot {
-    const SERVICE_NAME: &str = "Bonjour Service";
-    let service_name = std::ffi::OsStr::new(SERVICE_NAME)
-        .encode_wide()
-        .chain(std::iter::once(0))
-        .collect::<Vec<_>>();
-
-    let manager = unsafe { OpenSCManagerW(std::ptr::null(), std::ptr::null(), SC_MANAGER_CONNECT) };
-    if manager.is_null() {
-        let error = unsafe { GetLastError() };
-        return BonjourStatusSnapshot {
-            status: BonjourStatusKind::Unknown,
-            service_name: SERVICE_NAME.to_string(),
-            detail: format!(
-                "MirrorSim could not open Windows Service Control Manager (error {error}). If discovery fails, verify Bonjour is installed and running."
-            ),
-        };
-    }
-
-    let service = unsafe { OpenServiceW(manager, service_name.as_ptr(), SERVICE_QUERY_STATUS) };
-    if service.is_null() {
-        let error = unsafe { GetLastError() };
-        unsafe { CloseServiceHandle(manager) };
-        if error == ERROR_SERVICE_DOES_NOT_EXIST {
-            return BonjourStatusSnapshot {
-                status: BonjourStatusKind::Missing,
-                service_name: SERVICE_NAME.to_string(),
-                detail: String::from(
-                    "Bonjour for Windows is not installed. Install it so your iPhone can discover this PC over AirPlay.",
-                ),
-            };
-        }
-
-        return BonjourStatusSnapshot {
-            status: BonjourStatusKind::Unknown,
-            service_name: SERVICE_NAME.to_string(),
-            detail: format!(
-                "MirrorSim could not open Bonjour Service (error {error}). If discovery fails, verify Bonjour is installed and running."
-            ),
-        };
-    }
-
-    let mut status = SERVICE_STATUS::default();
-    let queried = unsafe { QueryServiceStatus(service, &mut status) };
-    let error = if queried == 0 {
-        Some(unsafe { GetLastError() })
-    } else {
-        None
-    };
-    unsafe {
-        CloseServiceHandle(service);
-        CloseServiceHandle(manager);
-    }
-
-    if let Some(error) = error {
-        return BonjourStatusSnapshot {
-            status: BonjourStatusKind::Unknown,
-            service_name: SERVICE_NAME.to_string(),
-            detail: format!(
-                "MirrorSim could not query Bonjour Service (error {error}). If discovery fails, verify Bonjour is installed and running."
-            ),
-        };
-    }
-
-    if status.dwCurrentState == SERVICE_RUNNING {
-        BonjourStatusSnapshot {
-            status: BonjourStatusKind::Ready,
-            service_name: SERVICE_NAME.to_string(),
-            detail: String::from("Bonjour Service is installed and running."),
-        }
-    } else {
-        BonjourStatusSnapshot {
-            status: BonjourStatusKind::Stopped,
-            service_name: SERVICE_NAME.to_string(),
-            detail: String::from(
-                "Bonjour Service is installed but not running. Start the service in Windows Services before using discovery.",
-            ),
-        }
-    }
-}
-
-#[cfg(not(windows))]
-pub(crate) fn query_bonjour_status() -> BonjourStatusSnapshot {
-    BonjourStatusSnapshot {
-        status: BonjourStatusKind::Unknown,
-        service_name: String::from("Bonjour Service"),
-        detail: String::from("Bonjour status checks are only available on Windows."),
-    }
-}
-
-pub(crate) fn bonjour_blocking_message(status: &BonjourStatusSnapshot) -> Option<String> {
-    match status.status {
-        BonjourStatusKind::Missing | BonjourStatusKind::Stopped => Some(status.detail.clone()),
-        BonjourStatusKind::Ready | BonjourStatusKind::Unknown => None,
-    }
-}
-
 // Sidecar events can mutate multiple pieces of session state at once. Handle a
 // whole event under one lock and emit a consistent snapshot afterwards instead
 // of scattering updates across smaller helper calls.
@@ -755,6 +652,7 @@ fn handle_sidecar_event(
     app: &AppHandle,
     store: &Arc<Mutex<SessionStore>>,
     sidecar: &Arc<Mutex<Option<SidecarRuntime>>>,
+    discovery: &Arc<Mutex<DiscoveryRuntime>>,
     sidecar_generation: u64,
     event: SidecarEvent,
 ) -> CommandResult<()> {
@@ -764,7 +662,9 @@ fn handle_sidecar_event(
 
     if let SidecarEvent::VideoAccessUnit { stream_id, .. }
     | SidecarEvent::AudioFrame { stream_id, .. }
-    | SidecarEvent::AudioVolumeChanged { stream_id, .. } = &event
+    | SidecarEvent::AudioVolumeChanged { stream_id, .. }
+    | SidecarEvent::VideoSenderStateChanged { stream_id, .. }
+    | SidecarEvent::VideoGeometryChanged { stream_id, .. } = &event
     {
         let guard = store.lock().map_err(|error| error.to_string())?;
         if !session_accepts_media(&guard, stream_id) {
@@ -1371,6 +1271,7 @@ fn handle_sidecar_event(
 
                     emit_snapshot = true;
                 } else if push_result.sample_enqueued {
+                    guard.receiver_runtime.video_sender_paused = false;
                     guard.connection_attempt_has_video = true;
                     if guard.snapshot.status != SessionStatus::Recording {
                         guard.snapshot.status = SessionStatus::Mirroring;
@@ -1456,6 +1357,63 @@ fn handle_sidecar_event(
                     Some(validate_sender_volume_db(volume_db)?);
                 emit_preview_diagnostics = false;
             }
+            SidecarEvent::VideoSenderStateChanged { stream_id, paused } => {
+                if !session_accepts_media(&guard, &stream_id)
+                    || guard.pending_local_session_approval
+                {
+                    return Ok(());
+                }
+                guard.receiver_runtime.video_sender_paused = paused;
+                emit_preview_diagnostics = false;
+            }
+            SidecarEvent::VideoGeometryChanged {
+                stream_id,
+                source_width,
+                source_height,
+                output_width,
+                output_height,
+            } => {
+                if !session_accepts_media(&guard, &stream_id)
+                    || guard.pending_local_session_approval
+                {
+                    return Ok(());
+                }
+                if source_width == 0
+                    || source_height == 0
+                    || output_width == 0
+                    || output_height == 0
+                {
+                    return Err(String::from("receiver reported invalid video geometry"));
+                }
+
+                let geometry = VideoGeometrySnapshot {
+                    source_width,
+                    source_height,
+                    output_width,
+                    output_height,
+                    orientation: if source_width > source_height {
+                        String::from("landscape")
+                    } else {
+                        String::from("portrait")
+                    },
+                };
+                if guard.receiver_runtime.video_geometry.as_ref() != Some(&geometry) {
+                    let orientation_changed = guard
+                        .receiver_runtime
+                        .video_geometry
+                        .as_ref()
+                        .is_none_or(|previous| previous.orientation != geometry.orientation);
+                    guard.receiver_runtime.video_geometry = Some(geometry);
+                    if orientation_changed {
+                        guard.receiver_runtime.orientation_revision = guard
+                            .receiver_runtime
+                            .orientation_revision
+                            .wrapping_add(1)
+                            .max(1);
+                    }
+                }
+                emit_preview_diagnostics = false;
+            }
             SidecarEvent::StreamDiscontinuity {
                 stream_id,
                 reason,
@@ -1484,6 +1442,7 @@ fn handle_sidecar_event(
                     &reason,
                     requires_init_segment_refresh,
                 );
+                guard.receiver_runtime.video_sender_paused = false;
 
                 if should_resume_listening {
                     resume_listening_after_disconnect(&mut guard, stream_id.clone());
@@ -1654,6 +1613,7 @@ fn handle_sidecar_event(
                     emit_runtime_error(app, store, runtime_message, recoverable)
                 };
                 if !recoverable {
+                    stop_discovery(discovery);
                     stop_sidecar_runtime(sidecar);
                 }
                 return result;
@@ -1731,6 +1691,7 @@ fn handle_sidecar_event(
     }
 
     if restart_sidecar {
+        stop_discovery(discovery);
         stop_sidecar_runtime(sidecar);
     }
 
@@ -1951,6 +1912,7 @@ fn spawn_sidecar_stdout_loop(
     app: AppHandle,
     store: Arc<Mutex<SessionStore>>,
     sidecar: Arc<Mutex<Option<SidecarRuntime>>>,
+    discovery: Arc<Mutex<DiscoveryRuntime>>,
     next_sidecar_generation: Arc<AtomicU64>,
     sidecar_generation: u64,
     stdout: ChildStdout,
@@ -1981,9 +1943,14 @@ fn spawn_sidecar_stdout_loop(
 
             match serde_json::from_str::<SidecarEvent>(&line) {
                 Ok(event) => {
-                    if let Err(error) =
-                        handle_sidecar_event(&app, &store, &sidecar, sidecar_generation, event)
-                    {
+                    if let Err(error) = handle_sidecar_event(
+                        &app,
+                        &store,
+                        &sidecar,
+                        &discovery,
+                        sidecar_generation,
+                        event,
+                    ) {
                         if sidecar_generation_is_current(&sidecar, sidecar_generation) {
                             let _ = emit_runtime_error(
                                 &app,
@@ -2051,6 +2018,7 @@ fn spawn_sidecar_stdout_loop(
                     &app,
                     &store,
                     &sidecar,
+                    &discovery,
                     &next_sidecar_generation,
                     Some(restart_command),
                     next_attempt,
@@ -2071,6 +2039,7 @@ fn spawn_sidecar_stdout_loop(
             String::from("receiver sidecar exited unexpectedly and could not be restarted"),
             false,
         );
+        stop_discovery(&discovery);
     });
 }
 
@@ -2160,6 +2129,7 @@ fn launch_sidecar_runtime(
     app: &AppHandle,
     store: &Arc<Mutex<SessionStore>>,
     sidecar: &Arc<Mutex<Option<SidecarRuntime>>>,
+    discovery: &Arc<Mutex<DiscoveryRuntime>>,
     next_sidecar_generation: &Arc<AtomicU64>,
     restart_command: Option<serde_json::Value>,
     restart_attempt: u8,
@@ -2173,6 +2143,7 @@ fn launch_sidecar_runtime(
     let sidecar_generation = next_sidecar_generation.fetch_add(1, Ordering::Relaxed);
     let executable = resolve_sidecar_path(app, &spec.launch.executable)?;
     let working_directory = resolve_sidecar_path(app, &spec.launch.working_directory)?;
+    let hardware_address = receiver_hardware_address_hex(app)?;
 
     #[cfg(windows)]
     let sidecar_job = SidecarJob::create()?;
@@ -2181,6 +2152,8 @@ fn launch_sidecar_runtime(
     command
         .args(&spec.launch.args)
         .current_dir(working_directory)
+        .env("MIRRORSIM_EXTERNAL_DNSSD", "1")
+        .env("MIRRORSIM_HARDWARE_ADDRESS", hardware_address)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -2233,6 +2206,7 @@ fn launch_sidecar_runtime(
         app.clone(),
         store.clone(),
         sidecar.clone(),
+        discovery.clone(),
         next_sidecar_generation.clone(),
         sidecar_generation,
         stdout,
@@ -2256,6 +2230,7 @@ pub(crate) fn ensure_sidecar_runtime(app: &AppHandle, state: &AppState) -> Comma
         app,
         &state.inner,
         &state.sidecar,
+        &state.discovery,
         &state.next_sidecar_generation,
         None,
         0,
@@ -2278,15 +2253,6 @@ pub(crate) fn stop_sidecar_runtime(sidecar: &Arc<Mutex<Option<SidecarRuntime>>>)
     if let Ok(mut guard) = sidecar.lock() {
         let _ = guard.take();
     }
-}
-
-pub(crate) fn ensure_bonjour_ready() -> CommandResult<()> {
-    let bonjour = query_bonjour_status();
-    if let Some(message) = bonjour_blocking_message(&bonjour) {
-        return Err(message);
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]

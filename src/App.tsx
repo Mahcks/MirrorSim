@@ -38,6 +38,7 @@ import { usePreferencesState } from "@/features/mirrorsim/hooks/usePreferencesSt
 import { useWindowMode } from "@/features/mirrorsim/hooks/useWindowMode";
 import { usePreviewRuntime } from "./features/mirrorsim/hooks/usePreviewRuntime";
 import { usePreviewAudio } from "./features/mirrorsim/hooks/usePreviewAudio";
+import { useVideoAvailability } from "./features/mirrorsim/hooks/useVideoAvailability";
 import type {
   AppUpdateInfo,
   AppMode,
@@ -114,6 +115,7 @@ export default function App() {
   const [lastUpdateCheckMessage, setLastUpdateCheckMessage] = useState<string | null>(null);
   const [appVersion, setAppVersion] = useState("—");
   const [screenshotFlashActive, setScreenshotFlashActive] = useState(false);
+  const [protectedVideoNoticeDismissed, setProtectedVideoNoticeDismissed] = useState(false);
   const [reconnectUiState, setReconnectUiState] = useState<{ attempt: number; phase: "scheduled" | "retrying" } | null>(null);
   const [reconnectNextRetryAt, setReconnectNextRetryAt] = useState<number | null>(null);
   const shouldMaintainConnectionRef = useRef(false);
@@ -124,6 +126,7 @@ export default function App() {
   const startupPreferencesAppliedRef = useRef(false);
   const autoDiscoveryAttemptedRef = useRef(false);
   const updateCheckAttemptedRef = useRef(false);
+  const appliedOrientationRevisionRef = useRef(0);
 
   const {
     preferencesReady,
@@ -169,6 +172,8 @@ export default function App() {
     videoRecoveryCount,
     surfaceStatus,
     surfaceError,
+    documentVisible,
+    setPreviewClientDiagnosticContext,
     retryPreview,
     videoEl,
     hasRetainedPreviewFrame,
@@ -191,7 +196,15 @@ export default function App() {
 
   const audioAvailable = session.receiverCapabilities.includes("pcm-audio");
   const senderVolumeSupported = session.receiverCapabilities.includes("sender-volume");
-  const { audioState, audioError, effectiveVolume, primeAudio, recordingAudioTrack } = usePreviewAudio({
+  const {
+    audioState,
+    audioError,
+    effectiveVolume,
+    lastAudioReceivedAtMs,
+    lastAudibleAudioAtMs,
+    primeAudio,
+    recordingAudioTrack,
+  } = usePreviewAudio({
     available: audioAvailable,
     isLive: session.status === "mirroring" || session.status === "recording",
     muted: appPreferences.audioMuted,
@@ -200,6 +213,44 @@ export default function App() {
     senderVolumeDb: receiverRuntime.senderVolumeDb,
     channelMode: appPreferences.audioChannelMode,
   });
+  const videoAvailabilityNotice = useVideoAvailability({
+    streamKey: previewStream ? `${previewStream.streamId}:${previewStream.configGeneration}` : null,
+    isLive: session.status === "mirroring" || session.status === "recording",
+    previewReady: surfaceStatus === "ready",
+    documentVisible,
+    senderPaused: receiverRuntime.videoSenderPaused,
+    lastAudioReceivedAtMs,
+    lastAudibleAudioAtMs,
+    playbackBackend: previewClientDiag.playbackBackend,
+    decodedOutputCount: previewClientDiag.decodedOutputCount,
+    lastDecodedFrameAtMs: previewClientDiag.lastDecodedFrameAtMs,
+    renderSurfaceConnected: previewClientDiag.renderSurfaceConnected,
+    renderSurfaceHealthy: previewClientDiag.renderSurfaceHealthy,
+    pixelProbeAverageLuma: previewClientDiag.pixelProbeAverageLuma,
+    pixelProbeDarkRatio: previewClientDiag.pixelProbeDarkRatio,
+    pixelProbeCenterAverageLuma: previewClientDiag.pixelProbeCenterAverageLuma,
+    pixelProbeCenterDarkRatio: previewClientDiag.pixelProbeCenterDarkRatio,
+    pixelProbeBrightRatio: previewClientDiag.pixelProbeBrightRatio,
+    pixelProbeEdgeRatio: previewClientDiag.pixelProbeEdgeRatio,
+    pixelProbeSequence: previewClientDiag.pixelProbeSequence,
+    pixelProbeDecodedOutputCount: previewClientDiag.pixelProbeDecodedOutputCount,
+    lastPixelProbeAtMs: previewClientDiag.lastPixelProbeAtMs,
+  });
+
+  useEffect(() => {
+    setPreviewClientDiagnosticContext({
+      videoAvailabilityNotice,
+      senderPaused: receiverRuntime.videoSenderPaused,
+      lastAudioReceivedAtMs,
+      lastAudibleAudioAtMs,
+    });
+  }, [
+    lastAudioReceivedAtMs,
+    lastAudibleAudioAtMs,
+    receiverRuntime.videoSenderPaused,
+    setPreviewClientDiagnosticContext,
+    videoAvailabilityNotice,
+  ]);
   const captureFrameAvailable = canCapturePreviewFrame(
     session.status,
     hasRetainedPreviewFrame,
@@ -285,7 +336,7 @@ export default function App() {
   const isRec = ss === "recording";
   const recordingBusy = isRec || localRecordingActive;
   const isTransitioningSession = ss === "discovering" || ss === "connecting";
-  const bonjourNeedsAttention = bonjourStatus.status === "missing" || bonjourStatus.status === "stopped";
+  const bonjourNeedsAttention = bonjourStatus.status === "missing" || bonjourStatus.status === "unknown";
   const receiverDisplayName = appPreferences.receiverDisplayName.trim() || "MirrorSim";
   const receiverTransportLabel = receiverRuntime.transport === "airplayserver" ? "AirPlay transport" : "Fixture transport";
   const receiverStateLabel =
@@ -408,6 +459,18 @@ export default function App() {
     imageRendering: previewPreset.imageRendering,
     filter: previewPreset.filter,
   };
+
+  useEffect(() => {
+    if (videoAvailabilityNotice === null) {
+      setProtectedVideoNoticeDismissed(false);
+    }
+  }, [videoAvailabilityNotice]);
+
+  useEffect(() => {
+    void invoke<BonjourStatusSnapshot>("get_bonjour_status")
+      .then(setBonjourStatus)
+      .catch(() => undefined);
+  }, [session.status, setBonjourStatus]);
 
   function renderReconnectBadge(compact = false) {
     if (!reconnectUiState || reconnectUiState.phase !== "scheduled") return null;
@@ -693,6 +756,33 @@ export default function App() {
   }, [appPreferences.openDiagnosticsOnError, commandError, receiverRuntime.lastError, surfaceError]);
 
   useEffect(() => {
+    const geometry = receiverRuntime.videoGeometry;
+    if (!preferencesReady || !appPreferences.autoRotateFromIphone || !geometry) return;
+    if (receiverRuntime.orientationRevision <= appliedOrientationRevisionRef.current) return;
+    appliedOrientationRevisionRef.current = receiverRuntime.orientationRevision;
+
+    const nextOrientation: Orientation = geometry.orientation;
+    setOrientation((currentOrientation) => {
+      if (currentOrientation === nextOrientation) return currentOrientation;
+      if (appMode === "minimal") {
+        window.requestAnimationFrame(() => {
+          window.requestAnimationFrame(() => {
+            void fitMinimalWindow(nextOrientation);
+          });
+        });
+      }
+      return nextOrientation;
+    });
+  }, [
+    appMode,
+    appPreferences.autoRotateFromIphone,
+    fitMinimalWindow,
+    preferencesReady,
+    receiverRuntime.orientationRevision,
+    receiverRuntime.videoGeometry,
+  ]);
+
+  useEffect(() => {
     if (!preferencesReady || !appPreferences.autoStartDiscovery || autoDiscoveryAttemptedRef.current || ss !== "idle") {
       return;
     }
@@ -838,17 +928,23 @@ export default function App() {
     }
 
     try {
+      let nextSession: SessionSnapshot;
       if (command === "stop_session") {
-        setSession(await invoke<SessionSnapshot>(command));
+        nextSession = await invoke<SessionSnapshot>(command);
       } else {
-        setSession(await invoke<SessionSnapshot>(command, {
+        nextSession = await invoke<SessionSnapshot>(command, {
           receiverName: receiverDisplayName,
           requireLocalApproval: appPreferences.receiverAccessMode === "ask",
           requireKnownDevice: appPreferences.receiverAccessMode === "known-only",
-        }));
+        });
       }
+      setSession(nextSession);
+      setBonjourStatus(await invoke<BonjourStatusSnapshot>("get_bonjour_status"));
       return true;
     } catch (error) {
+      void invoke<BonjourStatusSnapshot>("get_bonjour_status")
+        .then(setBonjourStatus)
+        .catch(() => undefined);
       if (!silent) {
         setCommandError(fmtError(error));
       }
@@ -860,13 +956,20 @@ export default function App() {
   }
 
   async function refreshBonjourStatus() {
-    const [status, runtime] = await Promise.all([
-      invoke<BonjourStatusSnapshot>("get_bonjour_status"),
-      invoke<ReceiverRuntimeSnapshot>("refresh_receiver_readiness"),
-    ]);
+    let refreshError: unknown = null;
+    let runtime: ReceiverRuntimeSnapshot | null = null;
+    try {
+      runtime = await invoke<ReceiverRuntimeSnapshot>("refresh_receiver_readiness", {
+        receiverName: receiverDisplayName,
+      });
+    } catch (error) {
+      refreshError = error;
+    }
+    const status = await invoke<BonjourStatusSnapshot>("get_bonjour_status");
 
     setBonjourStatus(status);
-    setReceiverRuntime(runtime);
+    if (runtime) setReceiverRuntime(runtime);
+    if (refreshError) throw refreshError;
     return status;
   }
 
@@ -1163,15 +1266,6 @@ export default function App() {
     if (recordingBusy) {
       void doRecordToggle();
     }
-    else if (ss === "idle" && bonjourStatus.status === "missing") {
-      void openUrl("https://support.apple.com/kb/DL999").catch((error) => setCommandError(fmtError(error)));
-    }
-    else if (ss === "idle" && bonjourStatus.status === "stopped") {
-      void invoke("open_windows_services").catch((error) => setCommandError(fmtError(error)));
-    }
-    else if (ss === "idle" && bonjourStatus.status === "unknown") {
-      void refreshBonjourStatus().catch((error) => setCommandError(fmtError(error)));
-    }
     else if (ss === "idle") void startSessionFlow("start_session", "manual");
     else void stopSessionFlow();
   }
@@ -1418,9 +1512,7 @@ export default function App() {
       onRenameTrustedDevice={(deviceKey, nickname) => void renameTrustedDevice(deviceKey, nickname)}
       onSetTrustedDeviceBlocked={(deviceKey, blocked, reason) => void setTrustedDeviceBlocked(deviceKey, blocked, reason)}
       onResetTrustedDevices={() => void resetTrustedDevices()}
-      onInstallBonjour={() => void openUrl("https://support.apple.com/kb/DL999").catch((error) => setCommandError(fmtError(error)))}
       onRefreshBonjourStatus={() => void refreshBonjourStatus().catch((error) => setCommandError(fmtError(error)))}
-      onOpenWindowsServices={() => void invoke("open_windows_services").catch((error) => setCommandError(fmtError(error)))}
       onOpenWindowsFirewall={() => void invoke("open_windows_firewall").catch((error) => setCommandError(fmtError(error)))}
       onExportDiagnostics={() => void exportDiagnostics()}
       onCheckForUpdates={() => void checkForUpdatesManually()}
@@ -1482,17 +1574,23 @@ export default function App() {
     ["Canvas", previewClientDiag.canvasConnected
       ? `mounted, ${previewClientDiag.canvasContextLossCount} context losses`
       : "detached"],
-    ["Pixel probe", previewClientDiag.pixelProbeLuma === null
+    ["Pixel probe", previewClientDiag.pixelProbeAverageLuma === null || previewClientDiag.pixelProbeDarkRatio === null
       ? "waiting"
-      : `luma ${previewClientDiag.pixelProbeLuma}, ${previewClientDiag.decodedFrameFormat ?? "unknown format"}`],
+      : `avg ${previewClientDiag.pixelProbeAverageLuma.toFixed(1)}, ${Math.round(previewClientDiag.pixelProbeDarkRatio * 100)}% dark, ${previewClientDiag.decodedFrameFormat ?? "unknown format"}`],
+    ["Picture availability", videoAvailabilityNotice === "sender-paused"
+      ? "sender paused video while audio continued"
+      : videoAvailabilityNotice === "possible-protected"
+        ? "possible protected surface (advancing black video with audible audio)"
+        : "normal"],
     ["Media error", previewClientDiag.lastMediaError ?? "none"],
     ["Errors", String(previewClientDiag.appendErrorCount)],
     ["Recoveries", `${videoRecoveryCount} playback / ${previewClientDiag.decoderClientRecoveryCount} decoder-client`],
-    ["Bonjour", bonjourStatus.status],
+    ["Discovery", bonjourStatus.status],
     ["Transport", receiverRuntime.transport],
     ["Config generation", String(previewStream?.configGeneration ?? 0)],
     ["Audio", audioError ?? (audioAvailable ? `${audioState} · ${Math.round(effectiveVolume * 100)}% effective` : "unavailable")],
     ["iPhone volume", receiverRuntime.senderVolumeDb === null ? "not reported" : `${receiverRuntime.senderVolumeDb.toFixed(1)} dB`],
+    ["Phone orientation", receiverRuntime.videoGeometry ? `${receiverRuntime.videoGeometry.orientation} · source ${receiverRuntime.videoGeometry.sourceWidth}×${receiverRuntime.videoGeometry.sourceHeight} · video ${receiverRuntime.videoGeometry.outputWidth}×${receiverRuntime.videoGeometry.outputHeight}` : "not reported"],
     ["Last error", receiverRuntime.lastError ?? surfaceError ?? commandError ?? "—"],
   ];
 
@@ -1520,6 +1618,8 @@ export default function App() {
       previewStatus={surfaceStatus}
       previewError={surfaceError}
       onRetryPreview={retryPreview}
+      videoAvailabilityNotice={protectedVideoNoticeDismissed ? null : videoAvailabilityNotice}
+      onDismissProtectedVideoNotice={() => setProtectedVideoNoticeDismissed(true)}
       previewDimClass={previewDimClass}
       previewVideoStyle={previewVideoStyle}
       tone={tone}
@@ -1553,6 +1653,8 @@ export default function App() {
       previewStatus={surfaceStatus}
       previewError={surfaceError}
       onRetryPreview={retryPreview}
+      videoAvailabilityNotice={protectedVideoNoticeDismissed ? null : videoAvailabilityNotice}
+      onDismissProtectedVideoNotice={() => setProtectedVideoNoticeDismissed(true)}
       previewDimClass={previewDimClass}
       previewVideoStyle={previewVideoStyle}
       tone={tone}
@@ -1604,9 +1706,7 @@ export default function App() {
           onCapture={() => void doCapture()}
           onToggleAudio={toggleAudio}
           onGoMinimal={() => void goMinimal()}
-          onInstallBonjour={() => void openUrl("https://support.apple.com/kb/DL999").catch((error) => setCommandError(fmtError(error)))}
           onOpenSettings={openScreenshotSettings}
-          onOpenWindowsServices={() => void invoke("open_windows_services").catch((error) => setCommandError(fmtError(error)))}
           onPrimary={doPrimary}
           onRecordToggle={() => void doRecordToggle()}
           onRefreshBonjourStatus={() => void refreshBonjourStatus().catch((error) => setCommandError(fmtError(error)))}

@@ -49,6 +49,13 @@ type UsePreviewRuntimeArgs = {
   setCommandError: Dispatch<SetStateAction<string | null>>;
 };
 
+export type PreviewClientDiagnosticContext = {
+  videoAvailabilityNotice: "sender-paused" | "possible-protected" | null;
+  senderPaused: boolean;
+  lastAudioReceivedAtMs: number | null;
+  lastAudibleAudioAtMs: number | null;
+};
+
 export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreviewRuntimeArgs) {
   const [initializing, setInitializing] = useState(true);
   const [session, setSession] = useState<SessionSnapshot>({
@@ -126,10 +133,20 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
     surfaceError: null as string | null,
     documentVisible: true,
   });
+  const previewClientDiagnosticContextRef = useRef<PreviewClientDiagnosticContext>({
+    videoAvailabilityNotice: null,
+    senderPaused: false,
+    lastAudioReceivedAtMs: null,
+    lastAudibleAudioAtMs: null,
+  });
   const isLive = session.status === "mirroring" || session.status === "recording";
   const previewAttachmentKey = previewStream === null
     ? null
     : JSON.stringify(previewStream);
+
+  const setPreviewClientDiagnosticContext = useCallback((context: PreviewClientDiagnosticContext) => {
+    previewClientDiagnosticContextRef.current = context;
+  }, []);
 
   useEffect(() => {
     const handleVisibilityChange = () => setDocumentVisible(document.visibilityState !== "hidden");
@@ -382,6 +399,11 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
 
     const report = () => {
       const latest = previewClientReportRef.current;
+      const context = previewClientDiagnosticContextRef.current;
+      const nowMs = performance.now();
+      const ageMs = (timestampMs: number | null) => timestampMs === null
+        ? null
+        : Math.max(0, Math.round(nowMs - timestampMs));
       void invoke("report_preview_client_diagnostics", {
         diagnostics: {
           ...latest.diagnostics,
@@ -390,6 +412,11 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
           documentVisible: latest.documentVisible,
           streamId: previewStream?.streamId ?? null,
           configGeneration: previewStream?.configGeneration ?? null,
+          videoAvailabilityNotice: context.videoAvailabilityNotice,
+          senderPaused: context.senderPaused,
+          lastPixelProbeAgeMs: ageMs(latest.diagnostics.lastPixelProbeAtMs),
+          lastAudioReceivedAgeMs: ageMs(context.lastAudioReceivedAtMs),
+          lastAudibleAudioAgeMs: ageMs(context.lastAudibleAudioAtMs),
           reportedAt: Date.now(),
         },
       }).catch((error) => {
@@ -635,6 +662,8 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
     surfaceStatus,
     setSurfaceStatus,
     surfaceError,
+    documentVisible,
+    setPreviewClientDiagnosticContext,
     setSurfaceError,
     retryPreview: () => {
       setSurfaceError(null);

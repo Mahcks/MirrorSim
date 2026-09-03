@@ -1,23 +1,22 @@
-# MirrorSim v0.1.4
+# v0.1.5
 
-MirrorSim v0.1.4 adds local iPhone audio, presentation-ready framed exports, and a focused production-readiness pass across the desktop UI, privacy controls, and native receiver boundary.
+MirrorSim v0.1.5 is a reliability-focused update for long-running mirroring, app and video transitions, receiver-driven orientation, built-in discovery, and honest protected-picture guidance.
 
 ## Highlights
 
-- Plays decoded iPhone audio locally with mute and master-volume controls in Console, Minimal, and Preferences.
-- Optionally follows the iPhone volume buttons using AirPlay's decibel attenuation without changing Windows system volume.
-- Adds stereo and mono-compatibility playback plus a separate option to include full-level iPhone audio in new `.webm` recordings.
-- Adds independent **Include device frame** options for screenshots and recordings.
-- Splits Preferences into General, Audio, Capture, Connection, Devices, and Support sections.
-- Adds About & Support with the installed version, a manual update check, project and issue links, licensing, privacy behavior, and known limitations.
-- Uses genuine Windows fullscreen instead of maximizing the app window.
-- Lets update notices be hidden until the next launch.
+- Follows trustworthy receiver-reported phone orientation while keeping manual Rotate as a temporary override.
+- Advertises AirPlay with built-in mDNS, so MirrorSim no longer requires Bonjour for Windows.
+- Distinguishes sender-paused pictures from a conservative protected-surface heuristic without claiming DRM as a certainty.
+- Keeps the existing iPhone audio, phone-volume following, framed captures, recording, fullscreen, updater, and support controls from v0.1.4.
 
 ## Fixed and hardened
 
 - Long Minimal-mode errors wrap and remain readable instead of being truncated.
 - Exported diagnostics redact stable device IDs, trust keys, session IDs, and pairing challenge IDs, including occurrences copied into sidecar logs.
-- Orientation copy now matches actual behavior: rotation stays explicit because media dimensions do not reliably describe the physical phone orientation.
+- Automatic orientation follows receiver-reported source-screen geometry without mistaking a landscape media surface for a rotated phone; manual Rotate remains available as a temporary override.
+- Protected-playback guidance now distinguishes an explicit sender-paused picture from a conservative multi-frame protected-surface heuristic, avoiding warnings for frozen frames, silent black screens, short fades, and detailed dark interfaces.
+- Built-in discovery now reports its actual stopped, advertising, or failed state, and Refresh discovery re-registers an active receiver after network changes.
+- Receiver discovery uses a private per-installation identity instead of exposing a physical adapter address or sharing a global fallback identity.
 - PCM events are format-validated and size-limited at both the native adapter and Rust boundary.
 - Invalid or missing audio packets are dropped and rate-limited without changing the live video state or flooding connection history.
 - Recoverable receiver warnings no longer own the session state machine or rebuild a healthy video decoder; only explicit stream discontinuities can reset live media.
@@ -50,7 +49,7 @@ MirrorSim v0.1.4 adds local iPhone audio, presentation-ready framed exports, and
 
 ## Receiver requirement
 
-This release requires AirPlayServer adapter protocol `0.7.0` with the `pcm-audio` and `sender-volume` capabilities. Publish and pin the matching AirPlayServer runtime release before tagging MirrorSim v0.1.4.
+This release bundles AirPlayServer v0.4.1 and requires adapter protocol `0.8.0` with the `pcm-audio`, `sender-volume`, `video-geometry`, `video-sender-state`, and `external-dnssd` capabilities.
 
 ## Install
 

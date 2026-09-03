@@ -1,4 +1,5 @@
 mod commands;
+mod discovery;
 mod history;
 mod models;
 mod persistence;

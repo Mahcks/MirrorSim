@@ -27,7 +27,7 @@ Release validation allows exactly these native files (plus this README):
 - `msys-2.0.dll`
 - `swscale-5.dll`
 
-Every native file must be an x64 Windows PE image, and the adapter must complete the protocol `0.7.0` startup/shutdown smoke test. This folder is bundled into release artifacts through `src-tauri/tauri.conf.json`, so shipped builds can run without asking users to install a separate AirPlay receiver package.
+Every native file must be an x64 Windows PE image, and the adapter must complete the protocol `0.8.0` startup/shutdown smoke test. This folder is bundled into release artifacts through `src-tauri/tauri.conf.json`, so shipped builds can run without asking users to install a separate AirPlay receiver package or Bonjour.
 
 ## Sync From a Local AirPlayServer Build
 

@@ -207,7 +207,7 @@ fn emit_event(event: SidecarEvent) -> io::Result<()> {
 fn emit_receiver_ready(runtime: &BackendRuntime) -> io::Result<()> {
     emit_event(SidecarEvent::ReceiverReady {
         receiver_id: String::from(runtime.receiver_id()),
-        protocol_version: String::from("0.7.0"),
+        protocol_version: String::from("0.8.0"),
         capabilities: runtime.capabilities(),
     })
 }

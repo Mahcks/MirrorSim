@@ -38,9 +38,7 @@ type ConsoleViewProps = {
   onCapture: () => void;
   onToggleAudio: () => void;
   onGoMinimal: () => void;
-  onInstallBonjour: () => void;
   onOpenSettings: () => void;
-  onOpenWindowsServices: () => void;
   onPrimary: () => void;
   onRecordToggle: () => void;
   onRefreshBonjourStatus: () => void;
@@ -104,9 +102,7 @@ export function ConsoleView({
   onCapture,
   onToggleAudio,
   onGoMinimal,
-  onInstallBonjour,
   onOpenSettings,
-  onOpenWindowsServices,
   onPrimary,
   onRecordToggle,
   onRefreshBonjourStatus,
@@ -261,33 +257,16 @@ export function ConsoleView({
             {bonjourNeedsAttention && (
               <div className={cn("rounded-lg border p-2.5", bonjourToneClass)}>
                 <div className="text-[11px] font-medium">
-                  {bonjourStatus.status === "missing" ? "Bonjour is not installed" : "Bonjour service isn't running"}
+                  AirPlay discovery needs attention
                 </div>
                 <p className="mt-1 text-[11px] leading-4 text-inherit/80">{bonjourStatus.detail}</p>
                 <div className="mt-2 flex flex-wrap gap-1.5">
-                  {bonjourStatus.status === "missing" ? (
-                    <button
-                      type="button"
-                      className="inline-flex items-center rounded-[5px] border border-white/10 bg-black/20 px-2.5 py-1 text-[11px] font-medium text-inherit transition hover:border-white/20"
-                      onClick={onInstallBonjour}
-                    >
-                      Install Bonjour
-                    </button>
-                  ) : (
-                    <button
-                      type="button"
-                      className="inline-flex items-center rounded-[5px] border border-white/10 bg-black/20 px-2.5 py-1 text-[11px] font-medium text-inherit transition hover:border-white/20"
-                      onClick={onOpenWindowsServices}
-                    >
-                      Open Services
-                    </button>
-                  )}
                   <button
                     type="button"
                     className="inline-flex items-center rounded-[5px] border border-white/10 bg-black/20 px-2.5 py-1 text-[11px] font-medium text-inherit transition hover:border-white/20"
                     onClick={onRefreshBonjourStatus}
                   >
-                    Recheck
+                    Retry discovery
                   </button>
                 </div>
               </div>

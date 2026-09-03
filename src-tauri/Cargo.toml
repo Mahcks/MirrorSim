@@ -1,6 +1,6 @@
 [package]
 name = "mirrorsim"
-version = "0.1.4"
+version = "0.1.5"
 description = "A Windows AirPlay receiver app for mirroring iPhone in a clean, presentation-ready device frame."
 authors = ["mahcks"]
 edition = "2021"
@@ -30,6 +30,8 @@ tauri-plugin-updater = "2"
 tauri-plugin-single-instance = "=2.4.3"
 url = "2"
 windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_JobObjects", "Win32_System_Services", "Win32_System_Threading"] }
+mdns-sd = { version = "0.21.1", default-features = false }
+getrandom = "0.3"
 
 [dev-dependencies]
 minisign-verify = "0.2"

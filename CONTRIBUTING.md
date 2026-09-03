@@ -151,15 +151,15 @@ The GitHub release workflow (`.github/workflows/release.yml`) expects `receivers
 Release the native runtime before a MirrorSim version that changes the sidecar:
 
 1. Commit and push the AirPlayServer changes.
-2. Tag that repository (for this release, `v0.3.0`) and wait for its Build & Release workflow.
+2. Tag that repository with the next AirPlayServer runtime version and wait for its Build & Release workflow.
 3. Copy the published `airplay-runtime-win-x64.sha256` value into `receivers/runtime-manifest.json`, update its version and URL, then run `bun run release:prep:fetch`.
 4. Commit and push the MirrorSim runtime-manifest update only after the fetched protocol smoke test passes.
 
 Cut the MirrorSim release from the exact reviewed commit:
 
 ```powershell
-git tag v0.1.3
-git push origin v0.1.3
+git tag v0.1.5
+git push origin v0.1.5
 ```
 
 Tags matching `v*` trigger the release workflow, which builds on `windows-latest` and uploads:

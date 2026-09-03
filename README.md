@@ -8,10 +8,8 @@
 
 MirrorSim mirrors an iPhone over AirPlay into a clean, presentation-ready device-frame window on Windows — no cable, no clutter, no generic receiver UI in your screenshots. Point your iPhone at it from Control Center and you get a focused, floating device frame ready for demos, QA, screen recordings, and walkthroughs.
 
-<!-- A real-device demo belongs here once recorded. Capture 10-15 seconds showing Start listening -> iPhone Screen Mirroring -> live Minimal view -> one capture, then run: bun run demo:gif -- -InputFile C:\path\to\demo.mp4 -->
-
 <p align="center">
-  <img src="docs/images/map-minimal-vertical.png" alt="MirrorSim Minimal mode mirroring Apple Maps in portrait orientation" width="300">
+  <img src="docs/images/demo.gif" alt="MirrorSim starting its AirPlay receiver and mirroring an iPhone in Minimal mode" width="360">
 </p>
 
 <p align="center">
@@ -54,19 +52,18 @@ Screen mirroring an iPhone on Windows usually means QuickTime on a Mac you don't
 - Live iPhone screen mirroring over Wi-Fi
 - Minimal floating device-frame mode for demos and recordings
 - Console mode with connection state, diagnostics, capture history, and controls
-- Explicit portrait and landscape framing that is not fooled by apps publishing a separate landscape video surface
+- Receiver-driven portrait and landscape framing with a manual override that is not fooled by apps publishing a separate landscape video surface
 - Screenshots to disk and/or clipboard, with an optional presentation-ready device frame
 - Local `.webm` screen recordings with iPhone audio and an optional device frame
 - Adjustable preview quality and live-edge catch-up presets
 - Trusted-device preferences and receiver access controls
-- Bonjour readiness checks and helpful troubleshooting actions
+- Built-in mDNS discovery that follows active network interfaces without requiring Bonjour for Windows
 
 ---
 
 ## Requirements
 
 - Windows 10 or later, x64
-- [Bonjour for Windows](https://support.apple.com/kb/DL999)
 - iPhone and PC on the same Wi-Fi network
 - Windows Firewall allowing MirrorSim on the network you are using
 
@@ -96,15 +93,13 @@ MirrorSim ships in two formats:
 
 1. Download the latest MirrorSim installer from [GitHub Releases](https://github.com/Mahcks/MirrorSim/releases/latest).
 2. Run the installer.
-3. Install Bonjour for Windows if your iPhone cannot discover MirrorSim.
-4. Launch MirrorSim from Start or the desktop shortcut.
+3. Launch MirrorSim from Start or the desktop shortcut.
 
 ### Portable
 
 1. Download the latest portable zip from [GitHub Releases](https://github.com/Mahcks/MirrorSim/releases/latest).
 2. Extract it to a folder you control.
 3. Run `MirrorSim.exe`.
-4. Install Bonjour for Windows if your iPhone cannot discover MirrorSim.
 
 ---
 
@@ -125,7 +120,7 @@ The live iPhone preview appears inside the device frame. Use Minimal mode when y
 
 **Minimal mode** is the showcase view: just the device frame, a compact title bar, and quick controls for capture, recording, audio, rotation, preferences, and switching back to Console.
 
-**Console mode** is the control room: connection status, Bonjour state, diagnostics, capture history, recording controls, trusted devices, and troubleshooting tools.
+**Console mode** is the control room: connection and discovery state, diagnostics, capture history, recording controls, trusted devices, and troubleshooting tools.
 
 ---
 
@@ -177,10 +172,10 @@ Preview presets tune the desktop playback surface. They do not change the iPhone
 
 MirrorSim is focused on screen mirroring.
 
-- DRM-protected video playback is not supported and may appear black.
-- Rotation is manual because the receiver currently does not provide a trustworthy phone-orientation signal; a media app can publish landscape video while the phone remains portrait.
-- AirPlay discovery depends on Bonjour and local network/firewall conditions.
-- Sleep/wake and reconnect behavior depends partly on how iOS resumes the AirPlay sender session.
+- Apple DRM-protected video cannot be decrypted because iOS replaces protected pixels before they reach the receiver; unprotected player controls and audio may continue normally. MirrorSim separately reports an explicit sender-paused picture, and only suggests protected playback after multiple advancing, uniformly near-black frames arrive with audible audio. This is deliberately conservative because AirPlay exposes no trustworthy per-title DRM flag. Return to normal Screen Mirroring or use the streaming service's Windows app for protected playback.
+- Automatic rotation requires the bundled protocol `0.8.0` receiver. MirrorSim follows the reported source-screen shape while ignoring separate media-output dimensions, and Rotate remains available as a temporary override.
+- Built-in mDNS removes the Bonjour dependency and follows interface changes, but guest Wi-Fi isolation, VPNs, and Windows Firewall rules can still block local AirPlay traffic.
+- MirrorSim preserves ordinary interrupted mirror-data sessions for up to two minutes. An explicitly paused sender remains available while iOS keeps the AirPlay control session alive, but iOS can still terminate that session during longer sleep or network changes.
 
 ---
 
@@ -188,13 +183,12 @@ MirrorSim is focused on screen mirroring.
 
 ### iPhone does not see MirrorSim
 
-- Install Bonjour for Windows.
-- Make sure the Bonjour Service is running.
 - Put the iPhone and PC on the same Wi-Fi network.
 - Allow MirrorSim through Windows Firewall on private networks.
 - Avoid VPNs, proxies, or VM/NAT networking while testing discovery.
+- In Preferences > Connection, use **Refresh discovery** after changing Wi-Fi or firewall settings.
 
-MirrorSim can show Bonjour status in-app and can open the Bonjour download, Windows Services, and Windows Firewall pages for you.
+MirrorSim advertises AirPlay directly with its built-in mDNS service and can open Windows Firewall settings for you.
 
 ### Session connects but stays blank or gets delayed
 
@@ -234,7 +228,7 @@ MirrorSim depends on work from the AirPlay reverse-engineering and open-source d
 
 - [AirPlayServer](https://github.com/xenos1337/AirPlayServer) by xenos1337
 - [airplay2-win](https://github.com/fingergit/airplay2-win) by fingergit
-- Bonjour, FFmpeg, SDL2, and related libraries used by the bundled receiver runtime
+- mDNS discovery, FFmpeg, SDL2, and related libraries used by the bundled receiver runtime
 
 MirrorSim itself is licensed under MIT. The bundled AirPlay receiver runtime includes separate terms and source links documented in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and `LICENSES/`.
 

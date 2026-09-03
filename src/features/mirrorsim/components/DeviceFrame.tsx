@@ -4,6 +4,7 @@ import { cn } from "@/lib/utils";
 import { fmtDuration } from "@/features/mirrorsim/helpers";
 import type { AppMode, Orientation, SessionState } from "@/features/mirrorsim/types";
 import type { MockPreviewStreamStatus } from "@/mockPreviewStream";
+import type { VideoAvailabilityNotice } from "@/features/mirrorsim/protectedVideo";
 
 import { Icon } from "./Icon";
 
@@ -30,6 +31,8 @@ type DeviceFrameProps = {
   previewStatus: MockPreviewStreamStatus;
   previewError: string | null;
   onRetryPreview: () => void;
+  videoAvailabilityNotice: VideoAvailabilityNotice;
+  onDismissProtectedVideoNotice: () => void;
   previewDimClass: string;
   previewVideoStyle: CSSProperties;
   tone: "inactive" | "live" | "warning";
@@ -63,6 +66,8 @@ export function DeviceFrame({
   previewStatus,
   previewError,
   onRetryPreview,
+  videoAvailabilityNotice,
+  onDismissProtectedVideoNotice,
   previewDimClass,
   previewVideoStyle,
   tone,
@@ -162,6 +167,43 @@ export function DeviceFrame({
                   Retry preview
                 </button>
               )}
+            </div>
+          )}
+          {isLive && previewStatus === "ready" && videoAvailabilityNotice !== null && (
+            <div
+              className={cn(
+                "absolute inset-0 z-20 flex items-center justify-center bg-black/92 px-8 py-8 text-center backdrop-blur-sm",
+                orientation === "landscape" && "px-16 py-4",
+              )}
+              role="status"
+              aria-live="polite"
+            >
+              <div className="flex max-w-sm flex-col items-center">
+                <span
+                  className={cn(
+                    "h-2 w-2 rounded-full",
+                    videoAvailabilityNotice === "possible-protected" ? "bg-amber-300/85" : "bg-cyan-300/85",
+                  )}
+                  aria-hidden="true"
+                />
+                <p className="mt-4 text-sm font-semibold text-white/92">
+                  {videoAvailabilityNotice === "possible-protected"
+                    ? "Video picture unavailable"
+                    : "Video picture unavailable"}
+                </p>
+                <p className="mt-2 text-xs leading-5 text-white/58">
+                  {videoAvailabilityNotice === "possible-protected"
+                    ? "MirrorSim is receiving advancing, nearly black frames with audible audio. Protected playback is one possible cause because iOS can hide the video layer from mirroring."
+                    : "The iPhone stopped sending the video picture. Player controls or audio may continue, and MirrorSim will resume automatically when normal picture updates return."}
+                </p>
+                <button
+                  type="button"
+                  className="mt-5 rounded-lg border border-white/12 bg-white/7 px-3 py-2 text-xs font-semibold text-white/68 transition hover:bg-white/11 hover:text-white/90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-200/60"
+                  onClick={onDismissProtectedVideoNotice}
+                >
+                  Show mirrored screen
+                </button>
+              </div>
             </div>
           )}
           {!isLive && (

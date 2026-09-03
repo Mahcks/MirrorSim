@@ -73,13 +73,13 @@ export function getConnectionPresentation({
     titlebarLabel = "Getting ready";
     tone = "active";
   } else if (bonjourStatus.status === "unknown") {
-    headline = "Could not verify Bonjour";
+    headline = "Could not verify AirPlay discovery";
     supportingText = bonjourStatus.detail;
     secondaryLabel = "Discovery status unknown";
     titlebarLabel = "Check required";
     tone = "warning";
-  } else if (bonjourStatus.status === "missing" || bonjourStatus.status === "stopped") {
-    headline = bonjourStatus.status === "missing" ? "Bonjour is required" : "Bonjour service is stopped";
+  } else if (bonjourStatus.status === "missing") {
+    headline = "AirPlay discovery is unavailable";
     supportingText = bonjourStatus.detail;
     secondaryLabel = "Network discovery unavailable";
     titlebarLabel = "Setup required";
@@ -161,14 +161,8 @@ export function getConnectionPresentation({
     ? "Checking..."
     : isStartingToListen
       ? "Starting..."
-    : session.status === "idle" && bonjourStatus.status === "missing"
-      ? "Install Bonjour"
-      : session.status === "idle" && bonjourStatus.status === "stopped"
-        ? "Open Services"
-        : session.status === "idle" && bonjourStatus.status === "unknown"
-          ? "Recheck Bonjour"
-          : session.status === "idle"
-            ? "Start listening"
+    : session.status === "idle"
+      ? "Start listening"
     : session.status === "recording"
       ? "Stop recording"
       : session.status === "discovering"

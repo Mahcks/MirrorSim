@@ -170,6 +170,7 @@ export type AppPreferences = {
   useOpaqueWindowBackground: boolean;
   rememberLastMode: boolean;
   rememberLastOrientation: boolean;
+  autoRotateFromIphone: boolean;
   keepMinimalOnTop: boolean;
   autoRevealSavedCaptures: boolean;
   screenshotFlashEnabled: boolean;

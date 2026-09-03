@@ -3,7 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 
 import { effectivePlaybackGain } from "../audioVolume";
-import { decodePcm16Base64, mixPcmChannelsToMono } from "../pcmAudio";
+import { decodePcm16Base64, mixPcmChannelsToMono, pcmRms } from "../pcmAudio";
 import type { AudioChannelMode, PreviewAudioFrame } from "../types";
 
 type AudioGraph = {
@@ -43,10 +43,14 @@ export function usePreviewAudio({
   initialPlaybackGainRef.current = effectiveVolume;
   const nextPlayTimeRef = useRef(0);
   const lastPtsRef = useRef<number | null>(null);
+  const lastAudioActivityPublishAtRef = useRef(0);
+  const lastAudibleAudioPublishAtRef = useRef(0);
   const scheduledSourcesRef = useRef(new Set<AudioBufferSourceNode>());
   const [recordingAudioTrack, setRecordingAudioTrack] = useState<MediaStreamTrack | null>(null);
   const [audioState, setAudioState] = useState<"unavailable" | "suspended" | "ready" | "playing" | "error">("unavailable");
   const [audioError, setAudioError] = useState<string | null>(null);
+  const [lastAudioReceivedAtMs, setLastAudioReceivedAtMs] = useState<number | null>(null);
+  const [lastAudibleAudioAtMs, setLastAudibleAudioAtMs] = useState<number | null>(null);
 
   const stopScheduledSources = useCallback(() => {
     for (const source of scheduledSourcesRef.current) {
@@ -114,6 +118,10 @@ export function usePreviewAudio({
     if (!available || !isLive) {
       nextPlayTimeRef.current = 0;
       lastPtsRef.current = null;
+      lastAudioActivityPublishAtRef.current = 0;
+      lastAudibleAudioPublishAtRef.current = 0;
+      setLastAudioReceivedAtMs(null);
+      setLastAudibleAudioAtMs(null);
       stopScheduledSources();
       return;
     }
@@ -125,16 +133,23 @@ export function usePreviewAudio({
         const frames = await invoke<PreviewAudioFrame[]>("take_preview_audio_frames");
         if (cancelled) return;
         const graph = ensureGraph();
-        if (graph.context.state !== "running") {
-          setAudioState("suspended");
-          return;
+        const framesReceivedAtMs = performance.now();
+        if (frames.length > 0 && framesReceivedAtMs - lastAudioActivityPublishAtRef.current >= 250) {
+          lastAudioActivityPublishAtRef.current = framesReceivedAtMs;
+          setLastAudioReceivedAtMs(framesReceivedAtMs);
         }
 
+        let scheduledFrame = false;
+        let audibleFrame = false;
         for (const frame of frames) {
           if (frame.bitsPerSample !== 16 || frame.channels < 1 || frame.channels > 2) {
             continue;
           }
           const decodedChannels = decodePcm16Base64(frame.payloadBase64, frame.channels);
+          audibleFrame ||= pcmRms(decodedChannels) >= 0.002;
+          if (graph.context.state !== "running") {
+            continue;
+          }
           const outputChannels = channelMode === "mono"
             ? mixPcmChannelsToMono(decodedChannels)
             : decodedChannels;
@@ -166,11 +181,18 @@ export function usePreviewAudio({
           source.addEventListener("ended", () => scheduledSourcesRef.current.delete(source), { once: true });
           source.start(nextPlayTimeRef.current);
           nextPlayTimeRef.current += buffer.duration;
+          scheduledFrame = true;
         }
 
-        if (frames.length > 0) {
+        if (audibleFrame && framesReceivedAtMs - lastAudibleAudioPublishAtRef.current >= 250) {
+          lastAudibleAudioPublishAtRef.current = framesReceivedAtMs;
+          setLastAudibleAudioAtMs(framesReceivedAtMs);
+        }
+        if (scheduledFrame) {
           setAudioState("playing");
           setAudioError(null);
+        } else if (graph.context.state !== "running") {
+          setAudioState("suspended");
         }
       } catch (error) {
         if (!cancelled) {
@@ -197,5 +219,13 @@ export function usePreviewAudio({
     graphRef.current = null;
   }, [stopScheduledSources]);
 
-  return { audioState, audioError, effectiveVolume, primeAudio, recordingAudioTrack };
+  return {
+    audioState,
+    audioError,
+    effectiveVolume,
+    lastAudioReceivedAtMs,
+    lastAudibleAudioAtMs,
+    primeAudio,
+    recordingAudioTrack,
+  };
 }

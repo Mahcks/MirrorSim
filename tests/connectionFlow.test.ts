@@ -31,7 +31,7 @@ function presentation(overrides: Partial<Parameters<typeof getConnectionPresenta
     session: idleSession,
     pairing: initialPairingStatus,
     receiverRuntime: initialReceiverRuntime,
-    bonjourStatus: { ...initialBonjourStatus, status: "ready", detail: "Bonjour is running." },
+    bonjourStatus: { ...initialBonjourStatus, status: "ready", detail: "Built-in discovery is ready." },
     receiverDisplayName: "Demo Phone",
     ...overrides,
   });
@@ -131,12 +131,26 @@ describe("connection flow presentation", () => {
     expect(result.supportingText).toBe("Checking trust.");
   });
 
-  test("Bonjour failures take precedence over receiver controls", () => {
+  test("discovery failures take precedence over receiver controls", () => {
     const result = presentation({
-      bonjourStatus: { ...initialBonjourStatus, status: "missing", detail: "Install Bonjour." },
+      bonjourStatus: { ...initialBonjourStatus, status: "missing", detail: "Discovery could not start." },
     });
-    expect(result.headline).toBe("Bonjour is required");
+    expect(result.headline).toBe("AirPlay discovery is unavailable");
+    expect(result.primaryActionLabel).toBe("Start listening");
     expect(result.tone).toBe("warning");
+  });
+
+  test("a normally stopped advertiser does not look like a setup failure", () => {
+    const result = presentation({
+      bonjourStatus: {
+        ...initialBonjourStatus,
+        status: "stopped",
+        detail: "Discovery will begin when MirrorSim starts listening.",
+      },
+    });
+    expect(result.headline).toBe("Mirror your iPhone");
+    expect(result.primaryActionLabel).toBe("Start listening");
+    expect(result.tone).toBe("idle");
   });
 
   test("fatal receiver errors remain visible after the session returns idle", () => {

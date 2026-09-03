@@ -7,6 +7,7 @@ AirPlayServer tag referenced by `receivers/runtime-manifest.json`.
 | Component | Shipped form | License / notice | Source |
 | --- | --- | --- | --- |
 | AirPlayServer and MirrorSimAdapter | `airplay2dll.dll`, `MirrorSimAdapter.exe` | MIT; see `LICENSES/AirPlayServer-LICENSE` | https://github.com/Mahcks/AirPlayServer |
+| mdns-sd 0.21.1 | Statically linked into the MirrorSim desktop app for built-in local-network discovery | MIT; see `LICENSES/mdns-sd-LICENSE` | https://github.com/keepsimple1/mdns-sd |
 | FFmpeg 4.2.2 (`libavcodec`, `libavutil`, `libswscale`) | `avcodec-58.dll`, `avutil-56.dll`, `swscale-5.dll` | The bundled binaries identify themselves as LGPL 2.1 or later and were configured as shared libraries with the H.264 decoder enabled. | https://github.com/FFmpeg/FFmpeg/tree/n4.2.2 |
 | libplist | Statically linked receiver dependency | LGPL 2.1 or later | https://github.com/libimobiledevice/libplist |
 | MSYS2 runtime 3.0.7 | `msys-2.0.dll` | GPL 3.0 or later; see the MSYS2 runtime source and COPYING file. | https://github.com/msys2/msys2-runtime |

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { decodePcm16Base64, mixPcmChannelsToMono } from "../src/features/mirrorsim/pcmAudio";
+import { decodePcm16Base64, mixPcmChannelsToMono, pcmRms } from "../src/features/mirrorsim/pcmAudio";
 
 describe("PCM audio decoding", () => {
   test("deinterleaves signed little-endian stereo samples", () => {
@@ -54,5 +54,10 @@ describe("PCM audio decoding", () => {
     expect(channels).toHaveLength(1);
     expect(channels[0][0]).toBeCloseTo(0.375, 5);
     expect(channels[0][1]).toBe(0);
+  });
+
+  test("distinguishes silent PCM from audible samples", () => {
+    expect(pcmRms([new Float32Array(256)])).toBe(0);
+    expect(pcmRms([new Float32Array([0.01, -0.01, 0.01, -0.01])])).toBeCloseTo(0.01, 5);
   });
 });

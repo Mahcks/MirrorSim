@@ -52,9 +52,7 @@ type SettingsModalProps = {
   onRenameTrustedDevice: (deviceKey: string, nickname: string) => void;
   onSetTrustedDeviceBlocked: (deviceKey: string, blocked: boolean, reason?: string) => void;
   onResetTrustedDevices: () => void;
-  onInstallBonjour: () => void;
   onRefreshBonjourStatus: () => void;
-  onOpenWindowsServices: () => void;
   onOpenWindowsFirewall: () => void;
   onExportDiagnostics: () => void;
   onCheckForUpdates: () => void;
@@ -150,9 +148,7 @@ export function SettingsModal({
   onRenameTrustedDevice,
   onSetTrustedDeviceBlocked,
   onResetTrustedDevices,
-  onInstallBonjour,
   onRefreshBonjourStatus,
-  onOpenWindowsServices,
   onOpenWindowsFirewall,
   onExportDiagnostics,
   onCheckForUpdates,
@@ -201,7 +197,22 @@ export function SettingsModal({
   const currentDeviceVisible = session.currentDeviceKey !== null;
   const hasTrustedDevices = trustedDevices.length > 0;
   const historyPreview = connectionHistory.slice(0, 8);
-  const bonjourNeedsAttention = bonjourStatus.status === "missing" || bonjourStatus.status === "stopped";
+  const bonjourNeedsAttention = bonjourStatus.status === "missing" || bonjourStatus.status === "unknown";
+  const bonjourStatusLabel = bonjourNeedsAttention
+    ? "Needs attention"
+    : bonjourStatus.status === "stopped"
+      ? "Stopped"
+      : "Ready";
+  const bonjourStatusTone = bonjourNeedsAttention
+    ? "border-amber-400/20 bg-amber-500/10 text-amber-200"
+    : bonjourStatus.status === "stopped"
+      ? "border-white/8 bg-white/4 text-white/50"
+      : "border-emerald-400/20 bg-emerald-500/10 text-emerald-300";
+  const bonjourStatusDot = bonjourNeedsAttention
+    ? "bg-amber-300"
+    : bonjourStatus.status === "stopped"
+      ? "bg-white/35"
+      : "bg-emerald-400";
   const receiverReady = receiverRuntime.state === "ready" || receiverRuntime.state === "streaming";
   const sessionActive = session.status !== "idle";
   const formatTimestamp = (timestamp: number | null | undefined) =>
@@ -426,6 +437,18 @@ export function SettingsModal({
               <span className="text-sm text-white/80">Remember last orientation</span>
               <Toggle label="Remember last orientation" checked={appPreferences.rememberLastOrientation} onChange={(value) => setAppPreference("rememberLastOrientation", value)} />
             </div>
+            <div className="flex items-start justify-between gap-4 py-3">
+              <div>
+                <div className="text-sm text-white/80">Follow iPhone orientation</div>
+                <div className="mt-0.5 text-[11px] text-white/38">Uses the receiver's source-screen shape, not a video's playback surface. Manual Rotate remains available.</div>
+              </div>
+              <Toggle
+                label="Follow iPhone orientation"
+                checked={appPreferences.autoRotateFromIphone}
+                onChange={(value) => setAppPreference("autoRotateFromIphone", value)}
+                disabled={!session.receiverCapabilities.includes("video-geometry")}
+              />
+            </div>
             <div className="flex items-center justify-between gap-4 py-3">
               <span className="text-sm text-white/80">Keep Minimal window always on top</span>
               <Toggle label="Keep Minimal window always on top" checked={appPreferences.keepMinimalOnTop} onChange={(value) => setAppPreference("keepMinimalOnTop", value)} />
@@ -434,7 +457,9 @@ export function SettingsModal({
 
           <div className={`${sectionHeader} mt-6 pb-2`}>Orientation</div>
           <div className={infoBox}>
-            Use Rotate in the toolbar when your iPhone changes orientation. MirrorSim deliberately does not infer phone rotation from video dimensions because media apps can publish landscape video while the phone itself remains portrait.
+            {session.receiverCapabilities.includes("video-geometry")
+              ? "MirrorSim follows the receiver's source-screen shape while ignoring separate media-output dimensions. Use Rotate for a temporary manual override."
+              : "This receiver does not report phone orientation. Use Rotate in the toolbar when the iPhone turns."}
           </div>
           </>}
 
@@ -719,27 +744,33 @@ export function SettingsModal({
           {/* ── Network & Discovery ── */}
           <div className="mt-6 flex items-center justify-between pb-2">
             <div className={sectionHeader}>Network & Discovery</div>
-            <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium ${bonjourNeedsAttention ? "border-amber-400/20 bg-amber-500/10 text-amber-200" : "border-emerald-400/20 bg-emerald-500/10 text-emerald-300"}`}>
-              <span className={`h-1.5 w-1.5 rounded-full ${bonjourNeedsAttention ? "bg-amber-300" : "bg-emerald-400"}`} />
-              {bonjourNeedsAttention ? "Needs attention" : "Ready"}
+            <span className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-0.5 text-[10px] font-medium ${bonjourStatusTone}`}>
+              <span className={`h-1.5 w-1.5 rounded-full ${bonjourStatusDot}`} />
+              {bonjourStatusLabel}
             </span>
           </div>
           <div className={infoBox}>
-            <div><span className="text-white/30">Bonjour</span> — {bonjourStatus.detail}</div>
+            <div><span className="text-white/30">Discovery</span> — {bonjourStatus.detail}</div>
             <div className="mt-1"><span className="text-white/30">Receiver</span> — {receiverReady ? "Listening for devices" : receiverRuntime.lastError ?? "Starting up"}</div>
             <div className="mt-1"><span className="text-white/30">Visible to iPhone as</span> — {receiverDisplayName}</div>
           </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
-            <button type="button" className={btn} onClick={onRefreshBonjourStatus} disabled={commandPending}>Recheck Bonjour</button>
-            <button type="button" className={btn} onClick={onOpenWindowsServices}>Windows Services</button>
+            <button
+              type="button"
+              className={btn}
+              onClick={onRefreshBonjourStatus}
+              disabled={commandPending || !sessionActive}
+              title={sessionActive ? "Re-register MirrorSim on active network interfaces" : "Start listening before refreshing discovery"}
+            >
+              Refresh discovery
+            </button>
             <button type="button" className={btn} onClick={onOpenWindowsFirewall}>Windows Firewall</button>
-            <button type="button" className={btn} onClick={onInstallBonjour}>Install Bonjour</button>
           </div>
           <ol className="mt-3 space-y-1 text-[11px] leading-5 text-white/38">
             <li>1. Keep MirrorSim open and running.</li>
             <li>2. On your iPhone, open Control Center and tap Screen Mirroring.</li>
             <li>3. Look for <span className="text-white/65">{receiverDisplayName}</span> on the same Wi-Fi network.</li>
-            <li>4. Not showing up? Use Recheck Bonjour and confirm Windows Firewall isn't blocking MirrorSim.</li>
+            <li>4. Not showing up? Refresh discovery and confirm the Windows Private-network firewall isn't blocking MirrorSim.</li>
           </ol>
           </>}
 
@@ -990,7 +1021,7 @@ export function SettingsModal({
               <span className="text-white/38">Updates</span>
               <span className="text-right text-white/72">{updateStatus}</span>
             </div>
-            {updateError && <p className="mt-2 break-words text-amber-200/75">{updateError}</p>}
+            {updateError && <p className="mt-2 wrap-break-word text-amber-200/75">{updateError}</p>}
             <button type="button" className={`${btn} mt-3`} onClick={onCheckForUpdates} disabled={commandPending}>Check for updates</button>
           </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1002,14 +1033,15 @@ export function SettingsModal({
 
           <div className={`${sectionHeader} mt-6 pb-2`}>Privacy</div>
           <div className={infoBox}>
-            Mirrored video and audio are processed locally on this PC. MirrorSim does not upload frames or captures. Network activity is limited to local AirPlay/Bonjour traffic, update checks, and links you choose to open.
+            Mirrored video and audio are processed locally on this PC. MirrorSim does not upload frames or captures. Network activity is limited to local AirPlay/mDNS traffic, update checks, and links you choose to open.
           </div>
 
           <div className={`${sectionHeader} mt-6 pb-2`}>Known Limitations</div>
           <ul className={`${infoBox} list-disc space-y-1 pl-7`}>
-            <li>DRM-protected video may appear black.</li>
-            <li>Some apps publish a separate landscape playback surface; rotate MirrorSim manually when needed.</li>
-            <li>Bonjour and Windows Firewall configuration can affect discovery.</li>
+            <li>iOS can replace DRM-protected video with black pixels while leaving player controls and audio visible. MirrorSim reports explicit sender pauses separately and only suggests protected playback after repeated advancing near-black frames arrive with audible audio.</li>
+            <li>Automatic rotation requires the bundled protocol 0.8 receiver. Manual Rotate temporarily overrides the reported orientation.</li>
+            <li>Guest Wi-Fi isolation, VPNs, and Windows Firewall rules can still block local AirPlay traffic even though Bonjour is no longer required.</li>
+            <li>MirrorSim waits up to two minutes for an interrupted video socket, but iOS can still end the sender session after sleep or a network change.</li>
             <li>Unsigned beta installers may trigger Microsoft Defender SmartScreen.</li>
           </ul>
           </>}

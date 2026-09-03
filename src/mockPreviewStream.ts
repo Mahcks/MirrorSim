@@ -27,10 +27,21 @@ export type PreviewStreamClientDiagnostics = {
   presentedFrameCount: number;
   decoderQueueSize: number;
   decoderClientRecoveryCount: number;
+  lastDecodedFrameAtMs: number | null;
   canvasConnected: boolean;
+  renderSurfaceConnected: boolean;
+  renderSurfaceHealthy: boolean;
   canvasContextLossCount: number;
   decodedFrameFormat: string | null;
   pixelProbeLuma: number | null;
+  pixelProbeAverageLuma: number | null;
+  pixelProbeDarkRatio: number | null;
+  pixelProbeCenterAverageLuma: number | null;
+  pixelProbeCenterDarkRatio: number | null;
+  pixelProbeBrightRatio: number | null;
+  pixelProbeEdgeRatio: number | null;
+  pixelProbeSequence: number;
+  pixelProbeDecodedOutputCount: number | null;
   lastPixelProbeAtMs: number | null;
 };
 
@@ -58,12 +69,113 @@ export const initialPreviewStreamClientDiagnostics: PreviewStreamClientDiagnosti
   presentedFrameCount: 0,
   decoderQueueSize: 0,
   decoderClientRecoveryCount: 0,
+  lastDecodedFrameAtMs: null,
   canvasConnected: false,
+  renderSurfaceConnected: false,
+  renderSurfaceHealthy: false,
   canvasContextLossCount: 0,
   decodedFrameFormat: null,
   pixelProbeLuma: null,
+  pixelProbeAverageLuma: null,
+  pixelProbeDarkRatio: null,
+  pixelProbeCenterAverageLuma: null,
+  pixelProbeCenterDarkRatio: null,
+  pixelProbeBrightRatio: null,
+  pixelProbeEdgeRatio: null,
+  pixelProbeSequence: 0,
+  pixelProbeDecodedOutputCount: null,
   lastPixelProbeAtMs: null,
 };
+
+export type PreviewPixelSummary = {
+  averageLuma: number;
+  darkPixelRatio: number;
+  centerAverageLuma: number;
+  centerDarkPixelRatio: number;
+  brightPixelRatio: number;
+  edgePixelRatio: number;
+};
+
+export function summarizePreviewPixels(
+  pixels: Uint8ClampedArray,
+  width = Math.max(1, Math.floor(pixels.length / 4)),
+  height = 1,
+): PreviewPixelSummary {
+  const pixelCount = Math.floor(pixels.length / 4);
+  if (pixelCount === 0) {
+    return {
+      averageLuma: 0,
+      darkPixelRatio: 1,
+      centerAverageLuma: 0,
+      centerDarkPixelRatio: 1,
+      brightPixelRatio: 0,
+      edgePixelRatio: 0,
+    };
+  }
+
+  const normalizedWidth = Math.max(1, Math.min(width, pixelCount));
+  const normalizedHeight = Math.max(1, Math.min(height, Math.ceil(pixelCount / normalizedWidth)));
+  const centerLeft = Math.floor(normalizedWidth * 0.2);
+  const centerRight = Math.ceil(normalizedWidth * 0.8);
+  const centerTop = Math.floor(normalizedHeight * 0.2);
+  const centerBottom = Math.ceil(normalizedHeight * 0.8);
+  const lumas = new Float32Array(pixelCount);
+  let totalLuma = 0;
+  let darkPixelCount = 0;
+  let brightPixelCount = 0;
+  let centerTotalLuma = 0;
+  let centerDarkPixelCount = 0;
+  let centerPixelCount = 0;
+  for (let index = 0; index < pixelCount * 4; index += 4) {
+    // Integer Rec. 709 approximation. A small dark threshold leaves room for
+    // compression noise in the black surface iOS supplies for protected video.
+    const luma = (54 * pixels[index] + 183 * pixels[index + 1] + 19 * pixels[index + 2]) / 256;
+    const pixelIndex = index / 4;
+    lumas[pixelIndex] = luma;
+    totalLuma += luma;
+    if (luma <= 24) {
+      darkPixelCount += 1;
+    }
+    if (luma >= 96) {
+      brightPixelCount += 1;
+    }
+
+    const x = pixelIndex % normalizedWidth;
+    const y = Math.floor(pixelIndex / normalizedWidth);
+    if (x >= centerLeft && x < centerRight && y >= centerTop && y < centerBottom) {
+      centerPixelCount += 1;
+      centerTotalLuma += luma;
+      if (luma <= 24) {
+        centerDarkPixelCount += 1;
+      }
+    }
+  }
+
+  let edgeCount = 0;
+  let edgeComparisonCount = 0;
+  for (let pixelIndex = 0; pixelIndex < pixelCount; pixelIndex += 1) {
+    const x = pixelIndex % normalizedWidth;
+    const y = Math.floor(pixelIndex / normalizedWidth);
+    if (x + 1 < normalizedWidth && pixelIndex + 1 < pixelCount) {
+      edgeComparisonCount += 1;
+      if (Math.abs(lumas[pixelIndex] - lumas[pixelIndex + 1]) >= 32) edgeCount += 1;
+    }
+    const below = pixelIndex + normalizedWidth;
+    if (y + 1 < normalizedHeight && below < pixelCount) {
+      edgeComparisonCount += 1;
+      if (Math.abs(lumas[pixelIndex] - lumas[below]) >= 32) edgeCount += 1;
+    }
+  }
+
+  return {
+    averageLuma: totalLuma / pixelCount,
+    darkPixelRatio: darkPixelCount / pixelCount,
+    centerAverageLuma: centerPixelCount > 0 ? centerTotalLuma / centerPixelCount : totalLuma / pixelCount,
+    centerDarkPixelRatio: centerPixelCount > 0 ? centerDarkPixelCount / centerPixelCount : darkPixelCount / pixelCount,
+    brightPixelRatio: brightPixelCount / pixelCount,
+    edgePixelRatio: edgeComparisonCount > 0 ? edgeCount / edgeComparisonCount : 0,
+  };
+}
 
 type MockPreviewStreamOptions = {
   onStatusChange?: (status: MockPreviewStreamStatus) => void;
@@ -335,7 +447,15 @@ export function attachMockPreviewStream(
     ...initialPreviewStreamClientDiagnostics,
     playbackBackend: "mse" as const,
     mediaSourceReadyState: mediaSource.readyState,
+    renderSurfaceConnected: videoElement.isConnected,
+    renderSurfaceHealthy: true,
   };
+  const probeCanvas = document.createElement("canvas");
+  probeCanvas.width = 48;
+  probeCanvas.height = 27;
+  const probeContext = probeCanvas.getContext("2d", { willReadFrequently: true });
+  let videoFrameCallbackId: number | null = null;
+  let lastVideoProbeAtMs = 0;
 
   const updateDiagnostics = (patch: Partial<PreviewStreamClientDiagnostics>) => {
     diagnostics = {
@@ -355,6 +475,8 @@ export function attachMockPreviewStream(
     updateDiagnostics({
       lastMediaEvent: `video:${event.type}`,
       lastMediaEventAtMs: performance.now(),
+      renderSurfaceConnected: videoElement.isConnected,
+      renderSurfaceHealthy: event.type !== "error",
       lastMediaError: mediaError
         ? `code ${mediaError.code}${mediaError.message ? `: ${mediaError.message}` : ""}`
         : diagnostics.lastMediaError,
@@ -371,6 +493,50 @@ export function attachMockPreviewStream(
   videoEvents.forEach((eventName) => videoElement.addEventListener(eventName, recordVideoEvent));
   mediaSource.addEventListener("sourceended", recordMediaSourceEvent);
   mediaSource.addEventListener("sourceclose", recordMediaSourceEvent);
+
+  const observeVideoFrame: VideoFrameRequestCallback = (_now, metadata) => {
+    if (disposed) return;
+    const observedAtMs = performance.now();
+    if (observedAtMs - lastVideoProbeAtMs < 1_000) {
+      videoFrameCallbackId = videoElement.requestVideoFrameCallback(observeVideoFrame);
+      return;
+    }
+    lastVideoProbeAtMs = observedAtMs;
+    const decodedOutputCount = Math.max(
+      diagnostics.decodedOutputCount + 1,
+      metadata.presentedFrames,
+    );
+    const patch: Partial<PreviewStreamClientDiagnostics> = {
+      decodedOutputCount,
+      presentedFrameCount: Math.max(diagnostics.presentedFrameCount + 1, metadata.presentedFrames),
+      lastDecodedFrameAtMs: observedAtMs,
+      renderSurfaceConnected: videoElement.isConnected,
+      renderSurfaceHealthy: videoElement.error === null,
+    };
+    if (probeContext && videoElement.videoWidth > 0 && videoElement.videoHeight > 0) {
+      try {
+        probeContext.drawImage(videoElement, 0, 0, probeCanvas.width, probeCanvas.height);
+        const pixels = probeContext.getImageData(0, 0, probeCanvas.width, probeCanvas.height).data;
+        const summary = summarizePreviewPixels(pixels, probeCanvas.width, probeCanvas.height);
+        patch.pixelProbeAverageLuma = summary.averageLuma;
+        patch.pixelProbeDarkRatio = summary.darkPixelRatio;
+        patch.pixelProbeCenterAverageLuma = summary.centerAverageLuma;
+        patch.pixelProbeCenterDarkRatio = summary.centerDarkPixelRatio;
+        patch.pixelProbeBrightRatio = summary.brightPixelRatio;
+        patch.pixelProbeEdgeRatio = summary.edgePixelRatio;
+        patch.pixelProbeSequence = diagnostics.pixelProbeSequence + 1;
+        patch.pixelProbeDecodedOutputCount = decodedOutputCount;
+        patch.lastPixelProbeAtMs = observedAtMs;
+      } catch (error) {
+        console.warn("[MirrorSim preview] MSE pixel probe failed", error);
+      }
+    }
+    updateDiagnostics(patch);
+    videoFrameCallbackId = videoElement.requestVideoFrameCallback(observeVideoFrame);
+  };
+  if (typeof videoElement.requestVideoFrameCallback === "function") {
+    videoFrameCallbackId = videoElement.requestVideoFrameCallback(observeVideoFrame);
+  }
 
   onStatusChange?.("loading");
   updateDiagnostics({});
@@ -519,6 +685,9 @@ export function attachMockPreviewStream(
     videoEvents.forEach((eventName) => videoElement.removeEventListener(eventName, recordVideoEvent));
     mediaSource.removeEventListener("sourceended", recordMediaSourceEvent);
     mediaSource.removeEventListener("sourceclose", recordMediaSourceEvent);
+    if (videoFrameCallbackId !== null && typeof videoElement.cancelVideoFrameCallback === "function") {
+      videoElement.cancelVideoFrameCallback(videoFrameCallbackId);
+    }
 
     if (sourceBuffer && mediaSource.readyState === "open") {
       try {
@@ -603,8 +772,10 @@ function attachWebCodecsPreviewStream(
     return () => {};
   }
   const probeCanvas = document.createElement("canvas");
-  probeCanvas.width = 4;
-  probeCanvas.height = 4;
+  // A denser probe keeps thin playback controls from being smeared across a
+  // coarse sample and making a predominantly black surface look mid-gray.
+  probeCanvas.width = 48;
+  probeCanvas.height = 27;
   const probeContext = probeCanvas.getContext("2d", { willReadFrequently: true });
 
   let disposed = false;
@@ -696,6 +867,8 @@ function attachWebCodecsPreviewStream(
     event.preventDefault();
     patchDiagnostics({
       canvasConnected: canvas.isConnected,
+      renderSurfaceConnected: canvas.isConnected,
+      renderSurfaceHealthy: false,
       canvasContextLossCount: diagnostics.canvasContextLossCount + 1,
       lastMediaEvent: "canvas:context-lost",
       lastMediaEventAtMs: performance.now(),
@@ -705,6 +878,8 @@ function attachWebCodecsPreviewStream(
   const recordContextRestored = () => {
     patchDiagnostics({
       canvasConnected: canvas.isConnected,
+      renderSurfaceConnected: canvas.isConnected,
+      renderSurfaceHealthy: true,
       lastMediaEvent: "canvas:context-restored",
       lastMediaEventAtMs: performance.now(),
       lastMediaError: null,
@@ -748,6 +923,14 @@ function attachWebCodecsPreviewStream(
           retainPreviewFrame(videoElement, canvas);
           const now = performance.now();
           let pixelProbeLuma = diagnostics.pixelProbeLuma;
+          let pixelProbeAverageLuma = diagnostics.pixelProbeAverageLuma;
+          let pixelProbeDarkRatio = diagnostics.pixelProbeDarkRatio;
+          let pixelProbeCenterAverageLuma = diagnostics.pixelProbeCenterAverageLuma;
+          let pixelProbeCenterDarkRatio = diagnostics.pixelProbeCenterDarkRatio;
+          let pixelProbeBrightRatio = diagnostics.pixelProbeBrightRatio;
+          let pixelProbeEdgeRatio = diagnostics.pixelProbeEdgeRatio;
+          let pixelProbeSequence = diagnostics.pixelProbeSequence;
+          let pixelProbeDecodedOutputCount = diagnostics.pixelProbeDecodedOutputCount;
           let lastPixelProbeAtMs = diagnostics.lastPixelProbeAtMs;
           if (probeContext && now - lastPixelProbeAt >= 1_000) {
             try {
@@ -757,7 +940,16 @@ function attachWebCodecsPreviewStream(
               for (let index = 0; index < pixels.length; index += 4) {
                 luma += pixels[index] + pixels[index + 1] + pixels[index + 2];
               }
+              const pixelSummary = summarizePreviewPixels(pixels, probeCanvas.width, probeCanvas.height);
               pixelProbeLuma = luma;
+              pixelProbeAverageLuma = pixelSummary.averageLuma;
+              pixelProbeDarkRatio = pixelSummary.darkPixelRatio;
+              pixelProbeCenterAverageLuma = pixelSummary.centerAverageLuma;
+              pixelProbeCenterDarkRatio = pixelSummary.centerDarkPixelRatio;
+              pixelProbeBrightRatio = pixelSummary.brightPixelRatio;
+              pixelProbeEdgeRatio = pixelSummary.edgePixelRatio;
+              pixelProbeSequence += 1;
+              pixelProbeDecodedOutputCount = diagnostics.decodedOutputCount + 1;
               lastPixelProbeAtMs = now;
               lastPixelProbeAt = now;
             } catch (error) {
@@ -773,8 +965,19 @@ function attachWebCodecsPreviewStream(
             presentedFrameCount: diagnostics.presentedFrameCount + 1,
             decoderQueueSize: activeDecoder.decodeQueueSize,
             canvasConnected: canvas.isConnected,
+            renderSurfaceConnected: canvas.isConnected,
+            renderSurfaceHealthy: true,
+            lastDecodedFrameAtMs: now,
             decodedFrameFormat: frame.format ?? null,
             pixelProbeLuma,
+            pixelProbeAverageLuma,
+            pixelProbeDarkRatio,
+            pixelProbeCenterAverageLuma,
+            pixelProbeCenterDarkRatio,
+            pixelProbeBrightRatio,
+            pixelProbeEdgeRatio,
+            pixelProbeSequence,
+            pixelProbeDecodedOutputCount,
             lastPixelProbeAtMs,
             lastMediaEvent: "webcodecs:frame",
             lastMediaEventAtMs: performance.now(),

@@ -11,6 +11,14 @@ export type ReceiverRuntimeState = "idle" | "priming" | "ready" | "streaming";
 export type ReceiverTransport = "fixture" | "airplayserver";
 export type PreviewDeliveryMode = "static-paths" | "command-stream";
 
+export type VideoGeometrySnapshot = {
+  sourceWidth: number;
+  sourceHeight: number;
+  outputWidth: number;
+  outputHeight: number;
+  orientation: "portrait" | "landscape";
+};
+
 export type PreviewStreamDescriptor = {
   streamId: string;
   configGeneration: number;
@@ -32,6 +40,9 @@ export type ReceiverRuntimeSnapshot = {
   streamId: string;
   queuedSegments: number;
   senderVolumeDb: number | null;
+  videoSenderPaused: boolean;
+  videoGeometry: VideoGeometrySnapshot | null;
+  orientationRevision: number;
   lastError: string | null;
 };
 
@@ -79,6 +90,9 @@ export const initialReceiverRuntime: ReceiverRuntimeSnapshot = {
   streamId: "fixture-preview-stream",
   queuedSegments: 0,
   senderVolumeDb: null,
+  videoSenderPaused: false,
+  videoGeometry: null,
+  orientationRevision: 0,
   lastError: null,
 };
 
@@ -103,8 +117,8 @@ export const initialPreviewDiagnostics: PreviewDiagnosticsSnapshot = {
 
 export const initialBonjourStatus: BonjourStatusSnapshot = {
   status: "unknown",
-  serviceName: "Bonjour Service",
-  detail: "Checking Bonjour availability...",
+  serviceName: "MirrorSim Discovery",
+  detail: "Checking built-in AirPlay discovery...",
 };
 
 export const initialPairingStatus: PairingSnapshot = {

@@ -106,6 +106,9 @@ impl Default for SessionStore {
                 stream_id: remux_blueprint.stream_id.clone(),
                 queued_segments: 0,
                 sender_volume_db: None,
+                video_sender_paused: false,
+                video_geometry: None,
+                orientation_revision: 0,
                 last_error: None,
             },
             preview_diagnostics: PreviewDiagnosticsSnapshot {
@@ -344,6 +347,8 @@ pub(crate) fn reset_fixture_transport(store: &mut SessionStore) {
     store.receiver_runtime.transport = ReceiverTransport::Fixture;
     store.receiver_runtime.stream_id = remux_blueprint.stream_id;
     store.receiver_runtime.sender_volume_db = None;
+    store.receiver_runtime.video_sender_paused = false;
+    store.receiver_runtime.video_geometry = None;
     reset_preview_diagnostics(store, ReceiverTransport::Fixture, true);
 }
 
@@ -360,6 +365,8 @@ pub(crate) fn prepare_live_transport(store: &mut SessionStore, stream_id: String
     store.receiver_runtime.transport = ReceiverTransport::Airplayserver;
     store.receiver_runtime.stream_id = stream_id;
     store.receiver_runtime.sender_volume_db = None;
+    store.receiver_runtime.video_sender_paused = false;
+    store.receiver_runtime.video_geometry = None;
     reset_preview_diagnostics(store, ReceiverTransport::Airplayserver, false);
 }
 

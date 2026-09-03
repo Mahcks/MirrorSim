@@ -212,10 +212,23 @@ pub(crate) struct ReceiverRuntimeSnapshot {
     pub(crate) stream_id: String,
     pub(crate) queued_segments: usize,
     pub(crate) sender_volume_db: Option<f32>,
+    pub(crate) video_sender_paused: bool,
+    pub(crate) video_geometry: Option<VideoGeometrySnapshot>,
+    pub(crate) orientation_revision: u64,
     pub(crate) last_error: Option<String>,
 }
 
-#[derive(Clone, Copy, Serialize, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct VideoGeometrySnapshot {
+    pub(crate) source_width: u32,
+    pub(crate) source_height: u32,
+    pub(crate) output_width: u32,
+    pub(crate) output_height: u32,
+    pub(crate) orientation: String,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "kebab-case")]
 pub(crate) enum BonjourStatusKind {
     Ready,
@@ -338,6 +351,17 @@ pub(crate) enum SidecarEvent {
         stream_id: String,
         volume_db: f32,
     },
+    VideoSenderStateChanged {
+        stream_id: String,
+        paused: bool,
+    },
+    VideoGeometryChanged {
+        stream_id: String,
+        source_width: u32,
+        source_height: u32,
+        output_width: u32,
+        output_height: u32,
+    },
     StreamDiscontinuity {
         stream_id: String,
         reason: String,
@@ -407,6 +431,42 @@ mod tests {
             }
             _ => panic!("unexpected sidecar event"),
         }
+    }
+
+    #[test]
+    fn parses_video_geometry_event_from_the_jsonl_contract() {
+        let event: SidecarEvent = serde_json::from_str(
+            r#"{"name":"video_geometry_changed","stream_id":"stream-1","source_width":1179,"source_height":2556,"output_width":393,"output_height":852}"#,
+        )
+        .expect("video geometry event should parse");
+
+        match event {
+            SidecarEvent::VideoGeometryChanged {
+                stream_id,
+                source_width,
+                source_height,
+                ..
+            } => {
+                assert_eq!(stream_id, "stream-1");
+                assert_eq!((source_width, source_height), (1179, 2556));
+            }
+            _ => panic!("unexpected sidecar event"),
+        }
+    }
+
+    #[test]
+    fn parses_video_sender_state_from_the_jsonl_contract() {
+        let event = serde_json::from_str::<SidecarEvent>(
+            r#"{"name":"video_sender_state_changed","stream_id":"stream-1","paused":true}"#,
+        )
+        .expect("video sender state should parse");
+        assert!(matches!(
+            event,
+            SidecarEvent::VideoSenderStateChanged {
+                stream_id,
+                paused: true,
+            } if stream_id == "stream-1"
+        ));
     }
 }
 

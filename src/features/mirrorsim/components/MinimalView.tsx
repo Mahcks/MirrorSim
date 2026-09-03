@@ -187,7 +187,7 @@ export function MinimalView({
             role={commandError ? "alert" : "status"}
             aria-live={commandError ? "assertive" : "polite"}
             className={cn(
-              "pointer-events-auto max-h-32 select-text overflow-y-auto whitespace-pre-wrap break-words rounded-lg border px-3 py-2 text-[11px] font-medium leading-4 shadow-2xl backdrop-blur",
+              "pointer-events-auto max-h-32 select-text overflow-y-auto whitespace-pre-wrap wrap-break-word rounded-lg border px-3 py-2 text-[11px] font-medium leading-4 shadow-2xl backdrop-blur",
               commandError
                 ? "border-red-400/25 bg-red-950/85 text-red-100"
                 : "border-emerald-300/20 bg-[#101418]/90 text-emerald-100",

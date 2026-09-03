@@ -6,6 +6,7 @@ import {
   clearRetainedPreviewFrame,
   getRetainedPreviewFrame,
   retainPreviewFrame,
+  summarizePreviewPixels,
 } from "../src/mockPreviewStream";
 
 describe("preview media binary transport", () => {
@@ -98,5 +99,36 @@ describe("retained preview frames", () => {
 
     clearRetainedPreviewFrame(video);
     expect(getRetainedPreviewFrame(video)).toBeNull();
+  });
+});
+
+describe("preview pixel probe", () => {
+  test("recognizes a nearly black surface with sparse bright controls", () => {
+    const pixels = new Uint8ClampedArray(100 * 4);
+    for (let pixel = 0; pixel < 5; pixel += 1) {
+      pixels[pixel * 4] = 255;
+      pixels[pixel * 4 + 1] = 255;
+      pixels[pixel * 4 + 2] = 255;
+      pixels[pixel * 4 + 3] = 255;
+    }
+
+    const summary = summarizePreviewPixels(pixels);
+
+    expect(summary.darkPixelRatio).toBe(0.95);
+    expect(summary.averageLuma).toBeCloseTo(12.75);
+  });
+
+  test("does not classify ordinary visible content as nearly black", () => {
+    const pixels = new Uint8ClampedArray([
+      0, 0, 0, 255,
+      60, 70, 80, 255,
+      200, 180, 160, 255,
+      255, 255, 255, 255,
+    ]);
+
+    const summary = summarizePreviewPixels(pixels);
+
+    expect(summary.darkPixelRatio).toBe(0.25);
+    expect(summary.averageLuma).toBeGreaterThan(100);
   });
 });

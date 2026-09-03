@@ -68,7 +68,7 @@ pub struct ReceiverSidecarSpec {
 impl ReceiverSidecarSpec {
     pub fn direct_receiver_boundary() -> Self {
         Self {
-            protocol_version: String::from("0.7.0"),
+            protocol_version: String::from("0.8.0"),
             launch: SidecarLaunchSpec {
                 executable: String::from("receivers/AirPlayServer/MirrorSimAdapter.exe"),
                 args: vec![],
@@ -140,6 +140,16 @@ impl ReceiverSidecarSpec {
                     description: String::from("Reports the sender's AirPlay playback attenuation in decibels."),
                 },
                 SidecarEventSpec {
+                    name: String::from("video_sender_state_changed"),
+                    payload_shape: String::from("{ streamId, paused }"),
+                    description: String::from("Reports typed sender pause/resume transport state without treating it as proof of DRM."),
+                },
+                SidecarEventSpec {
+                    name: String::from("video_geometry_changed"),
+                    payload_shape: String::from("{ streamId, sourceWidth, sourceHeight, outputWidth, outputHeight }"),
+                    description: String::from("Reports receiver-provided phone rotation and video geometry without inferring orientation from media dimensions."),
+                },
+                SidecarEventSpec {
                     name: String::from("stream_discontinuity"),
                     payload_shape: String::from("{ streamId, reason, requiresInitSegmentRefresh }"),
                     description: String::from("Signals timestamp resets, transport loss, or decoder config changes that require a remux reset."),
@@ -176,7 +186,7 @@ mod tests {
     fn direct_receiver_boundary_prefers_stdio_jsonl() {
         let spec = ReceiverSidecarSpec::direct_receiver_boundary();
 
-        assert_eq!(spec.protocol_version, "0.7.0");
+        assert_eq!(spec.protocol_version, "0.8.0");
         assert_eq!(
             spec.launch.transport,
             SidecarProcessTransport::StdioJsonLines
@@ -190,6 +200,14 @@ mod tests {
             .events
             .iter()
             .any(|event| event.name == "audio_volume_changed"));
+        assert!(spec
+            .events
+            .iter()
+            .any(|event| event.name == "video_sender_state_changed"));
+        assert!(spec
+            .events
+            .iter()
+            .any(|event| event.name == "video_geometry_changed"));
         assert_eq!(spec.audio_packet.encoding, "signed-pcm-16");
         assert!(spec
             .commands

@@ -1,3 +1,4 @@
+use crate::discovery::{discovery_status, refresh_discovery, start_discovery, stop_discovery};
 use crate::history::{
     export_diagnostics_value, get_connection_history as get_saved_connection_history,
     now_unix_timestamp,
@@ -10,10 +11,9 @@ use crate::models::{
     SaveScreenshotRequest, SavedScreenshot, SessionSnapshot, SessionStatus, TrustedDevice,
 };
 use crate::runtime::{
-    bonjour_blocking_message, emit_pairing_status, emit_preview_diagnostics, emit_receiver_runtime,
-    emit_runtime_error, emit_session_status, emit_state_updates, ensure_bonjour_ready,
-    ensure_sidecar_runtime, query_bonjour_status, resolve_capture_directory, send_sidecar_command,
-    stop_sidecar_runtime, AppState, PendingAppUpdate, RecordingFileRuntime,
+    emit_pairing_status, emit_preview_diagnostics, emit_receiver_runtime, emit_runtime_error,
+    emit_session_status, emit_state_updates, ensure_sidecar_runtime, resolve_capture_directory,
+    send_sidecar_command, stop_sidecar_runtime, AppState, PendingAppUpdate, RecordingFileRuntime,
 };
 use crate::sidecar::ReceiverSidecarSpec;
 use crate::state::{
@@ -441,6 +441,7 @@ fn stop_session_inner(
     app: &AppHandle,
     state: &State<'_, AppState>,
 ) -> CommandResult<SessionSnapshot> {
+    stop_discovery(&state.discovery);
     let active_session_id = {
         let guard = state.inner.lock().map_err(|error| error.to_string())?;
         guard.active_session_id.clone()
@@ -851,11 +852,6 @@ pub(crate) fn start_session(
     require_local_approval: Option<bool>,
     require_known_device: Option<bool>,
 ) -> CommandResult<SessionSnapshot> {
-    if let Err(error) = ensure_bonjour_ready() {
-        emit_runtime_error(&app, &state.inner, error.clone(), false)?;
-        return Err(error);
-    }
-
     let sidecar_was_running = state
         .sidecar
         .lock()
@@ -935,14 +931,26 @@ pub(crate) fn start_session(
             &state.sidecar,
             json!({
                 "name": "start_session",
-                "session_id": session_id,
-                "expected_stream_id": stream_id,
+                "session_id": session_id.as_str(),
+                "expected_stream_id": stream_id.as_str(),
                 "device_hint": snapshot.device_name,
-                "receiver_name": receiver_name,
+                "receiver_name": receiver_name.as_deref(),
                 "trusted_device_ids": trusted_device_ids,
                 "blocked_device_ids": blocked_device_ids,
             }),
         ) {
+            emit_runtime_error(&app, &state.inner, error.clone(), false)?;
+            return Err(error);
+        }
+
+        if let Err(error) = start_discovery(&app, &state.discovery, receiver_name.as_deref()) {
+            let _ = send_sidecar_command(
+                &state.sidecar,
+                json!({
+                    "name": "stop_session",
+                    "session_id": session_id,
+                }),
+            );
             emit_runtime_error(&app, &state.inner, error.clone(), false)?;
             return Err(error);
         }
@@ -959,11 +967,7 @@ pub(crate) fn reconnect_session(
     require_local_approval: Option<bool>,
     require_known_device: Option<bool>,
 ) -> CommandResult<SessionSnapshot> {
-    if let Err(error) = ensure_bonjour_ready() {
-        emit_runtime_error(&app, &state.inner, error.clone(), false)?;
-        return Err(error);
-    }
-
+    stop_discovery(&state.discovery);
     let active_session_id = {
         let guard = state.inner.lock().map_err(|error| error.to_string())?;
         guard.active_session_id.clone()
@@ -1043,14 +1047,26 @@ pub(crate) fn reconnect_session(
         &state.sidecar,
         json!({
             "name": "start_session",
-            "session_id": session_id,
-            "expected_stream_id": stream_id,
+            "session_id": session_id.as_str(),
+            "expected_stream_id": stream_id.as_str(),
             "device_hint": snapshot.device_name,
-            "receiver_name": receiver_name,
+            "receiver_name": receiver_name.as_deref(),
             "trusted_device_ids": trusted_device_ids,
             "blocked_device_ids": blocked_device_ids,
         }),
     ) {
+        emit_runtime_error(&app, &state.inner, error.clone(), false)?;
+        return Err(error);
+    }
+
+    if let Err(error) = start_discovery(&app, &state.discovery, receiver_name.as_deref()) {
+        let _ = send_sidecar_command(
+            &state.sidecar,
+            json!({
+                "name": "stop_session",
+                "session_id": session_id,
+            }),
+        );
         emit_runtime_error(&app, &state.inner, error.clone(), false)?;
         return Err(error);
     }
@@ -1351,8 +1367,8 @@ pub(crate) fn stop_recording(
 }
 
 #[tauri::command]
-pub(crate) fn get_bonjour_status() -> BonjourStatusSnapshot {
-    query_bonjour_status()
+pub(crate) fn get_bonjour_status(state: State<'_, AppState>) -> BonjourStatusSnapshot {
+    discovery_status(&state.discovery)
 }
 
 #[tauri::command]
@@ -1737,7 +1753,7 @@ pub(crate) fn export_diagnostics_report(
 ) -> CommandResult<DiagnosticsExport> {
     let history = get_saved_connection_history(&app)?;
     let trusted_devices = get_trusted_devices_from_registry(&app)?;
-    let bonjour = query_bonjour_status();
+    let bonjour = discovery_status(&state.discovery);
     let (
         session,
         pairing,
@@ -1791,13 +1807,23 @@ pub(crate) fn export_diagnostics_report(
 pub(crate) fn refresh_receiver_readiness(
     app: AppHandle,
     state: State<'_, AppState>,
+    receiver_name: Option<String>,
 ) -> CommandResult<ReceiverRuntimeSnapshot> {
-    let bonjour = query_bonjour_status();
+    let session_active = {
+        let guard = state.inner.lock().map_err(|error| error.to_string())?;
+        !matches!(guard.snapshot.status, SessionStatus::Idle)
+    };
+    if session_active {
+        if let Err(error) = refresh_discovery(&app, &state.discovery, receiver_name.as_deref()) {
+            emit_runtime_error(&app, &state.inner, error.clone(), true)?;
+            return Err(error);
+        }
+    }
 
     let receiver_runtime = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
-        if matches!(guard.snapshot.status, SessionStatus::Idle) {
-            guard.receiver_runtime.last_error = bonjour_blocking_message(&bonjour);
+        if !session_active {
+            guard.receiver_runtime.last_error = None;
         }
         guard.receiver_runtime.clone()
     };
@@ -1937,7 +1963,7 @@ mod tests {
         store.snapshot.device_name = String::from("Max's iPhone");
         store.snapshot.current_device_id = Some(String::from("phone-id"));
         store.snapshot.receiver_id = Some(String::from("MirrorSim"));
-        store.snapshot.receiver_protocol_version = Some(String::from("0.7.0"));
+        store.snapshot.receiver_protocol_version = Some(String::from("0.8.0"));
         store.snapshot.receiver_capabilities = vec![String::from("pairing-trust-control")];
 
         mark_session_stopped(&mut store);

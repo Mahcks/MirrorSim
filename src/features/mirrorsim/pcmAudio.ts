@@ -42,6 +42,18 @@ export function mixPcmChannelsToMono(channels: Float32Array[]): Float32Array[] {
   return [mono];
 }
 
+export function pcmRms(channels: Float32Array[]) {
+  let energy = 0;
+  let sampleCount = 0;
+  for (const channel of channels) {
+    for (const sample of channel) {
+      energy += sample * sample;
+      sampleCount += 1;
+    }
+  }
+  return sampleCount > 0 ? Math.sqrt(energy / sampleCount) : 0;
+}
+
 function repairEffectivelySilentStereoChannel(samples: Float32Array[]) {
   if (samples.length !== 2 || samples[0].length < 128) return;
 

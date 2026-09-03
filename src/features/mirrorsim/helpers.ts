@@ -187,6 +187,7 @@ export function mergeStoredPreferences(stored: StoredPreferences | null) {
       useOpaqueWindowBackground: booleanOr(app?.useOpaqueWindowBackground, defaultAppPreferences.useOpaqueWindowBackground),
       rememberLastMode: booleanOr(app?.rememberLastMode, defaultAppPreferences.rememberLastMode),
       rememberLastOrientation: booleanOr(app?.rememberLastOrientation, defaultAppPreferences.rememberLastOrientation),
+      autoRotateFromIphone: booleanOr(app?.autoRotateFromIphone, defaultAppPreferences.autoRotateFromIphone),
       keepMinimalOnTop: booleanOr(app?.keepMinimalOnTop, defaultAppPreferences.keepMinimalOnTop),
       autoRevealSavedCaptures: booleanOr(app?.autoRevealSavedCaptures, defaultAppPreferences.autoRevealSavedCaptures),
       screenshotFlashEnabled: booleanOr(app?.screenshotFlashEnabled, defaultAppPreferences.screenshotFlashEnabled),
