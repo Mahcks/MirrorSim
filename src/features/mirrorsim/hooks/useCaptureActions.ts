@@ -279,11 +279,12 @@ export function useCaptureActions({
       recordingRenderCleanupRef.current = null;
       throw new Error("The preview surface cannot be captured for recording here.");
     }
-    if (recordingAudioTrack) {
+    const includeRecordingAudio = recordingSettings.includeAudio && recordingAudioTrack !== null;
+    if (includeRecordingAudio) {
       previewCaptureStream.addTrack(recordingAudioTrack.clone());
     }
 
-    const mimeType = getRecordingMimeType(Boolean(recordingAudioTrack));
+    const mimeType = getRecordingMimeType(includeRecordingAudio);
     const mediaRecorder = mimeType
       ? new MediaRecorder(previewCaptureStream, { mimeType })
       : new MediaRecorder(previewCaptureStream);

@@ -1937,7 +1937,7 @@ mod tests {
         store.snapshot.device_name = String::from("Max's iPhone");
         store.snapshot.current_device_id = Some(String::from("phone-id"));
         store.snapshot.receiver_id = Some(String::from("MirrorSim"));
-        store.snapshot.receiver_protocol_version = Some(String::from("0.6.0"));
+        store.snapshot.receiver_protocol_version = Some(String::from("0.7.0"));
         store.snapshot.receiver_capabilities = vec![String::from("pairing-trust-control")];
 
         mark_session_stopped(&mut store);

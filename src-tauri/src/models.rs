@@ -211,6 +211,7 @@ pub(crate) struct ReceiverRuntimeSnapshot {
     pub(crate) transport: ReceiverTransport,
     pub(crate) stream_id: String,
     pub(crate) queued_segments: usize,
+    pub(crate) sender_volume_db: Option<f32>,
     pub(crate) last_error: Option<String>,
 }
 
@@ -333,6 +334,10 @@ pub(crate) enum SidecarEvent {
         #[serde(rename = "payloadBase64")]
         payload_base64: String,
     },
+    AudioVolumeChanged {
+        stream_id: String,
+        volume_db: f32,
+    },
     StreamDiscontinuity {
         stream_id: String,
         reason: String,
@@ -379,6 +384,30 @@ pub(crate) struct RecordingWriteSession {
     pub(crate) recording_id: u64,
     pub(crate) file_name: String,
     pub(crate) file_path: String,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::SidecarEvent;
+
+    #[test]
+    fn parses_sender_volume_event_from_the_jsonl_contract() {
+        let event: SidecarEvent = serde_json::from_str(
+            r#"{"name":"audio_volume_changed","stream_id":"stream-1","volume_db":-12.5}"#,
+        )
+        .expect("sender volume event should parse");
+
+        match event {
+            SidecarEvent::AudioVolumeChanged {
+                stream_id,
+                volume_db,
+            } => {
+                assert_eq!(stream_id, "stream-1");
+                assert_eq!(volume_db, -12.5);
+            }
+            _ => panic!("unexpected sidecar event"),
+        }
+    }
 }
 
 #[derive(Serialize)]

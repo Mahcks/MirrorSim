@@ -142,7 +142,7 @@ Default filenames:
 - Screenshots: `mirrorsim_screenshot_YYYYMMDD_HHMMSS.png`
 - Recordings: `mirrorsim_recording_YYYYMMDD_HHMMSS.webm`
 
-Preferences let you choose whether screenshots save to disk, copy to clipboard, or both. You can also change the screenshot and recording folders and independently include the device frame in each export type. Muting local playback does not remove iPhone audio from new recordings.
+Preferences let you choose whether screenshots save to disk, copy to clipboard, or both. You can also change the screenshot and recording folders and independently include the device frame in each export type. The Audio section can follow the iPhone volume buttons, apply a separate MirrorSim master level, switch to mono compatibility, and include or omit full-level iPhone audio in new recordings. Playback controls never change Windows system volume or reduce recorded audio.
 
 ---
 
@@ -177,7 +177,7 @@ Preview presets tune the desktop playback surface. They do not change the iPhone
 
 MirrorSim is focused on screen mirroring.
 
-- iPhone audio playback and recording require the bundled protocol `0.6.0` receiver runtime. Use the speaker control once if Windows suspends audio until a user gesture.
+- iPhone audio playback, recording, and phone-volume following require the bundled protocol `0.7.0` receiver runtime. Use the speaker control once if Windows suspends audio until a user gesture.
 - DRM-protected video playback is not supported and may appear black.
 - Rotation is manual because the receiver currently does not provide a trustworthy phone-orientation signal; a media app can publish landscape video while the phone remains portrait.
 - AirPlay discovery depends on Bonjour and local network/firewall conditions.

@@ -4,10 +4,11 @@ MirrorSim v0.1.4 adds local iPhone audio, presentation-ready framed exports, and
 
 ## Highlights
 
-- Plays decoded iPhone audio locally with mute and volume controls in Console, Minimal, and Preferences.
-- Includes iPhone audio in new `.webm` recordings even when local playback is muted.
+- Plays decoded iPhone audio locally with mute and master-volume controls in Console, Minimal, and Preferences.
+- Optionally follows the iPhone volume buttons using AirPlay's decibel attenuation without changing Windows system volume.
+- Adds stereo and mono-compatibility playback plus a separate option to include full-level iPhone audio in new `.webm` recordings.
 - Adds independent **Include device frame** options for screenshots and recordings.
-- Splits Preferences into General, Capture, Connection, Devices, and Support sections.
+- Splits Preferences into General, Audio, Capture, Connection, Devices, and Support sections.
 - Adds About & Support with the installed version, a manual update check, project and issue links, licensing, privacy behavior, and known limitations.
 - Uses genuine Windows fullscreen instead of maximizing the app window.
 - Lets update notices be hidden until the next launch.
@@ -49,7 +50,7 @@ MirrorSim v0.1.4 adds local iPhone audio, presentation-ready framed exports, and
 
 ## Receiver requirement
 
-This release requires AirPlayServer adapter protocol `0.6.0` with the `pcm-audio` capability. Publish and pin the matching AirPlayServer runtime release before tagging MirrorSim v0.1.4.
+This release requires AirPlayServer adapter protocol `0.7.0` with the `pcm-audio` and `sender-volume` capabilities. Publish and pin the matching AirPlayServer runtime release before tagging MirrorSim v0.1.4.
 
 ## Install
 

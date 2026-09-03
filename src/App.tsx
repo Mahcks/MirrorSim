@@ -190,11 +190,15 @@ export default function App() {
   });
 
   const audioAvailable = session.receiverCapabilities.includes("pcm-audio");
-  const { audioState, audioError, primeAudio, recordingAudioTrack } = usePreviewAudio({
+  const senderVolumeSupported = session.receiverCapabilities.includes("sender-volume");
+  const { audioState, audioError, effectiveVolume, primeAudio, recordingAudioTrack } = usePreviewAudio({
     available: audioAvailable,
     isLive: session.status === "mirroring" || session.status === "recording",
     muted: appPreferences.audioMuted,
     volume: appPreferences.audioVolume,
+    followIphoneVolume: appPreferences.followIphoneVolume && senderVolumeSupported,
+    senderVolumeDb: receiverRuntime.senderVolumeDb,
+    channelMode: appPreferences.audioChannelMode,
   });
   const captureFrameAvailable = canCapturePreviewFrame(
     session.status,
@@ -1400,6 +1404,9 @@ export default function App() {
       updateError={updateError}
       audioAvailable={audioAvailable}
       audioStatus={audioError ? `Audio error: ${audioError}` : audioState === "suspended" ? "Click the speaker control once to enable playback." : audioState === "playing" ? "Receiving iPhone audio." : "Ready for iPhone audio."}
+      senderVolumeSupported={senderVolumeSupported}
+      senderVolumeDb={receiverRuntime.senderVolumeDb}
+      effectiveAudioVolume={effectiveVolume}
       onClose={() => setSettingsOpen(false)}
       setAppPreference={setAppPreference}
       setScreenshotSetting={setScreenshotSetting}
@@ -1484,7 +1491,8 @@ export default function App() {
     ["Bonjour", bonjourStatus.status],
     ["Transport", receiverRuntime.transport],
     ["Config generation", String(previewStream?.configGeneration ?? 0)],
-    ["Audio", audioError ?? (audioAvailable ? audioState : "unavailable")],
+    ["Audio", audioError ?? (audioAvailable ? `${audioState} · ${Math.round(effectiveVolume * 100)}% effective` : "unavailable")],
+    ["iPhone volume", receiverRuntime.senderVolumeDb === null ? "not reported" : `${receiverRuntime.senderVolumeDb.toFixed(1)} dB`],
     ["Last error", receiverRuntime.lastError ?? surfaceError ?? commandError ?? "—"],
   ];
 

@@ -2,6 +2,7 @@ export type AppMode = "console" | "minimal";
 export type Orientation = "portrait" | "landscape";
 export type PreviewQualityPreset = "quality" | "balanced" | "speed";
 export type ReceiverAccessMode = "ask" | "remember-trusted" | "known-only";
+export type AudioChannelMode = "stereo" | "mono";
 export type SessionState = "idle" | "discovering" | "connecting" | "mirroring" | "recording";
 export type SessionCommand =
   | "get_session_snapshot"
@@ -159,6 +160,7 @@ export type RecordingSettings = {
   includeTimestamp: boolean;
   autoReveal: boolean;
   includeDeviceFrame: boolean;
+  includeAudio: boolean;
 };
 
 export type AppPreferences = {
@@ -176,6 +178,8 @@ export type AppPreferences = {
   openDiagnosticsOnError: boolean;
   audioMuted: boolean;
   audioVolume: number;
+  followIphoneVolume: boolean;
+  audioChannelMode: AudioChannelMode;
   receiverDisplayName: string;
   lastMode: AppMode;
   lastOrientation: Orientation;

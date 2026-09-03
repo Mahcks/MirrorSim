@@ -68,7 +68,7 @@ pub struct ReceiverSidecarSpec {
 impl ReceiverSidecarSpec {
     pub fn direct_receiver_boundary() -> Self {
         Self {
-            protocol_version: String::from("0.6.0"),
+            protocol_version: String::from("0.7.0"),
             launch: SidecarLaunchSpec {
                 executable: String::from("receivers/AirPlayServer/MirrorSimAdapter.exe"),
                 args: vec![],
@@ -135,6 +135,11 @@ impl ReceiverSidecarSpec {
                     description: String::from("Delivers one interleaved signed 16-bit PCM audio frame for local playback and recording."),
                 },
                 SidecarEventSpec {
+                    name: String::from("audio_volume_changed"),
+                    payload_shape: String::from("{ streamId, volumeDb }"),
+                    description: String::from("Reports the sender's AirPlay playback attenuation in decibels."),
+                },
+                SidecarEventSpec {
                     name: String::from("stream_discontinuity"),
                     payload_shape: String::from("{ streamId, reason, requiresInitSegmentRefresh }"),
                     description: String::from("Signals timestamp resets, transport loss, or decoder config changes that require a remux reset."),
@@ -171,7 +176,7 @@ mod tests {
     fn direct_receiver_boundary_prefers_stdio_jsonl() {
         let spec = ReceiverSidecarSpec::direct_receiver_boundary();
 
-        assert_eq!(spec.protocol_version, "0.6.0");
+        assert_eq!(spec.protocol_version, "0.7.0");
         assert_eq!(
             spec.launch.transport,
             SidecarProcessTransport::StdioJsonLines
@@ -181,6 +186,10 @@ mod tests {
             .iter()
             .any(|event| event.name == "video_access_unit"));
         assert!(spec.events.iter().any(|event| event.name == "audio_frame"));
+        assert!(spec
+            .events
+            .iter()
+            .any(|event| event.name == "audio_volume_changed"));
         assert_eq!(spec.audio_packet.encoding, "signed-pcm-16");
         assert!(spec
             .commands

@@ -87,6 +87,7 @@ export const defaultRecordingSettings: RecordingSettings = {
   includeTimestamp: true,
   autoReveal: false,
   includeDeviceFrame: false,
+  includeAudio: true,
 };
 
 export const defaultAppPreferences: AppPreferences = {
@@ -104,6 +105,8 @@ export const defaultAppPreferences: AppPreferences = {
   openDiagnosticsOnError: true,
   audioMuted: false,
   audioVolume: 0.8,
+  followIphoneVolume: true,
+  audioChannelMode: "stereo",
   receiverDisplayName: "MirrorSim",
   lastMode: "minimal",
   lastOrientation: "portrait",

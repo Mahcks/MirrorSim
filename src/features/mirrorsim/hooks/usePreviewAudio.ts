@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from "react";
 
 import { invoke } from "@tauri-apps/api/core";
 
-import type { PreviewAudioFrame } from "../types";
-import { decodePcm16Base64 } from "../pcmAudio";
+import { effectivePlaybackGain } from "../audioVolume";
+import { decodePcm16Base64, mixPcmChannelsToMono } from "../pcmAudio";
+import type { AudioChannelMode, PreviewAudioFrame } from "../types";
 
 type AudioGraph = {
   context: AudioContext;
@@ -17,10 +18,29 @@ type UsePreviewAudioArgs = {
   isLive: boolean;
   muted: boolean;
   volume: number;
+  followIphoneVolume: boolean;
+  senderVolumeDb: number | null;
+  channelMode: AudioChannelMode;
 };
 
-export function usePreviewAudio({ available, isLive, muted, volume }: UsePreviewAudioArgs) {
+export function usePreviewAudio({
+  available,
+  isLive,
+  muted,
+  volume,
+  followIphoneVolume,
+  senderVolumeDb,
+  channelMode,
+}: UsePreviewAudioArgs) {
   const graphRef = useRef<AudioGraph | null>(null);
+  const effectiveVolume = effectivePlaybackGain({
+    muted,
+    masterVolume: volume,
+    followIphoneVolume,
+    senderVolumeDb,
+  });
+  const initialPlaybackGainRef = useRef(effectiveVolume);
+  initialPlaybackGainRef.current = effectiveVolume;
   const nextPlayTimeRef = useRef(0);
   const lastPtsRef = useRef<number | null>(null);
   const scheduledSourcesRef = useRef(new Set<AudioBufferSourceNode>());
@@ -50,7 +70,7 @@ export function usePreviewAudio({ available, isLive, muted, volume }: UsePreview
     const recordingDestination = context.createMediaStreamDestination();
     playbackGain.connect(context.destination);
     recordingGain.connect(recordingDestination);
-    playbackGain.gain.value = muted ? 0 : volume;
+    playbackGain.gain.value = initialPlaybackGainRef.current;
     recordingGain.gain.value = 1;
 
     const graph = { context, playbackGain, recordingGain, recordingDestination };
@@ -58,7 +78,7 @@ export function usePreviewAudio({ available, isLive, muted, volume }: UsePreview
     setRecordingAudioTrack(recordingDestination.stream.getAudioTracks()[0] ?? null);
     setAudioState(context.state === "running" ? "ready" : "suspended");
     return graph;
-  }, [muted, volume]);
+  }, []);
 
   const primeAudio = useCallback(async () => {
     try {
@@ -77,8 +97,8 @@ export function usePreviewAudio({ available, isLive, muted, volume }: UsePreview
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
-    graph.playbackGain.gain.setTargetAtTime(muted ? 0 : volume, graph.context.currentTime, 0.015);
-  }, [muted, volume]);
+    graph.playbackGain.gain.setTargetAtTime(effectiveVolume, graph.context.currentTime, 0.015);
+  }, [effectiveVolume]);
 
   useEffect(() => {
     if (!available) {
@@ -115,12 +135,15 @@ export function usePreviewAudio({ available, isLive, muted, volume }: UsePreview
             continue;
           }
           const decodedChannels = decodePcm16Base64(frame.payloadBase64, frame.channels);
-          const sampleCount = decodedChannels[0]?.length ?? 0;
+          const outputChannels = channelMode === "mono"
+            ? mixPcmChannelsToMono(decodedChannels)
+            : decodedChannels;
+          const sampleCount = outputChannels[0]?.length ?? 0;
           if (sampleCount <= 0) continue;
 
-          const buffer = graph.context.createBuffer(frame.channels, sampleCount, frame.sampleRate);
-          for (let channel = 0; channel < frame.channels; channel += 1) {
-            buffer.copyToChannel(decodedChannels[channel], channel);
+          const buffer = graph.context.createBuffer(outputChannels.length, sampleCount, frame.sampleRate);
+          for (let channel = 0; channel < outputChannels.length; channel += 1) {
+            buffer.getChannelData(channel).set(outputChannels[channel]);
           }
 
           const now = graph.context.currentTime;
@@ -166,7 +189,7 @@ export function usePreviewAudio({ available, isLive, muted, volume }: UsePreview
       cancelled = true;
       if (timerId !== null) window.clearTimeout(timerId);
     };
-  }, [available, ensureGraph, isLive, stopScheduledSources]);
+  }, [available, channelMode, ensureGraph, isLive, stopScheduledSources]);
 
   useEffect(() => () => {
     stopScheduledSources();
@@ -174,5 +197,5 @@ export function usePreviewAudio({ available, isLive, muted, volume }: UsePreview
     graphRef.current = null;
   }, [stopScheduledSources]);
 
-  return { audioState, audioError, primeAudio, recordingAudioTrack };
+  return { audioState, audioError, effectiveVolume, primeAudio, recordingAudioTrack };
 }

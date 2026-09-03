@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 
 import type {
+  AudioChannelMode,
   AppMode,
   AppPreferences,
   ConnectionHistoryEntry,
@@ -13,6 +14,7 @@ import type {
   SessionSnapshot,
   TrustedDevice,
 } from "@/features/mirrorsim/types";
+import { formatAirPlayVolume } from "@/features/mirrorsim/audioVolume";
 import type { BonjourStatusSnapshot, ReceiverRuntimeSnapshot } from "@/receiverContract";
 import { useModalFocus } from "@/features/mirrorsim/hooks/useModalFocus";
 
@@ -36,6 +38,9 @@ type SettingsModalProps = {
   updateError: string | null;
   audioAvailable: boolean;
   audioStatus: string;
+  senderVolumeSupported: boolean;
+  senderVolumeDb: number | null;
+  effectiveAudioVolume: number;
   onClose: () => void;
   setAppPreference: <K extends keyof AppPreferences>(key: K, value: AppPreferences[K]) => void;
   setScreenshotSetting: <K extends keyof ScreenshotSettings>(key: K, value: ScreenshotSettings[K]) => void;
@@ -59,10 +64,11 @@ type SettingsModalProps = {
   onOpenThirdPartyNotices: () => void;
 };
 
-type SettingsSection = "general" | "capture" | "connection" | "devices" | "support";
+type SettingsSection = "general" | "audio" | "capture" | "connection" | "devices" | "support";
 
 const settingsSections: Array<{ id: SettingsSection; label: string }> = [
   { id: "general", label: "General" },
+  { id: "audio", label: "Audio" },
   { id: "capture", label: "Capture" },
   { id: "connection", label: "Connection" },
   { id: "devices", label: "Devices" },
@@ -130,6 +136,9 @@ export function SettingsModal({
   updateError,
   audioAvailable,
   audioStatus,
+  senderVolumeSupported,
+  senderVolumeDb,
+  effectiveAudioVolume,
   onClose,
   setAppPreference,
   setScreenshotSetting,
@@ -398,37 +407,6 @@ export function SettingsModal({
                   : "This is what nearby iPhones see. Use a unique name when more than one PC runs MirrorSim."}
               </p>
             </div>
-            <div className="py-3">
-              <div className="flex items-start justify-between gap-4">
-                <div>
-                  <div className="text-sm text-white/80">iPhone audio</div>
-                  <div className="mt-0.5 text-[11px] text-white/38">
-                    {audioAvailable ? audioStatus : "Requires an audio-capable AirPlay runtime."}
-                  </div>
-                </div>
-                <Toggle
-                  label="Play iPhone audio"
-                  checked={!appPreferences.audioMuted}
-                  onChange={(enabled) => setAppPreference("audioMuted", !enabled)}
-                  disabled={!audioAvailable}
-                />
-              </div>
-              <label className="mt-3 block text-[11px] text-white/45">
-                Playback volume — {Math.round(appPreferences.audioVolume * 100)}%
-                <input
-                  aria-label="iPhone audio volume"
-                  className="mt-2 w-full accent-blue-500 disabled:opacity-40"
-                  type="range"
-                  min="0"
-                  max="1"
-                  step="0.05"
-                  value={appPreferences.audioVolume}
-                  disabled={!audioAvailable}
-                  onChange={(event) => setAppPreference("audioVolume", Number(event.target.value))}
-                />
-              </label>
-              <p className={fieldNote}>Muting playback does not remove audio from new recordings.</p>
-            </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
                 <div className="text-sm text-white/80">Solid window background</div>
@@ -458,6 +436,107 @@ export function SettingsModal({
           <div className={infoBox}>
             Use Rotate in the toolbar when your iPhone changes orientation. MirrorSim deliberately does not infer phone rotation from video dimensions because media apps can publish landscape video while the phone itself remains portrait.
           </div>
+          </>}
+
+          {activeSection === "audio" && <>
+          <div className={`${sectionHeader} pt-5 pb-2`}>Playback</div>
+          <div className={infoBox}>
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-white/38">Status</span>
+              <span className="text-right text-white/72">
+                {audioAvailable ? audioStatus : "Requires an audio-capable AirPlay runtime."}
+              </span>
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-4">
+              <span className="text-white/38">iPhone level</span>
+              <span className="text-right text-white/72">
+                {senderVolumeSupported ? formatAirPlayVolume(senderVolumeDb) : "Not supported by this runtime"}
+              </span>
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-4">
+              <span className="text-white/38">Effective playback</span>
+              <strong className="font-medium text-white/82">{Math.round(effectiveAudioVolume * 100)}%</strong>
+            </div>
+          </div>
+
+          <div className="mt-3 divide-y divide-white/7">
+            <div className="flex items-start justify-between gap-4 py-3">
+              <div>
+                <div className="text-sm text-white/80">Play iPhone audio</div>
+                <div className="mt-0.5 text-[11px] text-white/38">Controls playback inside MirrorSim only.</div>
+              </div>
+              <Toggle
+                label="Play iPhone audio"
+                checked={!appPreferences.audioMuted}
+                onChange={(enabled) => setAppPreference("audioMuted", !enabled)}
+                disabled={!audioAvailable}
+              />
+            </div>
+            <div className="flex items-start justify-between gap-4 py-3">
+              <div>
+                <div className="text-sm text-white/80">Follow iPhone volume</div>
+                <div className="mt-0.5 text-[11px] leading-4 text-white/38">
+                  The iPhone volume buttons adjust stream playback without changing Windows system volume.
+                </div>
+              </div>
+              <Toggle
+                label="Follow iPhone volume buttons"
+                checked={appPreferences.followIphoneVolume}
+                onChange={(value) => setAppPreference("followIphoneVolume", value)}
+                disabled={!audioAvailable || !senderVolumeSupported}
+              />
+            </div>
+            <div className="py-3">
+              <label className="block text-[11px] text-white/45">
+                MirrorSim master volume — {Math.round(appPreferences.audioVolume * 100)}%
+                <input
+                  aria-label="MirrorSim master volume"
+                  className="mt-2 w-full accent-blue-500 disabled:opacity-40"
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={appPreferences.audioVolume}
+                  disabled={!audioAvailable}
+                  onChange={(event) => setAppPreference("audioVolume", Number(event.target.value))}
+                />
+              </label>
+              <p className={fieldNote}>Phone volume and this master level are combined. Desktop mute always wins.</p>
+            </div>
+            <div className="py-3">
+              <div className={fieldLabel}>Channel output</div>
+              <select
+                aria-label="Audio channel output"
+                className={fieldInput}
+                value={appPreferences.audioChannelMode}
+                disabled={!audioAvailable}
+                onChange={(event) => setAppPreference("audioChannelMode", event.target.value as AudioChannelMode)}
+              >
+                <option value="stereo">Stereo</option>
+                <option value="mono">Mono compatibility</option>
+              </select>
+              <p className={fieldNote}>Mono combines both channels and plays them through both speakers.</p>
+            </div>
+          </div>
+
+          <div className={`${sectionHeader} mt-6 pb-2`}>Recording</div>
+          <div className="divide-y divide-white/7">
+            <div className="flex items-start justify-between gap-4 py-3">
+              <div>
+                <div className="text-sm text-white/80">Include iPhone audio</div>
+                <div className="mt-0.5 text-[11px] leading-4 text-white/38">
+                  Adds the incoming audio track to new recordings at its original level.
+                </div>
+              </div>
+              <Toggle
+                label="Include iPhone audio in recordings"
+                checked={recordingSettings.includeAudio}
+                onChange={(value) => setRecordingSetting("includeAudio", value)}
+                disabled={!audioAvailable}
+              />
+            </div>
+          </div>
+          <p className={fieldNote}>Playback mute, phone volume, and master volume do not reduce recorded audio.</p>
           </>}
 
           {activeSection === "capture" && <>

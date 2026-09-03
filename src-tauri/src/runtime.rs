@@ -63,7 +63,7 @@ const KEYFRAME_REQUEST_CAPABILITY: &str = "keyframe-request";
 const MIRROR_TRANSPORT_INTERRUPTED_REASON: &str = "mirror_transport_interrupted";
 const CONNECTING_MEDIA_TIMEOUT: Duration = Duration::from_secs(12);
 const CONNECTING_WATCHDOG_INTERVAL: Duration = Duration::from_millis(250);
-const EXPECTED_RECEIVER_PROTOCOL_VERSION: &str = "0.6.0";
+const EXPECTED_RECEIVER_PROTOCOL_VERSION: &str = "0.7.0";
 const MAX_RECEIVER_EVENT_LINE_BYTES: usize = 12 * 1024 * 1024;
 const MAX_VIDEO_ACCESS_UNIT_BYTES: usize = 8 * 1024 * 1024;
 const MAX_AUDIO_FRAME_BYTES: usize = 1024 * 1024;
@@ -99,6 +99,16 @@ fn media_timeline_restarted(previous_sample_index: Option<u32>, sample_index: u3
 
 fn is_auxiliary_audio_error(code: &str, recoverable: bool) -> bool {
     recoverable && code == "invalid_audio_frame"
+}
+
+fn validate_sender_volume_db(volume_db: f32) -> CommandResult<f32> {
+    if volume_db.is_finite() && (-144.0..=0.0).contains(&volume_db) {
+        Ok(volume_db)
+    } else {
+        Err(String::from(
+            "receiver sent an invalid AirPlay volume level",
+        ))
+    }
 }
 
 fn is_transient_mirror_transport_interruption(reason: &str, requires_refresh: bool) -> bool {
@@ -753,7 +763,8 @@ fn handle_sidecar_event(
     }
 
     if let SidecarEvent::VideoAccessUnit { stream_id, .. }
-    | SidecarEvent::AudioFrame { stream_id, .. } = &event
+    | SidecarEvent::AudioFrame { stream_id, .. }
+    | SidecarEvent::AudioVolumeChanged { stream_id, .. } = &event
     {
         let guard = store.lock().map_err(|error| error.to_string())?;
         if !session_accepts_media(&guard, stream_id) {
@@ -1430,6 +1441,19 @@ fn handle_sidecar_event(
                     },
                 );
                 emit_receiver_runtime = false;
+                emit_preview_diagnostics = false;
+            }
+            SidecarEvent::AudioVolumeChanged {
+                stream_id,
+                volume_db,
+            } => {
+                if !session_accepts_media(&guard, &stream_id)
+                    || guard.pending_local_session_approval
+                {
+                    return Ok(());
+                }
+                guard.receiver_runtime.sender_volume_db =
+                    Some(validate_sender_volume_db(volume_db)?);
                 emit_preview_diagnostics = false;
             }
             SidecarEvent::StreamDiscontinuity {
@@ -2273,8 +2297,8 @@ mod tests {
         needs_local_session_approval, pairing_policy_rejection, read_bounded_line,
         session_accepts_media, should_persist_native_pairing_approval,
         should_reset_sidecar_restart_budget, validate_pairing_event_correlation,
-        ConnectingWatchdogState, PairingEventCorrelation, MIRROR_TRANSPORT_INTERRUPTED_REASON,
-        SIDECAR_RESTART_STABILITY_WINDOW,
+        validate_sender_volume_db, ConnectingWatchdogState, PairingEventCorrelation,
+        MIRROR_TRANSPORT_INTERRUPTED_REASON, SIDECAR_RESTART_STABILITY_WINDOW,
     };
     use crate::models::{PairingPhase, SessionStatus};
     use crate::state::{mark_pairing_challenge_closed, prepare_live_transport, SessionStore};
@@ -2319,6 +2343,16 @@ mod tests {
         assert!(is_auxiliary_audio_error("invalid_audio_frame", true));
         assert!(!is_auxiliary_audio_error("invalid_audio_frame", false));
         assert!(!is_auxiliary_audio_error("video_decode_failed", true));
+    }
+
+    #[test]
+    fn sender_volume_accepts_airplay_attenuation_and_rejects_invalid_values() {
+        assert_eq!(validate_sender_volume_db(0.0), Ok(0.0));
+        assert_eq!(validate_sender_volume_db(-30.0), Ok(-30.0));
+        assert_eq!(validate_sender_volume_db(-144.0), Ok(-144.0));
+        assert!(validate_sender_volume_db(0.1).is_err());
+        assert!(validate_sender_volume_db(-145.0).is_err());
+        assert!(validate_sender_volume_db(f32::NAN).is_err());
     }
 
     #[test]

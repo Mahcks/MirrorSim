@@ -178,6 +178,7 @@ export function mergeStoredPreferences(stored: StoredPreferences | null) {
       includeTimestamp: booleanOr(recordings?.includeTimestamp, defaultRecordingSettings.includeTimestamp),
       autoReveal: booleanOr(recordings?.autoReveal, defaultRecordingSettings.autoReveal),
       includeDeviceFrame: booleanOr(recordings?.includeDeviceFrame, defaultRecordingSettings.includeDeviceFrame),
+      includeAudio: booleanOr(recordings?.includeAudio, defaultRecordingSettings.includeAudio),
     },
     app: {
       launchMode: enumOr(app?.launchMode, ["console", "minimal"], defaultAppPreferences.launchMode),
@@ -194,6 +195,8 @@ export function mergeStoredPreferences(stored: StoredPreferences | null) {
       openDiagnosticsOnError: booleanOr(app?.openDiagnosticsOnError, defaultAppPreferences.openDiagnosticsOnError),
       audioMuted: booleanOr(app?.audioMuted, defaultAppPreferences.audioMuted),
       audioVolume: numberInRangeOr(app?.audioVolume, 0, 1, defaultAppPreferences.audioVolume),
+      followIphoneVolume: booleanOr(app?.followIphoneVolume, defaultAppPreferences.followIphoneVolume),
+      audioChannelMode: enumOr(app?.audioChannelMode, ["stereo", "mono"], defaultAppPreferences.audioChannelMode),
       receiverDisplayName: stringOr(app?.receiverDisplayName, defaultAppPreferences.receiverDisplayName),
       lastMode: enumOr(app?.lastMode, ["console", "minimal"], defaultAppPreferences.lastMode),
       lastOrientation: enumOr(app?.lastOrientation, ["portrait", "landscape"], defaultAppPreferences.lastOrientation),

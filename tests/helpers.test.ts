@@ -93,6 +93,9 @@ test("stored preferences retain defaults for missing sections", () => {
   expect(merged.recordings.fileNamePrefix).toBe(defaultRecordingSettings.fileNamePrefix);
   expect(merged.screenshots.includeDeviceFrame).toBe(false);
   expect(merged.recordings.includeDeviceFrame).toBe(false);
+  expect(merged.recordings.includeAudio).toBe(true);
+  expect(merged.app.followIphoneVolume).toBe(true);
+  expect(merged.app.audioChannelMode).toBe("stereo");
 });
 
 test("invalid stored preference values fall back to safe defaults", () => {

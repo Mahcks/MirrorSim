@@ -29,6 +29,19 @@ export function decodePcm16Base64(payload: string, channels: number) {
   return samples;
 }
 
+export function mixPcmChannelsToMono(channels: Float32Array[]): Float32Array[] {
+  if (channels.length !== 2) {
+    return channels;
+  }
+
+  const sampleCount = Math.min(channels[0].length, channels[1].length);
+  const mono = new Float32Array(sampleCount);
+  for (let sample = 0; sample < sampleCount; sample += 1) {
+    mono[sample] = (channels[0][sample] + channels[1][sample]) / 2;
+  }
+  return [mono];
+}
+
 function repairEffectivelySilentStereoChannel(samples: Float32Array[]) {
   if (samples.length !== 2 || samples[0].length < 128) return;
 

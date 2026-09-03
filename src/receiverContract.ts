@@ -31,6 +31,7 @@ export type ReceiverRuntimeSnapshot = {
   transport: ReceiverTransport;
   streamId: string;
   queuedSegments: number;
+  senderVolumeDb: number | null;
   lastError: string | null;
 };
 
@@ -77,6 +78,7 @@ export const initialReceiverRuntime: ReceiverRuntimeSnapshot = {
   transport: "fixture",
   streamId: "fixture-preview-stream",
   queuedSegments: 0,
+  senderVolumeDb: null,
   lastError: null,
 };
 
