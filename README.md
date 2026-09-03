@@ -177,7 +177,6 @@ Preview presets tune the desktop playback surface. They do not change the iPhone
 
 MirrorSim is focused on screen mirroring.
 
-- iPhone audio playback, recording, and phone-volume following require the bundled protocol `0.7.0` receiver runtime. Use the speaker control once if Windows suspends audio until a user gesture.
 - DRM-protected video playback is not supported and may appear black.
 - Rotation is manual because the receiver currently does not provide a trustworthy phone-orientation signal; a media app can publish landscape video while the phone remains portrait.
 - AirPlay discovery depends on Bonjour and local network/firewall conditions.
@@ -208,6 +207,12 @@ MirrorSim can show Bonjour status in-app and can open the Bonjour download, Wind
 ### Screenshots or recording are not available
 
 The preview must be live and decodable before capture works. If MirrorSim says the live preview is not ready, wait for the iPhone frame to appear or reconnect the session.
+
+### iPhone audio is silent
+
+- Make sure MirrorSim is not muted and its master volume is above zero.
+- If **Follow iPhone volume** is enabled, raise the volume on the iPhone.
+- Select the speaker control once if Windows has paused audio playback until you interact with the app.
 
 ---
 
