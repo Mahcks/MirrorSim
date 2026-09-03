@@ -7,10 +7,16 @@ MirrorSim v0.1.5 is a reliability-focused update for long-running mirroring, app
 - Follows trustworthy receiver-reported phone orientation while keeping manual Rotate as a temporary override.
 - Advertises AirPlay with built-in mDNS, so MirrorSim no longer requires Bonjour for Windows.
 - Distinguishes sender-paused pictures from a conservative protected-surface heuristic without claiming DRM as a certainty.
+- Refines Console and Minimal mode with clearer connection guidance, consistent status states, complete tooltips, and a cleaner command layout.
 - Keeps the existing iPhone audio, phone-volume following, framed captures, recording, fullscreen, updater, and support controls from v0.1.4.
 
 ## Fixed and hardened
 
+- Console mode now keeps its title centered, makes the full empty titlebar draggable, removes duplicate controls, and presents connection steps at a readable size in the Session panel.
+- Listening, mirroring, recording, and error states now use consistent labels and colors without exposing the receiver adapter identifier in primary UI.
+- Preferences can open directly to Capture or Devices, reset scroll position between sections, include a keyboard-shortcut reference, and use a conventional settings cog.
+- Disabled capture controls explain when video must become ready, Minimal controls can be restored from the context menu, and keyboard shortcuts require their intended modifiers.
+- Console capture notices live with Captures, its inspector remains scrollable at small window sizes, and live telemetry reports the actual source resolution.
 - Long Minimal-mode errors wrap and remain readable instead of being truncated.
 - Exported diagnostics redact stable device IDs, trust keys, session IDs, and pairing challenge IDs, including occurrences copied into sidecar logs.
 - Automatic orientation follows receiver-reported source-screen geometry without mistaking a landscape media surface for a rotated phone; manual Rotate remains available as a temporary override.
