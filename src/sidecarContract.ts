@@ -28,10 +28,19 @@ export type VideoAccessUnitPacketSpec = {
   requiresKeyframesForRecovery: boolean;
 };
 
+export type AudioPacketSpec = {
+  encoding: string;
+  byteOrder: string;
+  interleaved: boolean;
+  timestampUnits: string;
+  maximumChannels: number;
+};
+
 export type ReceiverSidecarSpec = {
   protocolVersion: string;
   launch: SidecarLaunchSpec;
   commands: SidecarCommandSpec[];
   events: SidecarEventSpec[];
   videoPacket: VideoAccessUnitPacketSpec;
+  audioPacket: AudioPacketSpec;
 };

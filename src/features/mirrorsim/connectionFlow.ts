@@ -45,6 +45,8 @@ export function getConnectionPresentation({
   const isStartingToListen = pendingSessionCommand === "start_session"
     || pendingSessionCommand === "reconnect_session";
   const receiverIsReady = receiverRuntime.state === "ready" || receiverRuntime.state === "streaming";
+  const mirrorTransportReconnecting = session.status === "connecting"
+    && receiverRuntime.lastError?.includes("mirror-data connection") === true;
   const pairingNeedsAttention = pairing.phase === "pin-required"
     || pairing.phase === "awaiting-trust"
     || pairing.phase === "failed";
@@ -115,6 +117,12 @@ export function getConnectionPresentation({
     secondaryLabel = "Connected via AirPlay";
     titlebarLabel = "Connected";
     tone = "live";
+  } else if (mirrorTransportReconnecting) {
+    headline = `Reconnecting to ${session.currentDeviceNickname ?? session.deviceName}`;
+    supportingText = "The iPhone's video connection was interrupted. MirrorSim is trying to restore it automatically.";
+    secondaryLabel = "Waiting for video to resume";
+    titlebarLabel = "Reconnecting";
+    tone = "active";
   } else if (session.status === "connecting") {
     headline = session.currentDeviceNickname ?? (session.deviceName === "Waiting for iPhone"
       ? "Preparing iPhone preview"
@@ -145,7 +153,7 @@ export function getConnectionPresentation({
     headline = "Mirror your iPhone";
     supportingText = `Start listening, then select ${receiverDisplayName} from Screen Mirroring on your iPhone.`;
     secondaryLabel = "Not listening";
-    titlebarLabel = "Not listening";
+    titlebarLabel = "Stopped";
     tone = "idle";
   }
 
@@ -165,8 +173,10 @@ export function getConnectionPresentation({
       ? "Stop recording"
       : session.status === "discovering"
         ? "Stop listening"
-        : session.status === "connecting"
-          ? "Cancel connection"
+    : session.status === "connecting"
+          ? mirrorTransportReconnecting
+            ? "Disconnect"
+            : "Cancel connection"
           : "Disconnect";
 
   return {

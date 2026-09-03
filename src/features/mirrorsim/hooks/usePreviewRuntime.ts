@@ -8,11 +8,16 @@ import {
   SESSION_STATUS_EVENT,
 } from "@/features/mirrorsim/constants";
 import { fmtError, readBufferedEnd } from "@/features/mirrorsim/helpers";
-import { getLivePlaybackCorrection } from "@/features/mirrorsim/livePlayback";
+import {
+  getLivePlaybackCorrection,
+  getLivePlaybackRecovery,
+} from "@/features/mirrorsim/livePlayback";
 import type { PreviewTelemetry, SessionSnapshot, VideoElementDiag } from "@/features/mirrorsim/types";
 import {
   attachMockPreviewStream,
+  clearRetainedPreviewFrame,
   initialPreviewStreamClientDiagnostics,
+  mountPreviewSurface,
   type MockPreviewStreamStatus,
   type PreviewStreamClientDiagnostics,
 } from "@/mockPreviewStream";
@@ -95,9 +100,42 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
   const [surfaceStatus, setSurfaceStatus] = useState<MockPreviewStreamStatus>("loading");
   const [surfaceError, setSurfaceError] = useState<string | null>(null);
   const [previewRetryNonce, setPreviewRetryNonce] = useState(0);
+  const [videoRecoveryCount, setVideoRecoveryCount] = useState(0);
   const [videoEl, setVideoEl] = useState<HTMLVideoElement | null>(null);
+  const [hasRetainedPreviewFrame, setHasRetainedPreviewFrame] = useState(false);
+  const [documentVisible, setDocumentVisible] = useState(() => document.visibilityState !== "hidden");
   const persistentVideoRef = useRef<HTMLVideoElement | null>(null);
+  const latestDecodedOutputCountRef = useRef(0);
+  const playbackWatchdogRef = useRef({
+    lastCurrentTime: 0,
+    lastTotalVideoFrames: 0,
+    lastMediaAppendCount: 0,
+    lastDecodedOutputCount: 0,
+    lastPresentedFrameCount: 0,
+    lastBackendFrameNumber: 0,
+    lastProgressAtMs: performance.now(),
+    lastDecoderOutputAtMs: performance.now(),
+    lastSegmentAtMs: 0,
+    lastBackendFrameAtMs: 0,
+    lastRecoveryAtMs: 0,
+    wasDocumentHidden: false,
+  });
+  const previewClientReportRef = useRef({
+    diagnostics: initialPreviewStreamClientDiagnostics,
+    surfaceStatus: "loading" as MockPreviewStreamStatus,
+    surfaceError: null as string | null,
+    documentVisible: true,
+  });
   const isLive = session.status === "mirroring" || session.status === "recording";
+  const previewAttachmentKey = previewStream === null
+    ? null
+    : JSON.stringify(previewStream);
+
+  useEffect(() => {
+    const handleVisibilityChange = () => setDocumentVisible(document.visibilityState !== "hidden");
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => document.removeEventListener("visibilitychange", handleVisibilityChange);
+  }, []);
 
   const setVideoHost = useCallback((host: HTMLDivElement | null) => {
     if (!host) {
@@ -118,9 +156,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
       setVideoEl(video);
     }
 
-    if (video.parentElement !== host) {
-      host.appendChild(video);
-    }
+    mountPreviewSurface(video, host);
   }, []);
 
   useEffect(() => {
@@ -267,6 +303,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
 
   useEffect(() => {
     setPreviewClientDiag(initialPreviewStreamClientDiagnostics);
+    latestDecodedOutputCountRef.current = 0;
     setVideoDiag({
       currentTime: 0,
       bufferedEnd: 0,
@@ -278,7 +315,25 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
       droppedVideoFrames: 0,
       playbackRate: 1,
     });
-  }, [previewStream?.streamId]);
+  }, [previewStream?.configGeneration, previewStream?.streamId]);
+
+  useEffect(() => {
+    playbackWatchdogRef.current = {
+      lastCurrentTime: 0,
+      lastTotalVideoFrames: 0,
+      lastMediaAppendCount: 0,
+      lastDecodedOutputCount: 0,
+      lastPresentedFrameCount: 0,
+      lastBackendFrameNumber: 0,
+      lastProgressAtMs: performance.now(),
+      lastDecoderOutputAtMs: performance.now(),
+      lastSegmentAtMs: 0,
+      lastBackendFrameAtMs: 0,
+      lastRecoveryAtMs: 0,
+      wasDocumentHidden: false,
+    };
+    setVideoRecoveryCount(0);
+  }, [previewStream?.configGeneration, previewStream?.streamId]);
 
   useEffect(() => {
     if (!videoEl || !previewStream) {
@@ -293,9 +348,59 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
         }
       },
       onError: (message) => setSurfaceError(message),
-      onDiagnosticsChange: (diagnostics) => setPreviewClientDiag(diagnostics),
+      onDiagnosticsChange: (diagnostics) => {
+        const decoderOutputAdvanced = diagnostics.decodedOutputCount > latestDecodedOutputCountRef.current;
+        latestDecodedOutputCountRef.current = diagnostics.decodedOutputCount;
+        setPreviewClientDiag(diagnostics);
+        if (diagnostics.decodedOutputCount > 0) {
+          setHasRetainedPreviewFrame(true);
+        }
+        if (decoderOutputAdvanced) {
+          setSurfaceStatus((status) => status === "error" ? "ready" : status);
+          setSurfaceError(null);
+        }
+      },
     });
-  }, [previewRetryNonce, previewStream, videoEl]);
+  // Receiver warnings may re-emit an equivalent descriptor object. Key the
+  // attachment by descriptor content so a no-op state refresh cannot tear down
+  // the only live H.264 dependency chain.
+  }, [previewAttachmentKey, previewRetryNonce, videoEl]);
+
+  useEffect(() => {
+    previewClientReportRef.current = {
+      diagnostics: previewClientDiag,
+      surfaceStatus,
+      surfaceError,
+      documentVisible,
+    };
+  }, [documentVisible, previewClientDiag, surfaceError, surfaceStatus]);
+
+  useEffect(() => {
+    if (!isLive) {
+      return;
+    }
+
+    const report = () => {
+      const latest = previewClientReportRef.current;
+      void invoke("report_preview_client_diagnostics", {
+        diagnostics: {
+          ...latest.diagnostics,
+          surfaceStatus: latest.surfaceStatus,
+          surfaceError: latest.surfaceError,
+          documentVisible: latest.documentVisible,
+          streamId: previewStream?.streamId ?? null,
+          configGeneration: previewStream?.configGeneration ?? null,
+          reportedAt: Date.now(),
+        },
+      }).catch((error) => {
+        console.warn("[MirrorSim preview] could not retain client diagnostics", error);
+      });
+    };
+
+    report();
+    const intervalId = window.setInterval(report, 2_000);
+    return () => window.clearInterval(intervalId);
+  }, [isLive, previewStream?.configGeneration, previewStream?.streamId]);
 
   useEffect(() => {
     if (!videoEl) {
@@ -320,7 +425,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
     sync();
     const intervalId = window.setInterval(sync, 500);
     return () => window.clearInterval(intervalId);
-  }, [previewStream?.streamId, surfaceStatus, videoEl]);
+  }, [previewStream?.configGeneration, previewStream?.streamId, surfaceStatus, videoEl]);
 
   useEffect(() => {
     if (!videoEl || surfaceStatus !== "ready") {
@@ -329,6 +434,9 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
 
     if (isLive) {
       void videoEl.play().catch((error) => {
+        if (previewClientDiag.playbackBackend === "webcodecs") {
+          return;
+        }
         setSurfaceError(fmtError(error));
         setSurfaceStatus("error");
       });
@@ -336,14 +444,30 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
     }
 
     videoEl.pause();
-    videoEl.currentTime = 0;
-  }, [isLive, surfaceStatus, videoEl]);
+    if (!videoEl.srcObject) {
+      videoEl.currentTime = 0;
+    }
+  }, [isLive, previewClientDiag.playbackBackend, surfaceStatus, videoEl]);
+
+  useEffect(() => {
+    if ((session.status === "idle" || session.status === "discovering") && videoEl) {
+      clearRetainedPreviewFrame(videoEl);
+      setHasRetainedPreviewFrame(false);
+    }
+  }, [session.status, videoEl]);
 
   useEffect(() => {
     if (!videoEl || !isLive || surfaceStatus !== "ready") {
       if (videoEl && videoEl.playbackRate !== 1) {
         videoEl.playbackRate = 1;
       }
+      return;
+    }
+
+    if (previewClientDiag.playbackBackend === "webcodecs") {
+      // WebCodecs renders directly to the visible canvas. The video element is
+      // only a recording bridge and has no live timeline to seek or accelerate.
+      videoEl.playbackRate = 1;
       return;
     }
 
@@ -360,15 +484,137 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
     }
 
     if (correction.seekTime === null) {
-      return;
+      if (!correction.shouldPlay) {
+        return;
+      }
+    } else {
+      videoEl.currentTime = correction.seekTime;
     }
 
-    videoEl.currentTime = correction.seekTime;
     void videoEl.play().catch((error) => {
       setSurfaceError(fmtError(error));
       setSurfaceStatus("error");
     });
-  }, [isLive, previewPreset.catchupLeadSeconds, previewPreset.catchupTargetOffsetSeconds, surfaceStatus, videoDiag, videoEl]);
+  }, [isLive, previewClientDiag.playbackBackend, previewPreset.catchupLeadSeconds, previewPreset.catchupTargetOffsetSeconds, surfaceStatus, videoDiag, videoEl]);
+
+  useEffect(() => {
+    const watchdog = playbackWatchdogRef.current;
+    const now = performance.now();
+
+    if (!videoEl || !isLive || surfaceStatus !== "ready") {
+      watchdog.lastProgressAtMs = now;
+      watchdog.lastSegmentAtMs = 0;
+      return;
+    }
+
+    if (!documentVisible) {
+      watchdog.wasDocumentHidden = true;
+      watchdog.lastProgressAtMs = now;
+      watchdog.lastDecoderOutputAtMs = now;
+      watchdog.lastSegmentAtMs = now;
+      watchdog.lastCurrentTime = videoDiag.currentTime;
+      watchdog.lastTotalVideoFrames = videoDiag.totalVideoFrames;
+      watchdog.lastMediaAppendCount = previewClientDiag.mediaAppendCount;
+      watchdog.lastDecodedOutputCount = previewClientDiag.decodedOutputCount;
+      watchdog.lastPresentedFrameCount = previewClientDiag.presentedFrameCount;
+      watchdog.lastBackendFrameNumber = preview.frameNumber;
+      return;
+    }
+
+    if (watchdog.wasDocumentHidden) {
+      watchdog.wasDocumentHidden = false;
+      watchdog.lastProgressAtMs = now;
+      watchdog.lastDecoderOutputAtMs = now;
+      watchdog.lastSegmentAtMs = now;
+      watchdog.lastCurrentTime = videoDiag.currentTime;
+      watchdog.lastTotalVideoFrames = videoDiag.totalVideoFrames;
+      watchdog.lastMediaAppendCount = previewClientDiag.mediaAppendCount;
+      watchdog.lastDecodedOutputCount = previewClientDiag.decodedOutputCount;
+      watchdog.lastPresentedFrameCount = previewClientDiag.presentedFrameCount;
+      watchdog.lastBackendFrameNumber = preview.frameNumber;
+      return;
+    }
+
+    const presentedFrameAdvanced = previewClientDiag.presentedFrameCount > watchdog.lastPresentedFrameCount;
+    const playbackAdvanced = previewClientDiag.playbackBackend === "webcodecs"
+      ? presentedFrameAdvanced
+      : videoDiag.currentTime > watchdog.lastCurrentTime + 0.015
+        || videoDiag.totalVideoFrames > watchdog.lastTotalVideoFrames;
+    const decoderOutputAdvanced = previewClientDiag.decodedOutputCount > watchdog.lastDecodedOutputCount;
+    const segmentsAdvanced = previewClientDiag.mediaAppendCount > watchdog.lastMediaAppendCount;
+    const backendFramesAdvanced = preview.frameNumber > watchdog.lastBackendFrameNumber;
+
+    if (playbackAdvanced) {
+      watchdog.lastProgressAtMs = now;
+    }
+    if (segmentsAdvanced) {
+      watchdog.lastSegmentAtMs = now;
+    }
+    if (decoderOutputAdvanced) {
+      watchdog.lastDecoderOutputAtMs = now;
+    }
+    if (backendFramesAdvanced) {
+      watchdog.lastBackendFrameAtMs = now;
+    }
+
+    watchdog.lastCurrentTime = videoDiag.currentTime;
+    watchdog.lastTotalVideoFrames = videoDiag.totalVideoFrames;
+    watchdog.lastMediaAppendCount = previewClientDiag.mediaAppendCount;
+    watchdog.lastDecodedOutputCount = previewClientDiag.decodedOutputCount;
+    watchdog.lastPresentedFrameCount = previewClientDiag.presentedFrameCount;
+    watchdog.lastBackendFrameNumber = preview.frameNumber;
+
+    const receivingSegments = now - watchdog.lastSegmentAtMs < 1_500
+      || now - watchdog.lastBackendFrameAtMs < 1_500;
+    if (
+      previewClientDiag.playbackBackend === "webcodecs"
+      && receivingSegments
+      && previewClientDiag.mediaAppendCount > 0
+      && now - watchdog.lastDecoderOutputAtMs > 3_000
+    ) {
+      setSurfaceError("The live decoder stopped producing frames. Reconnect Screen Mirroring to resume safely.");
+      setSurfaceStatus("error");
+      return;
+    }
+    if (
+      previewClientDiag.playbackBackend === "webcodecs"
+      && receivingSegments
+      && decoderOutputAdvanced
+      && now - watchdog.lastProgressAtMs > 6_000
+    ) {
+      setSurfaceError("The live video surface stopped presenting decoded frames. Reconnect Screen Mirroring to resume safely.");
+      setSurfaceStatus("error");
+      return;
+    }
+
+    const action = getLivePlaybackRecovery({
+      receivingSegments,
+      stalledForMs: now - watchdog.lastProgressAtMs,
+    });
+
+    if (action === "none") {
+      return;
+    }
+    if (now - watchdog.lastRecoveryAtMs < 2_000) {
+      return;
+    }
+    videoEl.playbackRate = 1;
+    void videoEl.play().catch(() => {});
+    watchdog.lastRecoveryAtMs = now;
+    setVideoRecoveryCount((count) => count + 1);
+  }, [
+    documentVisible,
+    isLive,
+    previewClientDiag.mediaAppendCount,
+    previewClientDiag.decodedOutputCount,
+    previewClientDiag.presentedFrameCount,
+    preview.frameNumber,
+    previewPreset.catchupTargetOffsetSeconds,
+    surfaceStatus,
+    videoDiag.currentTime,
+    videoDiag.totalVideoFrames,
+    videoEl,
+  ]);
 
   return {
     initializing,
@@ -385,6 +631,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
     previewDiag,
     previewClientDiag,
     videoDiag,
+    videoRecoveryCount,
     surfaceStatus,
     setSurfaceStatus,
     surfaceError,
@@ -395,6 +642,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
       setPreviewRetryNonce((value) => value + 1);
     },
     videoEl,
+    hasRetainedPreviewFrame,
     setVideoHost,
   };
 }

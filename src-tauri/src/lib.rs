@@ -18,9 +18,12 @@ use crate::commands::{
     get_preview_init_segment, get_preview_stream_descriptor, get_preview_telemetry,
     get_receiver_runtime, get_receiver_sidecar_spec, get_remux_blueprint, get_session_snapshot,
     get_trusted_devices, install_app_update, open_windows_firewall, open_windows_services,
-    reconnect_session, refresh_receiver_readiness, rename_trusted_device, reset_trusted_devices,
-    save_screenshot, set_trusted_device_blocked, start_recording, start_session, stop_recording,
-    stop_session, take_preview_media_segment, take_screenshot, trust_current_device,
+    prepare_preview_decoder_stream, prepare_preview_media_stream, reconnect_session,
+    refresh_receiver_readiness, rename_trusted_device, report_preview_client_diagnostics,
+    reset_trusted_devices, save_screenshot, set_trusted_device_blocked, start_recording,
+    start_session, stop_recording, stop_session, take_preview_audio_frames,
+    take_preview_media_segment, take_preview_video_access_unit, take_screenshot,
+    trust_current_device,
 };
 use crate::runtime::AppState;
 use crate::updater_config::{updater_is_configured, UPDATER_PUBKEY};
@@ -42,7 +45,12 @@ pub fn run() {
             get_preview_telemetry,
             get_preview_stream_descriptor,
             get_preview_init_segment,
+            prepare_preview_decoder_stream,
+            report_preview_client_diagnostics,
+            prepare_preview_media_stream,
             take_preview_media_segment,
+            take_preview_video_access_unit,
+            take_preview_audio_frames,
             get_remux_blueprint,
             get_receiver_sidecar_spec,
             get_receiver_runtime,

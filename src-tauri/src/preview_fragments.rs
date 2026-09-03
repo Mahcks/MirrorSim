@@ -7,6 +7,15 @@ const TRACK_ID: u32 = 1;
 const MIN_SEGMENT_SAMPLES: usize = 4;
 const MAX_QUEUED_SEGMENTS: usize = 45;
 const MAX_QUEUED_SEGMENT_BYTES: usize = 64 * 1024 * 1024;
+// Four samples are normally packed into each segment. Keep enough segments for
+// a long iPhone GOP so a dev/HMR or surface rebuild does not lose its only IDR
+// after just a few seconds; the byte limit remains the primary memory bound.
+const MAX_BOOTSTRAP_SEGMENTS: usize = 900;
+const MAX_BOOTSTRAP_BYTES: usize = 64 * 1024 * 1024;
+const MAX_QUEUED_DECODER_ACCESS_UNITS: usize = 900;
+const MAX_QUEUED_DECODER_BYTES: usize = 64 * 1024 * 1024;
+const MAX_DECODER_BOOTSTRAP_ACCESS_UNITS: usize = 900;
+const MAX_DECODER_BOOTSTRAP_BYTES: usize = 64 * 1024 * 1024;
 const LIVE_TRACK_TIMESCALE: u32 = 1_000_000;
 const DEFAULT_PREVIEW_SAMPLE_DURATION: u32 = 16_667;
 const MAX_PREVIEW_SAMPLE_DURATION: u32 = 50_000;
@@ -23,6 +32,13 @@ pub struct QueuedPreviewSegment {
     pub bytes: Vec<u8>,
 }
 
+#[derive(Clone)]
+pub struct QueuedPreviewAccessUnit {
+    pub sequence_number: u32,
+    pub descriptor: H264AccessUnitDescriptor,
+    pub bytes: Vec<u8>,
+}
+
 pub struct PreviewPushResult {
     pub init_segment_became_available: bool,
     pub sample_enqueued: bool,
@@ -35,12 +51,29 @@ struct ParsedH264Payload {
     contains_idr: bool,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ActivePreviewDelivery {
+    Pending,
+    Mse,
+    Decoder,
+}
+
 pub struct LivePreviewBuffer {
     track: Option<AvcTrackConfig>,
     init_segment: Option<Vec<u8>>,
+    pending_track_config: Option<(AvcTrackConfig, Vec<u8>)>,
     pending_samples: Vec<EncodedAccessUnit>,
     emitted_segments: VecDeque<QueuedPreviewSegment>,
+    latest_decodable_gop: VecDeque<QueuedPreviewSegment>,
+    client_generation: u64,
     queue_requires_random_access: bool,
+    decoder_access_units: VecDeque<QueuedPreviewAccessUnit>,
+    latest_decoder_gop: VecDeque<QueuedPreviewAccessUnit>,
+    decoder_client_generation: u64,
+    decoder_queue_requires_random_access: bool,
+    decoder_random_access_lost: bool,
+    active_delivery: ActivePreviewDelivery,
+    next_decoder_sequence_number: u32,
     next_sequence_number: u32,
     last_emitted_segment: Option<FragmentedMp4SegmentDescriptor>,
     next_media_timestamp: u64,
@@ -51,9 +84,19 @@ impl LivePreviewBuffer {
         Self {
             track: None,
             init_segment: None,
+            pending_track_config: None,
             pending_samples: Vec::new(),
             emitted_segments: VecDeque::new(),
+            latest_decodable_gop: VecDeque::new(),
+            client_generation: 0,
             queue_requires_random_access: false,
+            decoder_access_units: VecDeque::new(),
+            latest_decoder_gop: VecDeque::new(),
+            decoder_client_generation: 0,
+            decoder_queue_requires_random_access: true,
+            decoder_random_access_lost: false,
+            active_delivery: ActivePreviewDelivery::Pending,
+            next_decoder_sequence_number: 0,
             next_sequence_number: 1,
             last_emitted_segment: None,
             next_media_timestamp: 0,
@@ -61,7 +104,14 @@ impl LivePreviewBuffer {
     }
 
     pub fn reset(&mut self) {
+        // A decoder poll from the previous stream may still be in flight while
+        // the session is being reset. Keep both generations monotonic so that
+        // stale clients can never become valid again through an ABA reset.
+        let next_client_generation = self.client_generation.wrapping_add(1).max(1);
+        let next_decoder_generation = self.decoder_client_generation.wrapping_add(1).max(1);
         *self = Self::new();
+        self.client_generation = next_client_generation;
+        self.decoder_client_generation = next_decoder_generation;
     }
 
     pub fn track_config(&self) -> Option<AvcTrackConfig> {
@@ -74,6 +124,86 @@ impl LivePreviewBuffer {
 
     pub fn take_next_segment(&mut self) -> Option<QueuedPreviewSegment> {
         self.emitted_segments.pop_front()
+    }
+
+    pub fn take_next_segment_for_client(
+        &mut self,
+        client_generation: u64,
+    ) -> Option<QueuedPreviewSegment> {
+        if client_generation != self.client_generation {
+            return None;
+        }
+        self.take_next_segment()
+    }
+
+    pub fn prepare_client_stream(&mut self) -> (u64, usize) {
+        self.active_delivery = ActivePreviewDelivery::Mse;
+        self.decoder_client_generation = self.decoder_client_generation.wrapping_add(1).max(1);
+        self.decoder_access_units.clear();
+        self.latest_decoder_gop.clear();
+        self.decoder_random_access_lost = false;
+        self.client_generation = self.client_generation.wrapping_add(1).max(1);
+        if !self
+            .latest_decodable_gop
+            .front()
+            .is_some_and(|segment| segment.descriptor.starts_with_keyframe)
+        {
+            return (self.client_generation, 0);
+        }
+
+        self.emitted_segments = self.latest_decodable_gop.clone();
+        self.queue_requires_random_access = false;
+        (self.client_generation, self.emitted_segments.len())
+    }
+
+    pub fn prepare_decoder_stream(&mut self) -> (u64, usize, bool) {
+        self.active_delivery = ActivePreviewDelivery::Decoder;
+        self.client_generation = self.client_generation.wrapping_add(1).max(1);
+        self.emitted_segments.clear();
+        self.latest_decodable_gop.clear();
+        self.pending_samples.clear();
+        self.decoder_client_generation = self.decoder_client_generation.wrapping_add(1).max(1);
+        self.decoder_access_units.clear();
+        let cached_decoder_gop_is_current = self
+            .latest_decoder_gop
+            .front()
+            .is_some_and(|access_unit| access_unit.descriptor.is_keyframe)
+            && self.latest_decoder_gop.back().is_some_and(|access_unit| {
+                access_unit.sequence_number.wrapping_add(1) == self.next_decoder_sequence_number
+            });
+        if cached_decoder_gop_is_current {
+            self.decoder_access_units = self.latest_decoder_gop.clone();
+            self.decoder_queue_requires_random_access = false;
+            self.decoder_random_access_lost = false;
+        } else {
+            self.decoder_queue_requires_random_access = true;
+        }
+
+        let queued_access_units = self.decoder_access_units.len();
+        let needs_random_access = queued_access_units == 0 && self.next_media_timestamp > 0;
+        (
+            self.decoder_client_generation,
+            queued_access_units,
+            needs_random_access,
+        )
+    }
+
+    pub fn take_next_decoder_access_unit_for_client(
+        &mut self,
+        client_generation: u64,
+    ) -> Option<QueuedPreviewAccessUnit> {
+        if client_generation != self.decoder_client_generation {
+            return None;
+        }
+        self.decoder_access_units.pop_front()
+    }
+
+    pub fn decoder_client_is_current(&self, client_generation: u64) -> bool {
+        client_generation == self.decoder_client_generation
+    }
+
+    pub fn decoder_random_access_lost(&self) -> bool {
+        self.decoder_random_access_lost
     }
 
     pub fn queued_segment_count(&self) -> usize {
@@ -104,31 +234,69 @@ impl LivePreviewBuffer {
         let mut init_segment_became_available = false;
         let mut emitted_segment = None;
         let parsed_payload = parse_h264_payload(&payload);
+        let mut track_config_to_install = None;
 
         if let Some((track, init_segment)) =
             track_config_from_parameter_sets(parsed_payload.parameter_sets.as_ref())
         {
-            let config_changed = self.track.as_ref().is_some_and(|current| {
-                current.codec != track.codec
-                    || current.width != track.width
-                    || current.height != track.height
-                    || current.decoder_config_hex != track.decoder_config_hex
-            });
-
-            if self.init_segment.is_none() || config_changed {
-                if config_changed {
-                    self.pending_samples.clear();
-                    self.emitted_segments.clear();
-                    self.queue_requires_random_access = false;
-                    self.next_sequence_number = 1;
-                    self.last_emitted_segment = None;
-                    self.next_media_timestamp = 0;
-                }
-
-                self.track = Some(track);
-                self.init_segment = Some(init_segment);
-                init_segment_became_available = true;
+            let matches_current = self
+                .track
+                .as_ref()
+                .is_some_and(|current| track_configs_match(current, &track));
+            if self.track.is_none() {
+                self.pending_track_config = None;
+                track_config_to_install = Some((track, init_segment));
+            } else if matches_current {
+                // A repeated current SPS/PPS cancels any older staged update.
+                self.pending_track_config = None;
+            } else if parsed_payload.contains_idr {
+                self.pending_track_config = None;
+                track_config_to_install = Some((track, init_segment));
+            } else {
+                // AirPlay sends codec data as a standalone callback. Reconfiguring
+                // WebCodecs immediately would require a key chunk and destroy the
+                // still-valid dependency chain, so stage it until a real IDR.
+                self.pending_track_config = Some((track, init_segment));
             }
+        }
+
+        if parsed_payload.contains_idr && track_config_to_install.is_none() {
+            track_config_to_install =
+                self.pending_track_config
+                    .take()
+                    .and_then(|(track, init_segment)| {
+                        (!self
+                            .track
+                            .as_ref()
+                            .is_some_and(|current| track_configs_match(current, &track)))
+                        .then_some((track, init_segment))
+                    });
+        }
+
+        if let Some((track, init_segment)) = track_config_to_install {
+            let config_changed = self.track.is_some();
+            if config_changed {
+                self.active_delivery = ActivePreviewDelivery::Pending;
+                self.client_generation = self.client_generation.wrapping_add(1).max(1);
+                self.decoder_client_generation =
+                    self.decoder_client_generation.wrapping_add(1).max(1);
+                self.pending_samples.clear();
+                self.emitted_segments.clear();
+                self.latest_decodable_gop.clear();
+                self.decoder_access_units.clear();
+                self.latest_decoder_gop.clear();
+                self.decoder_queue_requires_random_access = true;
+                self.decoder_random_access_lost = false;
+                self.next_decoder_sequence_number = 0;
+                self.queue_requires_random_access = false;
+                self.next_sequence_number = 1;
+                self.last_emitted_segment = None;
+                self.next_media_timestamp = 0;
+            }
+
+            self.track = Some(track);
+            self.init_segment = Some(init_segment);
+            init_segment_became_available = true;
         }
 
         if self.track.is_none() {
@@ -151,8 +319,9 @@ impl LivePreviewBuffer {
         };
 
         let is_random_access = parsed_payload.contains_idr;
-        let requires_random_access =
-            self.next_sequence_number == 1 && self.pending_samples.is_empty();
+        let requires_random_access = self.active_delivery != ActivePreviewDelivery::Decoder
+            && self.next_sequence_number == 1
+            && self.pending_samples.is_empty();
         if requires_random_access && !is_random_access {
             return Ok(PreviewPushResult {
                 init_segment_became_available,
@@ -176,6 +345,22 @@ impl LivePreviewBuffer {
             },
         };
 
+        let decoder_sequence_number = self.next_decoder_sequence_number;
+        self.next_decoder_sequence_number = self.next_decoder_sequence_number.wrapping_add(1);
+        let decoder_sample_enqueued = self.queue_decoder_access_unit(QueuedPreviewAccessUnit {
+            sequence_number: decoder_sequence_number,
+            descriptor: descriptor.clone(),
+            bytes: sample_payload.clone(),
+        });
+
+        if self.active_delivery == ActivePreviewDelivery::Decoder {
+            return Ok(PreviewPushResult {
+                init_segment_became_available,
+                sample_enqueued: decoder_sample_enqueued,
+                emitted_segment,
+            });
+        }
+
         let should_flush_before_push = is_random_access && !self.pending_samples.is_empty();
         if should_flush_before_push && self.flush_pending_segment()? {
             emitted_segment = self.last_emitted_segment_descriptor();
@@ -197,6 +382,59 @@ impl LivePreviewBuffer {
         })
     }
 
+    fn queue_decoder_access_unit(&mut self, access_unit: QueuedPreviewAccessUnit) -> bool {
+        if self.active_delivery == ActivePreviewDelivery::Mse {
+            return false;
+        }
+
+        if access_unit.descriptor.is_keyframe {
+            self.latest_decoder_gop.clear();
+        }
+        if !self.latest_decoder_gop.is_empty() || access_unit.descriptor.is_keyframe {
+            self.latest_decoder_gop.push_back(access_unit.clone());
+            let bootstrap_bytes = self
+                .latest_decoder_gop
+                .iter()
+                .map(|queued| queued.bytes.len())
+                .sum::<usize>();
+            if self.latest_decoder_gop.len() > MAX_DECODER_BOOTSTRAP_ACCESS_UNITS
+                || bootstrap_bytes > MAX_DECODER_BOOTSTRAP_BYTES
+            {
+                self.latest_decoder_gop.clear();
+            }
+        }
+
+        if self.active_delivery != ActivePreviewDelivery::Decoder {
+            return false;
+        }
+
+        if self.decoder_queue_requires_random_access && !access_unit.descriptor.is_keyframe {
+            return false;
+        }
+        if access_unit.descriptor.is_keyframe {
+            self.decoder_queue_requires_random_access = false;
+            self.decoder_random_access_lost = false;
+        }
+
+        self.decoder_access_units.push_back(access_unit);
+        let queued_bytes = self
+            .decoder_access_units
+            .iter()
+            .map(|queued| queued.bytes.len())
+            .sum::<usize>();
+        if self.decoder_access_units.len() > MAX_QUEUED_DECODER_ACCESS_UNITS
+            || queued_bytes > MAX_QUEUED_DECODER_BYTES
+        {
+            // A decoder cannot recover after arbitrary delta frames are dropped. Stop
+            // forwarding until a real IDR arrives instead of presenting corruption.
+            self.decoder_access_units.clear();
+            self.decoder_queue_requires_random_access = true;
+            self.decoder_random_access_lost = true;
+            return false;
+        }
+        true
+    }
+
     pub fn flush_pending_segment(&mut self) -> Result<bool, String> {
         if self.pending_samples.is_empty() {
             return Ok(false);
@@ -212,6 +450,28 @@ impl LivePreviewBuffer {
 
         self.queue_requires_random_access = false;
         self.last_emitted_segment = Some(segment.descriptor.clone());
+        if self.active_delivery != ActivePreviewDelivery::Decoder {
+            if segment.descriptor.starts_with_keyframe {
+                self.latest_decodable_gop.clear();
+            }
+            if !self.latest_decodable_gop.is_empty() || segment.descriptor.starts_with_keyframe {
+                self.latest_decodable_gop.push_back(segment.clone());
+                let bootstrap_bytes = self
+                    .latest_decodable_gop
+                    .iter()
+                    .map(|queued| queued.bytes.len())
+                    .sum::<usize>();
+                if self.latest_decodable_gop.len() > MAX_BOOTSTRAP_SEGMENTS
+                    || bootstrap_bytes > MAX_BOOTSTRAP_BYTES
+                {
+                    self.latest_decodable_gop.clear();
+                }
+            }
+        }
+        if self.active_delivery == ActivePreviewDelivery::Decoder {
+            self.pending_samples.clear();
+            return Ok(true);
+        }
         self.emitted_segments.push_back(segment);
         let mut evicted = false;
         while self.emitted_segments.len() > MAX_QUEUED_SEGMENTS
@@ -242,6 +502,13 @@ impl LivePreviewBuffer {
 
 pub(crate) fn normalize_preview_sample_duration(duration: u32) -> u32 {
     duration.clamp(DEFAULT_PREVIEW_SAMPLE_DURATION, MAX_PREVIEW_SAMPLE_DURATION)
+}
+
+fn track_configs_match(left: &AvcTrackConfig, right: &AvcTrackConfig) -> bool {
+    left.codec == right.codec
+        && left.width == right.width
+        && left.height == right.height
+        && left.decoder_config_hex == right.decoder_config_hex
 }
 
 fn track_config_from_parameter_sets(
@@ -289,6 +556,7 @@ fn parsed_payload_from_nals(nals: Vec<Vec<u8>>) -> ParsedH264Payload {
     let mut pps = None;
     let mut sample_nals = Vec::new();
     let mut contains_idr = false;
+    let mut contains_vcl = false;
 
     for nal in nals {
         if nal.is_empty() {
@@ -308,6 +576,11 @@ fn parsed_payload_from_nals(nals: Vec<Vec<u8>>) -> ParsedH264Payload {
             }
             5 => {
                 contains_idr = true;
+                contains_vcl = true;
+                sample_nals.push(nal);
+            }
+            1..=4 => {
+                contains_vcl = true;
                 sample_nals.push(nal);
             }
             9 => {}
@@ -317,7 +590,7 @@ fn parsed_payload_from_nals(nals: Vec<Vec<u8>>) -> ParsedH264Payload {
 
     ParsedH264Payload {
         parameter_sets: sps.zip(pps),
-        sample_payload: (!sample_nals.is_empty()).then(|| avcc_payload_from_nals(&sample_nals)),
+        sample_payload: contains_vcl.then(|| avcc_payload_from_nals(&sample_nals)),
         contains_idr,
     }
 }
@@ -972,7 +1245,7 @@ mod tests {
     use super::{
         extract_parameter_sets, normalize_preview_sample_duration, parse_h264_payload,
         parse_sps_dimensions, LivePreviewBuffer, DEFAULT_PREVIEW_SAMPLE_DURATION,
-        MAX_PREVIEW_SAMPLE_DURATION, MAX_QUEUED_SEGMENTS,
+        MAX_PREVIEW_SAMPLE_DURATION, MAX_QUEUED_DECODER_ACCESS_UNITS, MAX_QUEUED_SEGMENTS,
     };
 
     const SAMPLE_SPS: [u8; 28] = [
@@ -1006,6 +1279,17 @@ mod tests {
     fn annex_b_parameter_sets() -> Vec<u8> {
         let mut bytes = Vec::new();
         for nal in [&SAMPLE_SPS[..], &SAMPLE_PPS[..]] {
+            bytes.extend_from_slice(&[0, 0, 0, 1]);
+            bytes.extend_from_slice(nal);
+        }
+        bytes
+    }
+
+    fn annex_b_changed_parameter_sets() -> Vec<u8> {
+        let mut changed_sps = SAMPLE_SPS;
+        changed_sps[3] = 0x1F;
+        let mut bytes = Vec::new();
+        for nal in [&changed_sps[..], &SAMPLE_PPS[..]] {
             bytes.extend_from_slice(&[0, 0, 0, 1]);
             bytes.extend_from_slice(nal);
         }
@@ -1091,6 +1375,172 @@ mod tests {
     }
 
     #[test]
+    fn metadata_only_access_unit_does_not_become_a_decoder_chunk() {
+        let parsed = parse_h264_payload(&[0, 0, 0, 1, 0x06, 0x05, 0x01, 0x80]);
+
+        assert!(!parsed.contains_idr);
+        assert!(parsed.sample_payload.is_none());
+    }
+
+    #[test]
+    fn continuous_decoder_delivery_accepts_delta_frames_after_its_initial_idr() {
+        let mut buffer = LivePreviewBuffer::new();
+        buffer
+            .push_access_unit(0, avcc_sample(), true, 0, 0, 33_333)
+            .expect("push initial IDR");
+        let (client_generation, queued, needs_random_access) = buffer.prepare_decoder_stream();
+        assert_eq!(queued, 1);
+        assert!(!needs_random_access);
+        assert!(
+            buffer
+                .take_next_decoder_access_unit_for_client(client_generation)
+                .expect("initial decoder access unit")
+                .descriptor
+                .is_keyframe
+        );
+
+        for sample_index in 1..=100 {
+            let result = buffer
+                .push_access_unit(
+                    sample_index,
+                    avcc_non_idr_sample(),
+                    false,
+                    sample_index as u64 * 33_333,
+                    sample_index as u64 * 33_333,
+                    33_333,
+                )
+                .expect("push decoder delta frame");
+            assert!(result.sample_enqueued);
+            let access_unit = buffer
+                .take_next_decoder_access_unit_for_client(client_generation)
+                .expect("queued decoder delta frame");
+            assert_eq!(access_unit.descriptor.sample_index, sample_index);
+            assert!(!access_unit.descriptor.is_keyframe);
+        }
+    }
+
+    #[test]
+    fn resetting_preview_never_revalidates_an_old_decoder_client() {
+        let mut buffer = LivePreviewBuffer::new();
+        buffer
+            .push_access_unit(0, avcc_sample(), true, 0, 0, 33_333)
+            .expect("prime decoder config");
+        let (old_generation, _, _) = buffer.prepare_decoder_stream();
+        assert!(buffer.decoder_client_is_current(old_generation));
+
+        buffer.reset();
+        assert!(!buffer.decoder_client_is_current(old_generation));
+
+        buffer
+            .push_access_unit(0, avcc_sample(), true, 0, 0, 33_333)
+            .expect("prime replacement decoder config");
+        let (new_generation, _, _) = buffer.prepare_decoder_stream();
+        assert_ne!(new_generation, old_generation);
+        assert!(buffer.decoder_client_is_current(new_generation));
+    }
+
+    #[test]
+    fn decoder_queue_overflow_requires_a_new_idr_before_delivery_resumes() {
+        let mut buffer = LivePreviewBuffer::new();
+        buffer
+            .push_access_unit(0, avcc_sample(), true, 0, 0, 33_333)
+            .expect("prime decoder config");
+        let (client_generation, _, _) = buffer.prepare_decoder_stream();
+
+        for sample_index in 1..MAX_QUEUED_DECODER_ACCESS_UNITS as u32 {
+            let result = buffer
+                .push_access_unit(
+                    sample_index,
+                    avcc_non_idr_sample(),
+                    false,
+                    sample_index as u64 * 33_333,
+                    sample_index as u64 * 33_333,
+                    33_333,
+                )
+                .expect("fill decoder queue");
+            assert!(result.sample_enqueued);
+        }
+
+        let overflow_index = MAX_QUEUED_DECODER_ACCESS_UNITS as u32;
+        let overflow = buffer
+            .push_access_unit(
+                overflow_index,
+                avcc_non_idr_sample(),
+                false,
+                overflow_index as u64 * 33_333,
+                overflow_index as u64 * 33_333,
+                33_333,
+            )
+            .expect("overflow decoder queue");
+        assert!(!overflow.sample_enqueued);
+        assert!(buffer.decoder_random_access_lost());
+        assert!(buffer
+            .take_next_decoder_access_unit_for_client(client_generation)
+            .is_none());
+
+        let rejected_delta = buffer
+            .push_access_unit(
+                overflow_index + 1,
+                avcc_non_idr_sample(),
+                false,
+                (overflow_index as u64 + 1) * 33_333,
+                (overflow_index as u64 + 1) * 33_333,
+                33_333,
+            )
+            .expect("reject delta while waiting for IDR");
+        assert!(!rejected_delta.sample_enqueued);
+        assert!(buffer
+            .take_next_decoder_access_unit_for_client(client_generation)
+            .is_none());
+
+        let recovery_index = overflow_index + 2;
+        let recovery = buffer
+            .push_access_unit(
+                recovery_index,
+                avcc_sample(),
+                true,
+                recovery_index as u64 * 33_333,
+                recovery_index as u64 * 33_333,
+                33_333,
+            )
+            .expect("recover decoder queue with IDR");
+        assert!(recovery.sample_enqueued);
+        assert!(!buffer.decoder_random_access_lost());
+        let recovery_frame = buffer
+            .take_next_decoder_access_unit_for_client(client_generation)
+            .expect("recovery IDR");
+        assert!(recovery_frame.descriptor.is_keyframe);
+        assert_eq!(recovery_frame.descriptor.sample_index, recovery_index);
+    }
+
+    #[test]
+    fn decoder_sequence_ignores_metadata_only_source_callbacks() {
+        let mut buffer = LivePreviewBuffer::new();
+        buffer
+            .push_access_unit(0, avcc_sample(), true, 0, 0, 33_333)
+            .expect("push initial IDR");
+        let (client_generation, _, _) = buffer.prepare_decoder_stream();
+        let first = buffer
+            .take_next_decoder_access_unit_for_client(client_generation)
+            .expect("initial decoder frame");
+        assert_eq!(first.sequence_number, 0);
+
+        let metadata = buffer
+            .push_access_unit(1, vec![0, 0, 0, 1, 0x06, 0x05, 0x01, 0x80], false, 0, 0, 0)
+            .expect("push metadata callback");
+        assert!(!metadata.sample_enqueued);
+        buffer
+            .push_access_unit(2, avcc_non_idr_sample(), false, 66_666, 66_666, 33_333)
+            .expect("push delta after metadata");
+
+        let next = buffer
+            .take_next_decoder_access_unit_for_client(client_generation)
+            .expect("delta decoder frame");
+        assert_eq!(next.sequence_number, 1);
+        assert_eq!(next.descriptor.sample_index, 2);
+    }
+
+    #[test]
     fn parameter_set_packet_does_not_enqueue_media_sample() {
         let mut buffer = LivePreviewBuffer::new();
 
@@ -1159,6 +1609,122 @@ mod tests {
     }
 
     #[test]
+    fn changed_decoder_config_invalidates_the_old_decoder_client() {
+        let mut buffer = LivePreviewBuffer::new();
+        buffer
+            .push_access_unit(0, avcc_sample(), true, 0, 0, 33_333)
+            .expect("push initial sample");
+        let (old_generation, _, _) = buffer.prepare_decoder_stream();
+        buffer
+            .take_next_decoder_access_unit_for_client(old_generation)
+            .expect("initial decoder frame");
+
+        let changed = buffer
+            .push_access_unit(
+                1,
+                avcc_sample_with_changed_decoder_config(),
+                true,
+                33_333,
+                33_333,
+                33_333,
+            )
+            .expect("push changed config");
+        assert!(changed.init_segment_became_available);
+        assert!(buffer
+            .take_next_decoder_access_unit_for_client(old_generation)
+            .is_none());
+
+        let (new_generation, queued, needs_random_access) = buffer.prepare_decoder_stream();
+        assert_ne!(new_generation, old_generation);
+        assert_eq!(queued, 1);
+        assert!(!needs_random_access);
+        let new_frame = buffer
+            .take_next_decoder_access_unit_for_client(new_generation)
+            .expect("new config IDR");
+        assert_eq!(new_frame.sequence_number, 0);
+        assert!(new_frame.descriptor.is_keyframe);
+    }
+
+    #[test]
+    fn standalone_config_change_keeps_the_active_decoder_chain() {
+        let mut buffer = LivePreviewBuffer::new();
+        buffer
+            .push_access_unit(0, avcc_sample(), true, 0, 0, 33_333)
+            .expect("push initial sample");
+        let original_config = buffer.track_config().expect("original track config");
+        let (client_generation, _, _) = buffer.prepare_decoder_stream();
+        buffer
+            .take_next_decoder_access_unit_for_client(client_generation)
+            .expect("initial decoder frame");
+
+        let staged = buffer
+            .push_access_unit(1, annex_b_changed_parameter_sets(), true, 0, 0, 0)
+            .expect("stage changed parameter sets");
+        assert!(!staged.init_segment_became_available);
+        assert!(!staged.sample_enqueued);
+        assert_eq!(
+            buffer
+                .track_config()
+                .expect("active track config")
+                .decoder_config_hex,
+            original_config.decoder_config_hex
+        );
+
+        let delta = buffer
+            .push_access_unit(2, avcc_non_idr_sample(), false, 66_666, 66_666, 33_333)
+            .expect("push delta after staged config");
+        assert!(delta.sample_enqueued);
+        let delivered = buffer
+            .take_next_decoder_access_unit_for_client(client_generation)
+            .expect("active decoder delta");
+        assert_eq!(delivered.descriptor.sample_index, 2);
+        assert!(!delivered.descriptor.is_keyframe);
+    }
+
+    #[test]
+    fn staged_config_commits_atomically_with_the_next_real_idr() {
+        let mut buffer = LivePreviewBuffer::new();
+        buffer
+            .push_access_unit(0, avcc_sample(), true, 0, 0, 33_333)
+            .expect("push initial sample");
+        let original_config = buffer.track_config().expect("original track config");
+        let (old_generation, _, _) = buffer.prepare_decoder_stream();
+        buffer
+            .take_next_decoder_access_unit_for_client(old_generation)
+            .expect("initial decoder frame");
+        buffer
+            .push_access_unit(1, annex_b_changed_parameter_sets(), true, 0, 0, 0)
+            .expect("stage changed parameter sets");
+
+        let committed = buffer
+            .push_access_unit(2, annex_b_idr_sample(), true, 66_666, 66_666, 33_333)
+            .expect("commit changed config with IDR");
+        assert!(committed.init_segment_became_available);
+        assert!(committed.sample_enqueued);
+        assert_ne!(
+            buffer
+                .track_config()
+                .expect("updated track config")
+                .decoder_config_hex,
+            original_config.decoder_config_hex
+        );
+        assert!(buffer
+            .take_next_decoder_access_unit_for_client(old_generation)
+            .is_none());
+
+        let (new_generation, queued, needs_random_access) = buffer.prepare_decoder_stream();
+        assert_ne!(new_generation, old_generation);
+        assert_eq!(queued, 1);
+        assert!(!needs_random_access);
+        let recovery = buffer
+            .take_next_decoder_access_unit_for_client(new_generation)
+            .expect("new config IDR");
+        assert_eq!(recovery.sequence_number, 0);
+        assert_eq!(recovery.descriptor.sample_index, 2);
+        assert!(recovery.descriptor.is_keyframe);
+    }
+
+    #[test]
     fn live_preview_queue_stays_near_live_edge() {
         let mut buffer = LivePreviewBuffer::new();
 
@@ -1184,6 +1750,61 @@ mod tests {
         let segment = buffer.take_next_segment().expect("queued media segment");
         assert!(segment.descriptor.sequence_number > 1);
         assert!(segment.descriptor.starts_with_keyframe);
+    }
+
+    #[test]
+    fn a_new_preview_client_is_bootstrapped_from_the_latest_keyframe() {
+        let mut buffer = LivePreviewBuffer::new();
+
+        for index in 0..12 {
+            let payload = if index == 0 || index == 8 {
+                avcc_sample()
+            } else {
+                avcc_non_idr_sample()
+            };
+            buffer
+                .push_access_unit(index, payload, index == 0 || index == 8, 0, 0, 33_333)
+                .expect("push sample");
+        }
+
+        while buffer.take_next_segment().is_some() {}
+        assert_eq!(buffer.queued_segment_count(), 0);
+
+        let (client_generation, queued) = buffer.prepare_client_stream();
+        assert_eq!(queued, 1);
+        let bootstrap = buffer
+            .take_next_segment_for_client(client_generation)
+            .expect("bootstrap segment");
+        assert!(bootstrap.descriptor.starts_with_keyframe);
+        assert_eq!(bootstrap.descriptor.first_sample_index, 8);
+    }
+
+    #[test]
+    fn a_long_gop_remains_available_for_a_surface_rebuild() {
+        let mut buffer = LivePreviewBuffer::new();
+
+        for index in 0..400 {
+            let payload = if index == 0 {
+                avcc_sample()
+            } else {
+                avcc_non_idr_sample()
+            };
+            buffer
+                .push_access_unit(index, payload, index == 0, 0, 0, 33_333)
+                .expect("push sample");
+            while buffer.take_next_segment().is_some() {}
+        }
+
+        let (client_generation, queued) = buffer.prepare_client_stream();
+        assert_eq!(queued, 100);
+        assert!(buffer
+            .take_next_segment_for_client(client_generation.wrapping_sub(1))
+            .is_none());
+        let bootstrap = buffer
+            .take_next_segment_for_client(client_generation)
+            .expect("bootstrap segment");
+        assert!(bootstrap.descriptor.starts_with_keyframe);
+        assert_eq!(bootstrap.descriptor.first_sample_index, 0);
     }
 
     #[test]

@@ -20,6 +20,8 @@ type ConsoleViewProps = {
   captureNotice: string | null;
   canCapture: boolean;
   canRecord: boolean;
+  audioAvailable: boolean;
+  audioMuted: boolean;
   commandPending: boolean;
   commandError: string | null;
   currentDeviceTrusted: boolean;
@@ -34,6 +36,7 @@ type ConsoleViewProps = {
   isTransitioningSession: boolean;
   onAdjustZoom: (delta: 1 | -1) => void;
   onCapture: () => void;
+  onToggleAudio: () => void;
   onGoMinimal: () => void;
   onInstallBonjour: () => void;
   onOpenSettings: () => void;
@@ -83,6 +86,8 @@ export function ConsoleView({
   captureNotice,
   canCapture,
   canRecord,
+  audioAvailable,
+  audioMuted,
   commandPending,
   commandError,
   currentDeviceTrusted,
@@ -97,6 +102,7 @@ export function ConsoleView({
   isTransitioningSession,
   onAdjustZoom,
   onCapture,
+  onToggleAudio,
   onGoMinimal,
   onInstallBonjour,
   onOpenSettings,
@@ -450,6 +456,16 @@ export function ConsoleView({
             title="Screenshot (Ctrl+S)"
           >
             <Icon name="camera" size={15} />
+          </button>
+          <button
+            type="button"
+            className={controlButtonClass}
+            onClick={onToggleAudio}
+            disabled={!audioAvailable}
+            title={!audioAvailable ? "Audio is unavailable in this receiver" : audioMuted ? "Unmute iPhone audio" : "Mute iPhone audio"}
+            aria-pressed={audioMuted}
+          >
+            <Icon name={audioMuted ? "volume-off" : "volume"} size={15} />
           </button>
           <div className="mx-1.5 h-4 w-px bg-white/7" />
           <button type="button" className={controlButtonClass} onClick={onToggleFullscreen} title="Fullscreen (Ctrl+F)">

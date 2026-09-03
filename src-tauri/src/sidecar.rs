@@ -46,18 +46,29 @@ pub struct VideoAccessUnitPacketSpec {
 
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct AudioPacketSpec {
+    pub encoding: String,
+    pub byte_order: String,
+    pub interleaved: bool,
+    pub timestamp_units: String,
+    pub maximum_channels: u16,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ReceiverSidecarSpec {
     pub protocol_version: String,
     pub launch: SidecarLaunchSpec,
     pub commands: Vec<SidecarCommandSpec>,
     pub events: Vec<SidecarEventSpec>,
     pub video_packet: VideoAccessUnitPacketSpec,
+    pub audio_packet: AudioPacketSpec,
 }
 
 impl ReceiverSidecarSpec {
     pub fn direct_receiver_boundary() -> Self {
         Self {
-            protocol_version: String::from("0.5.0"),
+            protocol_version: String::from("0.6.0"),
             launch: SidecarLaunchSpec {
                 executable: String::from("receivers/AirPlayServer/MirrorSimAdapter.exe"),
                 args: vec![],
@@ -119,6 +130,11 @@ impl ReceiverSidecarSpec {
                     description: String::from("Delivers one H.264 access unit for the remux boundary to package into fragments."),
                 },
                 SidecarEventSpec {
+                    name: String::from("audio_frame"),
+                    payload_shape: String::from("{ streamId, pts, sampleRate, channels, bitsPerSample, payloadBase64 }"),
+                    description: String::from("Delivers one interleaved signed 16-bit PCM audio frame for local playback and recording."),
+                },
+                SidecarEventSpec {
                     name: String::from("stream_discontinuity"),
                     payload_shape: String::from("{ streamId, reason, requiresInitSegmentRefresh }"),
                     description: String::from("Signals timestamp resets, transport loss, or decoder config changes that require a remux reset."),
@@ -136,6 +152,13 @@ impl ReceiverSidecarSpec {
                 includes_parameter_sets: true,
                 requires_keyframes_for_recovery: true,
             },
+            audio_packet: AudioPacketSpec {
+                encoding: String::from("signed-pcm-16"),
+                byte_order: String::from("little-endian"),
+                interleaved: true,
+                timestamp_units: String::from("microseconds"),
+                maximum_channels: 2,
+            },
         }
     }
 }
@@ -148,7 +171,7 @@ mod tests {
     fn direct_receiver_boundary_prefers_stdio_jsonl() {
         let spec = ReceiverSidecarSpec::direct_receiver_boundary();
 
-        assert_eq!(spec.protocol_version, "0.5.0");
+        assert_eq!(spec.protocol_version, "0.6.0");
         assert_eq!(
             spec.launch.transport,
             SidecarProcessTransport::StdioJsonLines
@@ -157,6 +180,8 @@ mod tests {
             .events
             .iter()
             .any(|event| event.name == "video_access_unit"));
+        assert!(spec.events.iter().any(|event| event.name == "audio_frame"));
+        assert_eq!(spec.audio_packet.encoding, "signed-pcm-16");
         assert!(spec
             .commands
             .iter()

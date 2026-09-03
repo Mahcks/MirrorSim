@@ -1,6 +1,9 @@
 import { describe, expect, test } from "bun:test";
 
-import { getLivePlaybackCorrection } from "../src/features/mirrorsim/livePlayback";
+import {
+  getLivePlaybackCorrection,
+  getLivePlaybackRecovery,
+} from "../src/features/mirrorsim/livePlayback";
 
 const balancedTuning = {
   catchupLeadSeconds: 0.35,
@@ -22,7 +25,7 @@ describe("live preview catch-up", () => {
     expect(correction.seekTime).toBeNull();
   });
 
-  test("jumps close to live after a wake-up backlog", () => {
+  test("catches up without seeking after a wake-up backlog", () => {
     expect(getLivePlaybackCorrection({
       currentTime: 10,
       bufferedEnd: 13,
@@ -31,12 +34,13 @@ describe("live preview catch-up", () => {
       ...balancedTuning,
     })).toEqual({
       leadSeconds: 3,
-      playbackRate: 1,
-      seekTime: 12.75,
+      playbackRate: 2,
+      seekTime: null,
+      shouldPlay: false,
     });
   });
 
-  test("does not seek or accelerate while playback is paused", () => {
+  test("resumes a paused live surface without seeking into a delta frame", () => {
     expect(getLivePlaybackCorrection({
       currentTime: 10,
       bufferedEnd: 13,
@@ -47,6 +51,21 @@ describe("live preview catch-up", () => {
       leadSeconds: 3,
       playbackRate: 1,
       seekTime: null,
+      shouldPlay: true,
     });
+  });
+
+  test("nudges a stalled surface without discarding its decoder", () => {
+    expect(getLivePlaybackRecovery({
+      receivingSegments: true,
+      stalledForMs: 2_100,
+    })).toBe("nudge");
+  });
+
+  test("does not recover when the sender has stopped delivering segments", () => {
+    expect(getLivePlaybackRecovery({
+      receivingSegments: false,
+      stalledForMs: 10_000,
+    })).toBe("none");
   });
 });

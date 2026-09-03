@@ -4,10 +4,25 @@ import { defaultRecordingSettings, defaultScreenshotSettings } from "../src/feat
 import {
   buildRecordingFileName,
   buildScreenshotFileName,
+  canCapturePreviewFrame,
   formatAppleDeviceModel,
   mergeStoredPreferences,
   selectFreshestStoredPreferences,
 } from "../src/features/mirrorsim/helpers";
+
+describe("preview screenshot availability", () => {
+  test("keeps a retained frame captureable during transport reconnect", () => {
+    expect(canCapturePreviewFrame("connecting", true, false)).toBe(true);
+    expect(canCapturePreviewFrame("connecting", false, true)).toBe(false);
+  });
+
+  test("requires an active or retained frame in a live session", () => {
+    expect(canCapturePreviewFrame("mirroring", false, true)).toBe(true);
+    expect(canCapturePreviewFrame("recording", true, false)).toBe(true);
+    expect(canCapturePreviewFrame("discovering", true, true)).toBe(false);
+    expect(canCapturePreviewFrame("idle", true, true)).toBe(false);
+  });
+});
 
 describe("capture filenames", () => {
   const timestamp = new Date(2026, 8, 1, 13, 4, 5);
@@ -76,6 +91,8 @@ test("stored preferences retain defaults for missing sections", () => {
   const merged = mergeStoredPreferences({ screenshots: { copyToClipboard: true } });
   expect(merged.screenshots.copyToClipboard).toBe(true);
   expect(merged.recordings.fileNamePrefix).toBe(defaultRecordingSettings.fileNamePrefix);
+  expect(merged.screenshots.includeDeviceFrame).toBe(false);
+  expect(merged.recordings.includeDeviceFrame).toBe(false);
 });
 
 test("invalid stored preference values fall back to safe defaults", () => {
@@ -86,6 +103,11 @@ test("invalid stored preference values fall back to safe defaults", () => {
   expect(merged.app.launchMode).toBe("minimal");
   expect(merged.app.autoReconnectOnDrop).toBe(true);
   expect(merged.screenshots.saveLocation).toBe("pictures");
+});
+
+test("stored audio volume is clamped to a safe range", () => {
+  expect(mergeStoredPreferences({ app: { audioVolume: 3 } }).app.audioVolume).toBe(1);
+  expect(mergeStoredPreferences({ app: { audioVolume: -2 } }).app.audioVolume).toBe(0);
 });
 
 test("Apple hardware identifiers are normalized", () => {

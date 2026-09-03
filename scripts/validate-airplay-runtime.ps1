@@ -1,7 +1,7 @@
 param(
   [Parameter(Mandatory = $true)]
   [string]$RuntimeDir,
-  [string]$ExpectedProtocolVersion = '0.5.0'
+  [string]$ExpectedProtocolVersion = '0.6.0'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -68,6 +68,9 @@ try {
   }
   if ($ready.protocol_version -ne $ExpectedProtocolVersion) {
     throw "Expected adapter protocol $ExpectedProtocolVersion, received '$($ready.protocol_version)'."
+  }
+  if ($ready.capabilities -notcontains 'pcm-audio') {
+    throw 'MirrorSimAdapter did not advertise the required pcm-audio capability.'
   }
 }
 finally {

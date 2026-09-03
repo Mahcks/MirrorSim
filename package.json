@@ -1,7 +1,7 @@
 {
   "name": "mirrorsim",
   "private": true,
-  "version": "0.1.3",
+  "version": "0.1.4",
   "description": "A Windows AirPlay receiver app for mirroring iPhone in a clean, presentation-ready device frame.",
   "author": "Mahcks",
   "license": "MIT",
@@ -22,6 +22,7 @@
     "audit": "bun audit",
     "check": "bun run build && bun run lint && bun run test && bun run audit",
     "preview": "vite preview",
+    "demo:gif": "powershell -ExecutionPolicy Bypass -File scripts/build-demo-gif.ps1",
     "fetch:airplay-runtime": "powershell -ExecutionPolicy Bypass -File scripts/fetch-airplay-runtime.ps1",
     "sync:airplay-runtime": "powershell -ExecutionPolicy Bypass -File scripts/sync-airplay-runtime.ps1",
     "release:prep": "powershell -ExecutionPolicy Bypass -File scripts/build-release.ps1 -Target prep",

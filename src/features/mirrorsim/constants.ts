@@ -77,6 +77,7 @@ export const defaultScreenshotSettings: ScreenshotSettings = {
   customSavePath: "",
   fileNamePrefix: "mirrorsim_screenshot",
   includeTimestamp: true,
+  includeDeviceFrame: false,
 };
 
 export const defaultRecordingSettings: RecordingSettings = {
@@ -85,6 +86,7 @@ export const defaultRecordingSettings: RecordingSettings = {
   fileNamePrefix: "mirrorsim_recording",
   includeTimestamp: true,
   autoReveal: false,
+  includeDeviceFrame: false,
 };
 
 export const defaultAppPreferences: AppPreferences = {
@@ -100,6 +102,8 @@ export const defaultAppPreferences: AppPreferences = {
   autoStartDiscovery: false,
   autoReconnectOnDrop: true,
   openDiagnosticsOnError: true,
+  audioMuted: false,
+  audioVolume: 0.8,
   receiverDisplayName: "MirrorSim",
   lastMode: "minimal",
   lastOrientation: "portrait",

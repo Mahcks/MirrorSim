@@ -36,7 +36,7 @@ bun run sync:airplay-runtime
 - `fetch:airplay-runtime` downloads the versioned runtime bundle declared in `receivers/runtime-manifest.json`
 - `sync:airplay-runtime` copies files from a local sibling AirPlayServer build if you have one
 
-Both paths reject missing or extra runtime binaries, non-x64 PE files, and adapters that do not complete the expected protocol `0.5.0` startup/shutdown handshake.
+Both paths reject missing or extra runtime binaries, non-x64 PE files, and adapters that do not complete the expected protocol `0.6.0` startup/shutdown handshake.
 
 Then build the app with one of the release commands from the main project README.
 

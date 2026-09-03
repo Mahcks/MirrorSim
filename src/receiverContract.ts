@@ -13,9 +13,14 @@ export type PreviewDeliveryMode = "static-paths" | "command-stream";
 
 export type PreviewStreamDescriptor = {
   streamId: string;
+  configGeneration: number;
   transport: ReceiverTransport;
   deliveryMode: PreviewDeliveryMode;
   mimeType: string;
+  codec: string;
+  codedWidth: number;
+  codedHeight: number;
+  decoderConfigHex: string;
   initSegmentPath: string;
   mediaSegmentPaths: string[];
   shouldLoop: boolean;

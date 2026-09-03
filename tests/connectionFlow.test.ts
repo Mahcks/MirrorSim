@@ -47,7 +47,7 @@ describe("connection flow presentation", () => {
 
   test("idle invites the user to listen without receiver jargon", () => {
     const result = presentation();
-    expect(result.titlebarLabel).toBe("Not listening");
+    expect(result.titlebarLabel).toBe("Stopped");
     expect(result.headline).toBe("Mirror your iPhone");
     expect(result.primaryActionLabel).toBe("Start listening");
     expect(result.supportingText).toContain("Demo Phone");
@@ -104,6 +104,22 @@ describe("connection flow presentation", () => {
     expect(result.headline).toBe("Max's iPhone");
     expect(result.secondaryLabel).toBe("iPhone connected");
     expect(result.tone).not.toBe("live");
+  });
+
+  test("a dropped mirror-data socket is presented as an automatic reconnect", () => {
+    const result = presentation({
+      session: { ...idleSession, status: "connecting", deviceName: "Max's iPhone" },
+      receiverRuntime: {
+        ...initialReceiverRuntime,
+        state: "ready",
+        lastError: "the iPhone interrupted its mirror-data connection; waiting for the existing AirPlay session to resume",
+      },
+    });
+
+    expect(result.titlebarLabel).toBe("Reconnecting");
+    expect(result.headline).toBe("Reconnecting to Max's iPhone");
+    expect(result.supportingText).toContain("automatically");
+    expect(result.primaryActionLabel).toBe("Disconnect");
   });
 
   test("pairing verification takes precedence over generic connection copy", () => {

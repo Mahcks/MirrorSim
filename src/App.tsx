@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getVersion } from "@tauri-apps/api/app";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
@@ -11,6 +12,7 @@ import {
   type ZoomLevel,
 } from "@/features/mirrorsim/constants";
 import {
+  canCapturePreviewFrame,
   formatAppleDeviceModel,
   fmtError,
 } from "@/features/mirrorsim/helpers";
@@ -35,6 +37,7 @@ import { useCaptureActions } from "@/features/mirrorsim/hooks/useCaptureActions"
 import { usePreferencesState } from "@/features/mirrorsim/hooks/usePreferencesState";
 import { useWindowMode } from "@/features/mirrorsim/hooks/useWindowMode";
 import { usePreviewRuntime } from "./features/mirrorsim/hooks/usePreviewRuntime";
+import { usePreviewAudio } from "./features/mirrorsim/hooks/usePreviewAudio";
 import type {
   AppUpdateInfo,
   AppMode,
@@ -107,6 +110,9 @@ export default function App() {
   const [availableUpdate, setAvailableUpdate] = useState<AppUpdateInfo | null>(null);
   const [updateState, setUpdateState] = useState<AppUpdateState>("idle");
   const [updateError, setUpdateError] = useState<string | null>(null);
+  const [updateBannerDismissed, setUpdateBannerDismissed] = useState(false);
+  const [lastUpdateCheckMessage, setLastUpdateCheckMessage] = useState<string | null>(null);
+  const [appVersion, setAppVersion] = useState("—");
   const [screenshotFlashActive, setScreenshotFlashActive] = useState(false);
   const [reconnectUiState, setReconnectUiState] = useState<{ attempt: number; phase: "scheduled" | "retrying" } | null>(null);
   const [reconnectNextRetryAt, setReconnectNextRetryAt] = useState<number | null>(null);
@@ -139,6 +145,12 @@ export default function App() {
     }
   }, [preferencesSaveError]);
 
+  useEffect(() => {
+    void getVersion()
+      .then(setAppVersion)
+      .catch(() => setAppVersion(import.meta.env.DEV ? "development" : "unknown"));
+  }, []);
+
   const {
     initializing: runtimeInitializing,
     session,
@@ -154,10 +166,12 @@ export default function App() {
     previewDiag,
     previewClientDiag,
     videoDiag,
+    videoRecoveryCount,
     surfaceStatus,
     surfaceError,
     retryPreview,
     videoEl,
+    hasRetainedPreviewFrame,
     setVideoHost,
   } = usePreviewRuntime({
     previewPreset: PREVIEW_QUALITY_PRESETS[appPreferences.previewQualityPreset],
@@ -175,6 +189,19 @@ export default function App() {
     setCommandError,
   });
 
+  const audioAvailable = session.receiverCapabilities.includes("pcm-audio");
+  const { audioState, audioError, primeAudio, recordingAudioTrack } = usePreviewAudio({
+    available: audioAvailable,
+    isLive: session.status === "mirroring" || session.status === "recording",
+    muted: appPreferences.audioMuted,
+    volume: appPreferences.audioVolume,
+  });
+  const captureFrameAvailable = canCapturePreviewFrame(
+    session.status,
+    hasRetainedPreviewFrame,
+    videoDiag.videoWidth > 0 && videoDiag.videoHeight > 0,
+  );
+
   const {
     recElapsed,
     localRecordingActive,
@@ -186,7 +213,7 @@ export default function App() {
     doRecordToggle,
   } = useCaptureActions({
     appPreferences,
-    canCapture: session.status === "mirroring" || session.status === "recording",
+    canCapture: captureFrameAvailable,
     canRecord: session.status === "mirroring" || session.status === "recording",
     isRec: session.status === "recording",
     recordingSettings,
@@ -200,6 +227,8 @@ export default function App() {
     setScreenshotSettings,
     setSession,
     videoEl,
+    orientation,
+    recordingAudioTrack,
   });
 
   const localRecordingActiveRef = useRef(localRecordingActive);
@@ -326,8 +355,12 @@ export default function App() {
   const primarySessionActionTitle = connectionPresentation.primaryActionTitle;
   const idleTelemetryHint = connectionPresentation.telemetryHint;
   const showRetryConnection = isIdle && !bonjourNeedsAttention && Boolean(receiverRuntime.lastError);
-  const canCapture = isLive;
-  const canRecord = isLive || localRecordingActive;
+  const previewHasDrawableFrame = hasRetainedPreviewFrame
+    || (videoDiag.videoWidth > 0 && videoDiag.videoHeight > 0);
+  // Screenshot capture keeps the last decoded canvas frame even if the live
+  // decoder subsequently fails or the video element loses its ready state.
+  const canCapture = captureFrameAvailable;
+  const canRecord = (isLive && previewHasDrawableFrame && surfaceStatus === "ready") || localRecordingActive;
   const tone: "inactive" | "live" | "warning" =
     connectionPresentation.tone === "warning" || surfaceStatus === "error" || surfaceStatus === "unsupported"
       ? "warning"
@@ -337,8 +370,12 @@ export default function App() {
   const bufferedAhead = Math.max(0, videoDiag.bufferedEnd - videoDiag.currentTime);
   const previewPreset = PREVIEW_QUALITY_PRESETS[appPreferences.previewQualityPreset];
   const reconnectCountdownSeconds = reconnectNextRetryAt === null ? null : Math.max(0, Math.ceil((reconnectNextRetryAt - Date.now()) / 1000));
-  const releasePageUrl = "https://github.com/Mahcks/MirrorSim/releases/latest";
-  const shouldShowUpdateBadge = ["downloading", "available", "ready", "installing"].includes(updateState);
+  const projectPageUrl = "https://github.com/Mahcks/MirrorSim";
+  const releasePageUrl = `${projectPageUrl}/releases/latest`;
+  const issuesPageUrl = `${projectPageUrl}/issues`;
+  const licensePageUrl = `${projectPageUrl}/blob/main/LICENSE`;
+  const thirdPartyNoticesUrl = `${projectPageUrl}/blob/main/THIRD_PARTY_NOTICES.md`;
+  const shouldShowUpdateBadge = !updateBannerDismissed && ["downloading", "available", "ready", "installing"].includes(updateState);
   const updateRestartSafe = isUpdateRestartSafe(ss) && !localRecordingActive;
   const updatePrimaryAction = getUpdatePrimaryAction({
     updateState,
@@ -496,6 +533,7 @@ export default function App() {
       setAvailableUpdate(devUpdatePreview);
       setUpdateState("ready");
       setUpdateError(null);
+      setUpdateBannerDismissed(false);
       return;
     }
 
@@ -523,6 +561,7 @@ export default function App() {
           if (downloaded) {
             setAvailableUpdate(downloaded);
             setUpdateState("ready");
+            setUpdateBannerDismissed(false);
             return;
           }
 
@@ -537,6 +576,7 @@ export default function App() {
           }
 
           setUpdateState("downloading");
+          setUpdateBannerDismissed(false);
           const prepared = await invoke<AppUpdateInfo | null>("download_app_update");
           if (cancelled) {
             return;
@@ -722,6 +762,13 @@ export default function App() {
           e.preventDefault();
           setContextMenu(null);
           setSettingsOpen(false);
+        } else {
+          void getCurrentWindow().isFullscreen().then((fullscreen) => {
+            if (fullscreen) {
+              e.preventDefault();
+              return getCurrentWindow().setFullscreen(false);
+            }
+          }).catch((error) => setCommandError(fmtError(error)));
         }
         return;
       }
@@ -738,7 +785,7 @@ export default function App() {
       if (!e.metaKey && !e.ctrlKey) {
         if (key === "f") {
           e.preventDefault();
-          toggleFullscreen();
+          void toggleFullscreen();
         } else if (key === "h" && appMode === "minimal") {
           e.preventDefault();
           setMinimalChromeHidden((value) => !value);
@@ -757,7 +804,7 @@ export default function App() {
           break;
         case "f":
           e.preventDefault();
-          toggleFullscreen();
+          void toggleFullscreen();
           break;
         case "m":
           e.preventDefault();
@@ -1043,8 +1090,49 @@ export default function App() {
     setSettingsOpen((value) => !value);
   }
 
-  function toggleFullscreen() {
-    void getCurrentWindow().toggleMaximize();
+  async function checkForUpdatesManually() {
+    setCommandPending(true);
+    setUpdateState("checking");
+    setUpdateError(null);
+    setLastUpdateCheckMessage(null);
+    setUpdateBannerDismissed(false);
+
+    try {
+      if (import.meta.env.DEV && devUpdatePreview) {
+        setAvailableUpdate(devUpdatePreview);
+        setUpdateState("ready");
+        setLastUpdateCheckMessage(`Previewing update ${devUpdatePreview.version}.`);
+        return;
+      }
+
+      const downloaded = await invoke<AppUpdateInfo | null>("get_downloaded_app_update");
+      if (downloaded) {
+        setAvailableUpdate(downloaded);
+        setUpdateState("ready");
+        setLastUpdateCheckMessage(`Update ${downloaded.version} is ready.`);
+        return;
+      }
+
+      const update = await invoke<AppUpdateInfo | null>("check_for_app_update");
+      setAvailableUpdate(update);
+      setUpdateState(update ? "available" : "idle");
+      setLastUpdateCheckMessage(update ? `Update ${update.version} is available.` : "You're up to date.");
+    } catch (error) {
+      setUpdateState("idle");
+      setUpdateError(fmtError(error));
+    } finally {
+      setCommandPending(false);
+    }
+  }
+
+  async function toggleFullscreen() {
+    try {
+      const appWindow = getCurrentWindow();
+      await appWindow.setFullscreen(!(await appWindow.isFullscreen()));
+      setCommandError(null);
+    } catch (error) {
+      setCommandError(`Could not change fullscreen mode: ${fmtError(error)}`);
+    }
   }
 
   function handleDeviceDoubleClick(event: ReactMouseEvent<HTMLDivElement>) {
@@ -1052,7 +1140,7 @@ export default function App() {
       return;
     }
 
-    toggleFullscreen();
+    void toggleFullscreen();
   }
 
   function isEditableShortcutTarget(target: EventTarget | null) {
@@ -1065,6 +1153,9 @@ export default function App() {
 
   function doPrimary() {
     if (runtimeInitializing) return;
+    if (ss === "idle") {
+      void primeAudio();
+    }
     if (recordingBusy) {
       void doRecordToggle();
     }
@@ -1079,6 +1170,15 @@ export default function App() {
     }
     else if (ss === "idle") void startSessionFlow("start_session", "manual");
     else void stopSessionFlow();
+  }
+
+  function toggleAudio() {
+    if (!audioAvailable) return;
+    const willUnmute = appPreferences.audioMuted;
+    setAppPreference("audioMuted", !appPreferences.audioMuted);
+    if (willUnmute || audioState === "suspended") {
+      void primeAudio();
+    }
   }
 
   const bonjourToneClass =
@@ -1164,7 +1264,7 @@ export default function App() {
           : null;
 
   function renderUpdateBanner(compact = false) {
-    if (!availableUpdate) {
+    if (!availableUpdate || updateBannerDismissed) {
       return null;
     }
 
@@ -1215,6 +1315,15 @@ export default function App() {
               {updatePrimaryAction.kind === "install" ? "Restart" : "Retry"}
             </button>
           )}
+          <button
+            type="button"
+            className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-sm text-white/38 transition hover:bg-white/8 hover:text-white/75 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
+            onClick={() => setUpdateBannerDismissed(true)}
+            title="Hide until next launch"
+            aria-label="Hide update until next launch"
+          >
+            ×
+          </button>
         </div>
       );
     }
@@ -1249,13 +1358,22 @@ export default function App() {
             </button>
           )}
         </div>
-        <button
-          type="button"
-          className="ml-4 mt-1 text-[10px] text-white/35 underline decoration-white/15 underline-offset-2 transition hover:text-white/65 focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
-          onClick={() => void openUrl(releasePageUrl).catch((error) => setCommandError(fmtError(error)))}
-        >
-          Release details
-        </button>
+        <div className="ml-4 mt-1 flex items-center gap-3">
+          <button
+            type="button"
+            className="text-[10px] text-white/35 underline decoration-white/15 underline-offset-2 transition hover:text-white/65 focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
+            onClick={() => void openUrl(releasePageUrl).catch((error) => setCommandError(fmtError(error)))}
+          >
+            Release details
+          </button>
+          <button
+            type="button"
+            className="text-[10px] text-white/35 transition hover:text-white/65 focus-visible:rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/70"
+            onClick={() => setUpdateBannerDismissed(true)}
+          >
+            Later
+          </button>
+        </div>
       </div>
     );
   }
@@ -1277,6 +1395,11 @@ export default function App() {
       receiverDisplayName={receiverDisplayName}
       lastDiagnosticsExport={lastDiagnosticsExport}
       previewPresetDescription={previewPreset.description}
+      appVersion={appVersion}
+      updateStatus={lastUpdateCheckMessage ?? (availableUpdate ? `Version ${availableUpdate.version} is ${updateState}.` : updateState === "checking" ? "Checking…" : "Automatic checks enabled")}
+      updateError={updateError}
+      audioAvailable={audioAvailable}
+      audioStatus={audioError ? `Audio error: ${audioError}` : audioState === "suspended" ? "Click the speaker control once to enable playback." : audioState === "playing" ? "Receiving iPhone audio." : "Ready for iPhone audio."}
       onClose={() => setSettingsOpen(false)}
       setAppPreference={setAppPreference}
       setScreenshotSetting={setScreenshotSetting}
@@ -1293,6 +1416,11 @@ export default function App() {
       onOpenWindowsServices={() => void invoke("open_windows_services").catch((error) => setCommandError(fmtError(error)))}
       onOpenWindowsFirewall={() => void invoke("open_windows_firewall").catch((error) => setCommandError(fmtError(error)))}
       onExportDiagnostics={() => void exportDiagnostics()}
+      onCheckForUpdates={() => void checkForUpdatesManually()}
+      onOpenProject={() => void openUrl(projectPageUrl).catch((error) => setCommandError(fmtError(error)))}
+      onOpenIssues={() => void openUrl(issuesPageUrl).catch((error) => setCommandError(fmtError(error)))}
+      onOpenLicense={() => void openUrl(licensePageUrl).catch((error) => setCommandError(fmtError(error)))}
+      onOpenThirdPartyNotices={() => void openUrl(thirdPartyNoticesUrl).catch((error) => setCommandError(fmtError(error)))}
     />
     );
   }
@@ -1319,17 +1447,44 @@ export default function App() {
     ["FPS", String(preview.fps)],
     ["Bitrate", `${(preview.bitrateKbps / 1000).toFixed(1)} Mbps`],
     ["Latency", `${preview.latencyMs} ms`],
-    ["Source", videoDiag.videoWidth > 0 && videoDiag.videoHeight > 0 ? `${videoDiag.videoWidth}x${videoDiag.videoHeight}` : "waiting"],
+    ["Source", videoDiag.videoWidth > 0 && videoDiag.videoHeight > 0
+      ? `${videoDiag.videoWidth}x${videoDiag.videoHeight}`
+      : previewClientDiag.playbackBackend === "webcodecs" && previewStream
+        ? `${previewStream.codedWidth}x${previewStream.codedHeight}`
+        : "waiting"],
     ["Frames", String(preview.frameNumber)],
+    ["Playback", `${videoDiag.currentTime.toFixed(2)}s / ${videoDiag.bufferedEnd.toFixed(2)}s`],
+    ["Video state", `${videoDiag.paused ? "paused" : "playing"}, ready ${videoDiag.readyState}`],
+    ["Decoded", String(videoDiag.totalVideoFrames)],
     ["Buffer", `+${bufferedAhead.toFixed(2)}s`],
     ["Rate", `${videoDiag.playbackRate.toFixed(2)}x`],
     ["Dropped", String(videoDiag.droppedVideoFrames)],
     ["Queued", String(previewDiag.queuedSegments)],
     ["Init", previewDiag.initSegmentReady ? "ready" : "waiting"],
+    ["Playback backend", previewClientDiag.playbackBackend ?? "waiting"],
     ["Appended", String(previewClientDiag.mediaAppendCount)],
+    [previewClientDiag.playbackBackend === "webcodecs" ? "Decoder output" : "MSE ranges",
+      previewClientDiag.playbackBackend === "webcodecs"
+        ? `${previewClientDiag.decodedOutputCount} decoded / ${previewClientDiag.presentedFrameCount} presented (queue ${previewClientDiag.decoderQueueSize})`
+        : `${previewClientDiag.bufferedRangeCount} (${previewClientDiag.bufferedStart.toFixed(2)}s-${previewClientDiag.bufferedEnd.toFixed(2)}s)`],
+    ["Last keyframe", previewClientDiag.lastKeyframeSequenceNumber === null
+      ? "waiting"
+      : `segment ${previewClientDiag.lastKeyframeSequenceNumber} (${previewClientDiag.segmentsSinceKeyframe} since)`],
+    ["Empty appends", String(previewClientDiag.emptyBufferedAppendCount)],
+    ["Media event", previewClientDiag.lastMediaEvent ?? "waiting"],
+    ["Canvas", previewClientDiag.canvasConnected
+      ? `mounted, ${previewClientDiag.canvasContextLossCount} context losses`
+      : "detached"],
+    ["Pixel probe", previewClientDiag.pixelProbeLuma === null
+      ? "waiting"
+      : `luma ${previewClientDiag.pixelProbeLuma}, ${previewClientDiag.decodedFrameFormat ?? "unknown format"}`],
+    ["Media error", previewClientDiag.lastMediaError ?? "none"],
     ["Errors", String(previewClientDiag.appendErrorCount)],
+    ["Recoveries", `${videoRecoveryCount} playback / ${previewClientDiag.decoderClientRecoveryCount} decoder-client`],
     ["Bonjour", bonjourStatus.status],
     ["Transport", receiverRuntime.transport],
+    ["Config generation", String(previewStream?.configGeneration ?? 0)],
+    ["Audio", audioError ?? (audioAvailable ? audioState : "unavailable")],
     ["Last error", receiverRuntime.lastError ?? surfaceError ?? commandError ?? "—"],
   ];
 
@@ -1423,6 +1578,8 @@ export default function App() {
           captureNotice={captureNotice}
           canCapture={canCapture}
           canRecord={canRecord}
+          audioAvailable={audioAvailable}
+          audioMuted={appPreferences.audioMuted}
           commandPending={commandPending}
           commandError={commandError}
           currentDeviceTrusted={session.currentDeviceTrusted}
@@ -1437,6 +1594,7 @@ export default function App() {
           isTransitioningSession={isTransitioningSession}
           onAdjustZoom={adjustZoom}
           onCapture={() => void doCapture()}
+          onToggleAudio={toggleAudio}
           onGoMinimal={() => void goMinimal()}
           onInstallBonjour={() => void openUrl("https://support.apple.com/kb/DL999").catch((error) => setCommandError(fmtError(error)))}
           onOpenSettings={openScreenshotSettings}
@@ -1485,6 +1643,8 @@ export default function App() {
       <MinimalView
         canCapture={canCapture}
         canRecord={canRecord}
+        audioAvailable={audioAvailable}
+        audioMuted={appPreferences.audioMuted}
         captureNotice={captureNotice}
         commandError={commandError}
         commandPending={commandPending}
@@ -1516,6 +1676,7 @@ export default function App() {
         minimalFloatingButtonClass={minimalFloatingButtonClass}
         minimalShellRef={minimalShellRef}
         onCapture={() => void doCapture()}
+        onToggleAudio={toggleAudio}
         onFit={() => {
           void fitMinimalWindow(orientation);
         }}

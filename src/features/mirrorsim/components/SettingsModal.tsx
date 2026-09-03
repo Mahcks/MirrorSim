@@ -31,6 +31,11 @@ type SettingsModalProps = {
   receiverDisplayName: string;
   lastDiagnosticsExport: DiagnosticsExport | null;
   previewPresetDescription: string;
+  appVersion: string;
+  updateStatus: string;
+  updateError: string | null;
+  audioAvailable: boolean;
+  audioStatus: string;
   onClose: () => void;
   setAppPreference: <K extends keyof AppPreferences>(key: K, value: AppPreferences[K]) => void;
   setScreenshotSetting: <K extends keyof ScreenshotSettings>(key: K, value: ScreenshotSettings[K]) => void;
@@ -47,7 +52,22 @@ type SettingsModalProps = {
   onOpenWindowsServices: () => void;
   onOpenWindowsFirewall: () => void;
   onExportDiagnostics: () => void;
+  onCheckForUpdates: () => void;
+  onOpenProject: () => void;
+  onOpenIssues: () => void;
+  onOpenLicense: () => void;
+  onOpenThirdPartyNotices: () => void;
 };
+
+type SettingsSection = "general" | "capture" | "connection" | "devices" | "support";
+
+const settingsSections: Array<{ id: SettingsSection; label: string }> = [
+  { id: "general", label: "General" },
+  { id: "capture", label: "Capture" },
+  { id: "connection", label: "Connection" },
+  { id: "devices", label: "Devices" },
+  { id: "support", label: "Support" },
+];
 
 function Toggle({
   checked,
@@ -105,6 +125,11 @@ export function SettingsModal({
   receiverDisplayName,
   lastDiagnosticsExport,
   previewPresetDescription,
+  appVersion,
+  updateStatus,
+  updateError,
+  audioAvailable,
+  audioStatus,
   onClose,
   setAppPreference,
   setScreenshotSetting,
@@ -121,7 +146,13 @@ export function SettingsModal({
   onOpenWindowsServices,
   onOpenWindowsFirewall,
   onExportDiagnostics,
+  onCheckForUpdates,
+  onOpenProject,
+  onOpenIssues,
+  onOpenLicense,
+  onOpenThirdPartyNotices,
 }: SettingsModalProps) {
+  const [activeSection, setActiveSection] = useState<SettingsSection>("general");
   const [nicknameDrafts, setNicknameDrafts] = useState<Record<string, string>>({});
   const [blockReasonDrafts, setBlockReasonDrafts] = useState<Record<string, string>>({});
   const [pendingConfirmation, setPendingConfirmation] = useState<string | null>(null);
@@ -141,6 +172,12 @@ export function SettingsModal({
     setBlockReasonDrafts(nextReasons);
     setPendingConfirmation(null);
   }, [trustedDevices]);
+
+  useEffect(() => {
+    if (open) {
+      setActiveSection("general");
+    }
+  }, [open]);
 
   useEffect(() => {
     if (!pendingConfirmation) return;
@@ -290,9 +327,28 @@ export function SettingsModal({
           </button>
         </div>
 
+        <nav className="flex shrink-0 gap-1 overflow-x-auto border-b border-white/7 px-3 py-2" aria-label="Preference sections">
+          {settingsSections.map((section) => (
+            <button
+              key={section.id}
+              type="button"
+              className={`shrink-0 rounded-lg px-3 py-1.5 text-[11px] font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60 ${
+                activeSection === section.id
+                  ? "bg-white/10 text-white"
+                  : "text-white/42 hover:bg-white/5 hover:text-white/75"
+              }`}
+              aria-current={activeSection === section.id ? "page" : undefined}
+              onClick={() => setActiveSection(section.id)}
+            >
+              {section.label}
+            </button>
+          ))}
+        </nav>
+
         {/* Scrollable content */}
         <div className={embedded ? "min-h-0 flex-1 overflow-y-auto px-4 pb-5" : "min-h-0 flex-1 overflow-y-auto px-5 pb-6"}>
 
+          {activeSection === "general" && <>
           {/* ── General ── */}
           <div className={`${sectionHeader} pt-5 pb-2`}>General</div>
           <div className="divide-y divide-white/7">
@@ -342,6 +398,37 @@ export function SettingsModal({
                   : "This is what nearby iPhones see. Use a unique name when more than one PC runs MirrorSim."}
               </p>
             </div>
+            <div className="py-3">
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <div className="text-sm text-white/80">iPhone audio</div>
+                  <div className="mt-0.5 text-[11px] text-white/38">
+                    {audioAvailable ? audioStatus : "Requires an audio-capable AirPlay runtime."}
+                  </div>
+                </div>
+                <Toggle
+                  label="Play iPhone audio"
+                  checked={!appPreferences.audioMuted}
+                  onChange={(enabled) => setAppPreference("audioMuted", !enabled)}
+                  disabled={!audioAvailable}
+                />
+              </div>
+              <label className="mt-3 block text-[11px] text-white/45">
+                Playback volume — {Math.round(appPreferences.audioVolume * 100)}%
+                <input
+                  aria-label="iPhone audio volume"
+                  className="mt-2 w-full accent-blue-500 disabled:opacity-40"
+                  type="range"
+                  min="0"
+                  max="1"
+                  step="0.05"
+                  value={appPreferences.audioVolume}
+                  disabled={!audioAvailable}
+                  onChange={(event) => setAppPreference("audioVolume", Number(event.target.value))}
+                />
+              </label>
+              <p className={fieldNote}>Muting playback does not remove audio from new recordings.</p>
+            </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
                 <div className="text-sm text-white/80">Solid window background</div>
@@ -367,6 +454,13 @@ export function SettingsModal({
             </div>
           </div>
 
+          <div className={`${sectionHeader} mt-6 pb-2`}>Orientation</div>
+          <div className={infoBox}>
+            Use Rotate in the toolbar when your iPhone changes orientation. MirrorSim deliberately does not infer phone rotation from video dimensions because media apps can publish landscape video while the phone itself remains portrait.
+          </div>
+          </>}
+
+          {activeSection === "capture" && <>
           {/* ── Screenshots ── */}
           <div className={`${sectionHeader} mt-6 pb-2`}>Screenshots</div>
           <div className="divide-y divide-white/7">
@@ -377,6 +471,13 @@ export function SettingsModal({
             <div className="flex items-center justify-between gap-4 py-3">
               <span className="text-sm text-white/80">Copy to clipboard</span>
               <Toggle label="Copy screenshots to clipboard" checked={screenshotSettings.copyToClipboard} onChange={(value) => setScreenshotSetting("copyToClipboard", value)} />
+            </div>
+            <div className="flex items-start justify-between gap-4 py-3">
+              <div>
+                <div className="text-sm text-white/80">Include device frame</div>
+                <div className="mt-0.5 text-[11px] text-white/38">Exports the screenshot inside MirrorSim's presentation-ready phone shell.</div>
+              </div>
+              <Toggle label="Include device frame in screenshots" checked={screenshotSettings.includeDeviceFrame} onChange={(value) => setScreenshotSetting("includeDeviceFrame", value)} />
             </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
@@ -505,9 +606,18 @@ export function SettingsModal({
               </div>
               <Toggle label="Open saved recordings in Explorer" checked={recordingSettings.autoReveal} onChange={(value) => setRecordingSetting("autoReveal", value)} />
             </div>
+            <div className="flex items-start justify-between gap-4 py-3">
+              <div>
+                <div className="text-sm text-white/80">Include device frame</div>
+                <div className="mt-0.5 text-[11px] text-white/38">Records the live screen inside a clean phone shell.</div>
+              </div>
+              <Toggle label="Include device frame in recordings" checked={recordingSettings.includeDeviceFrame} onChange={(value) => setRecordingSetting("includeDeviceFrame", value)} />
+            </div>
           </div>
-          <p className="mt-2 text-[11px] leading-4 text-white/38">Recording quality follows your Preview Quality setting. Screenshots always capture the full current frame.</p>
+          <p className="mt-2 text-[11px] leading-4 text-white/38">Recording quality follows your Preview Quality setting. Screenshot exports use the full source frame.</p>
+          </>}
 
+          {activeSection === "connection" && <>
           {/* ── Connection ── */}
           <div className={`${sectionHeader} mt-6 pb-2`}>Connection</div>
           <div className="divide-y divide-white/7">
@@ -552,7 +662,9 @@ export function SettingsModal({
             <li>3. Look for <span className="text-white/65">{receiverDisplayName}</span> on the same Wi-Fi network.</li>
             <li>4. Not showing up? Use Recheck Bonjour and confirm Windows Firewall isn't blocking MirrorSim.</li>
           </ol>
+          </>}
 
+          {activeSection === "devices" && <>
           {/* ── Device Trust ── */}
           <div className="mt-6 flex items-center justify-between pb-2">
             <div className={sectionHeader}>Device Trust</div>
@@ -731,7 +843,9 @@ export function SettingsModal({
           {!hasTrustedDevices && (
             <p className="mt-2 text-[11px] text-white/30">No remembered devices. Connect and approve an iPhone to add it here.</p>
           )}
+          </>}
 
+          {activeSection === "support" && <>
           {/* ── Diagnostics ── */}
           <div className="mt-6 flex items-center justify-between pb-2">
             <div className={sectionHeader}>Diagnostics</div>
@@ -744,10 +858,11 @@ export function SettingsModal({
               Last export: {lastDiagnosticsExport.fileName} — {lastDiagnosticsExport.entryCount} entries at {formatTimestamp(lastDiagnosticsExport.exportedAt)}.
             </p>
           )}
+          <p className="mb-3 text-[10px] leading-4 text-white/32">Exported diagnostics redact device IDs, trust keys, session IDs, and pairing challenge IDs by default. Review the file before sharing it.</p>
           {historyPreview.length > 0 ? (
             <div className="space-y-1.5">
-              {historyPreview.map((entry) => (
-                <div key={entry.id} className="rounded-xl border border-white/7 bg-[#111315] px-3 py-2.5">
+              {historyPreview.map((entry, index) => (
+                <div key={`${entry.id}-${index}`} className="rounded-xl border border-white/7 bg-[#111315] px-3 py-2.5">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-[11px] font-medium text-white/80">{entry.message}</div>
@@ -785,6 +900,40 @@ export function SettingsModal({
               />
             </div>
           </div>
+
+          <div className={`${sectionHeader} mt-6 pb-2`}>About &amp; Support</div>
+          <div className={infoBox}>
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-white/38">MirrorSim version</span>
+              <strong className="font-medium text-white/82">{appVersion}</strong>
+            </div>
+            <div className="mt-2 flex items-center justify-between gap-4">
+              <span className="text-white/38">Updates</span>
+              <span className="text-right text-white/72">{updateStatus}</span>
+            </div>
+            {updateError && <p className="mt-2 break-words text-amber-200/75">{updateError}</p>}
+            <button type="button" className={`${btn} mt-3`} onClick={onCheckForUpdates} disabled={commandPending}>Check for updates</button>
+          </div>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            <button type="button" className={btn} onClick={onOpenProject}>GitHub</button>
+            <button type="button" className={btn} onClick={onOpenIssues}>Report an issue</button>
+            <button type="button" className={btn} onClick={onOpenLicense}>MIT license</button>
+            <button type="button" className={btn} onClick={onOpenThirdPartyNotices}>Third-party licenses</button>
+          </div>
+
+          <div className={`${sectionHeader} mt-6 pb-2`}>Privacy</div>
+          <div className={infoBox}>
+            Mirrored video and audio are processed locally on this PC. MirrorSim does not upload frames or captures. Network activity is limited to local AirPlay/Bonjour traffic, update checks, and links you choose to open.
+          </div>
+
+          <div className={`${sectionHeader} mt-6 pb-2`}>Known Limitations</div>
+          <ul className={`${infoBox} list-disc space-y-1 pl-7`}>
+            <li>DRM-protected video may appear black.</li>
+            <li>Some apps publish a separate landscape playback surface; rotate MirrorSim manually when needed.</li>
+            <li>Bonjour and Windows Firewall configuration can affect discovery.</li>
+            <li>Unsigned beta installers may trigger Microsoft Defender SmartScreen.</li>
+          </ul>
+          </>}
 
         </div>
       </div>

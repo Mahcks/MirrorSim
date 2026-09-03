@@ -16,7 +16,11 @@ describe("desktop capabilities", () => {
     );
 
     expect(opener?.allow).toEqual([
+      { url: "https://github.com/Mahcks/MirrorSim" },
       { url: "https://github.com/Mahcks/MirrorSim/releases/latest" },
+      { url: "https://github.com/Mahcks/MirrorSim/issues" },
+      { url: "https://github.com/Mahcks/MirrorSim/blob/main/LICENSE" },
+      { url: "https://github.com/Mahcks/MirrorSim/blob/main/THIRD_PARTY_NOTICES.md" },
       { url: "https://support.apple.com/kb/DL999" },
     ]);
     expect(opener?.allow?.some(({ url }) => url?.includes("*"))).toBe(false);

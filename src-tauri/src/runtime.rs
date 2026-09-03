@@ -1,18 +1,19 @@
 use crate::history::{append_history_entry, now_unix_timestamp};
 use crate::models::{
     AppUpdateInfo, BonjourStatusKind, BonjourStatusSnapshot, CommandResult, ConnectionHistoryEntry,
-    PairingPhase, PairingSnapshot, PreviewDiagnosticsSnapshot, PreviewStreamDescriptor,
-    PreviewTelemetry, ReceiverRuntimeSnapshot, ReceiverRuntimeState, ReceiverTransport,
-    ScreenshotSaveLocation, SessionSnapshot, SessionStatus, SidecarEvent,
+    PairingPhase, PairingSnapshot, PreviewAudioFramePayload, PreviewDiagnosticsSnapshot,
+    PreviewStreamDescriptor, PreviewTelemetry, ReceiverRuntimeSnapshot, ReceiverRuntimeState,
+    ReceiverTransport, ScreenshotSaveLocation, SessionSnapshot, SessionStatus, SidecarEvent,
 };
 use crate::preview_fragments::normalize_preview_sample_duration;
 use crate::sidecar::ReceiverSidecarSpec;
 use crate::state::{
     clear_pairing, clear_session_identity, mark_pairing_challenge_closed,
     pairing_challenge_is_closed, prepare_live_transport, preview_activity, preview_bitrate_kbps,
-    preview_fps_from_duration, refresh_live_preview_descriptor, reset_fixture_transport,
-    reset_preview, resume_listening_after_disconnect, resume_local_session_approval,
-    set_receiver_runtime_state, sync_preview_diagnostics, SessionStore,
+    preview_fps_from_duration, queue_preview_audio_frame, refresh_live_preview_descriptor,
+    reset_fixture_transport, reset_preview, resume_listening_after_disconnect,
+    resume_local_session_approval, set_receiver_runtime_state, sync_preview_diagnostics,
+    SessionStore,
 };
 use crate::trust::{
     apply_current_device_trust, get_trusted_devices, note_device_connected, note_device_failure,
@@ -59,15 +60,21 @@ const RECEIVER_RUNTIME_EVENT: &str = "receiver-runtime";
 const PREVIEW_DIAGNOSTICS_EVENT: &str = "preview-diagnostics";
 const PAIRING_STATUS_EVENT: &str = "pairing-status";
 const KEYFRAME_REQUEST_CAPABILITY: &str = "keyframe-request";
+const MIRROR_TRANSPORT_INTERRUPTED_REASON: &str = "mirror_transport_interrupted";
 const CONNECTING_MEDIA_TIMEOUT: Duration = Duration::from_secs(12);
 const CONNECTING_WATCHDOG_INTERVAL: Duration = Duration::from_millis(250);
-const EXPECTED_RECEIVER_PROTOCOL_VERSION: &str = "0.5.0";
+const EXPECTED_RECEIVER_PROTOCOL_VERSION: &str = "0.6.0";
 const MAX_RECEIVER_EVENT_LINE_BYTES: usize = 12 * 1024 * 1024;
 const MAX_VIDEO_ACCESS_UNIT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_AUDIO_FRAME_BYTES: usize = 1024 * 1024;
 const MAX_SIDECAR_RESTART_ATTEMPTS: u8 = 3;
 const SIDECAR_RESTART_STABILITY_WINDOW: Duration = Duration::from_secs(10);
-const MAX_RETAINED_SIDECAR_LOG_LINES: usize = 200;
+// At the receiver's two-second pipeline cadence, this preserves more than
+// thirty minutes of evidence around intermittent AirPlay transport failures.
+const MAX_RETAINED_SIDECAR_LOG_LINES: usize = 4_000;
 const MAX_RETAINED_SIDECAR_LOG_CHARS: usize = 2_000;
+const MEDIA_STATE_EMIT_INTERVAL: Duration = Duration::from_millis(250);
+const AUDIO_ERROR_REPORT_INTERVAL: Duration = Duration::from_secs(10);
 
 fn receiver_supports_keyframe_request(capabilities: &[String]) -> bool {
     capabilities
@@ -90,12 +97,26 @@ fn media_timeline_restarted(previous_sample_index: Option<u32>, sample_index: u3
     previous_sample_index.is_some_and(|previous| sample_index <= previous)
 }
 
+fn is_auxiliary_audio_error(code: &str, recoverable: bool) -> bool {
+    recoverable && code == "invalid_audio_frame"
+}
+
+fn is_transient_mirror_transport_interruption(reason: &str, requires_refresh: bool) -> bool {
+    reason == MIRROR_TRANSPORT_INTERRUPTED_REASON && !requires_refresh
+}
+
 #[derive(Debug, PartialEq, Eq)]
 enum ConnectingWatchdogState {
     Stop,
     WaitingForApproval,
     WaitingForMedia,
     Healthy,
+}
+
+struct ConnectingWatchdogContext {
+    connection_attempt_generation: u64,
+    session_id: String,
+    stream_id: String,
 }
 
 fn connecting_watchdog_state(
@@ -113,6 +134,10 @@ fn connecting_watchdog_state(
         )
     {
         return ConnectingWatchdogState::Stop;
+    }
+
+    if store.connection_attempt_has_video {
+        return ConnectingWatchdogState::Healthy;
     }
 
     match store.snapshot.status {
@@ -549,28 +574,24 @@ pub(crate) fn emit_runtime_error(
     message: String,
     recoverable: bool,
 ) -> CommandResult<()> {
+    // A generic recoverable receiver error does not prove that the H.264
+    // dependency chain or AirPlay session ended. Keep established media alive;
+    // explicit StreamDiscontinuity events own video teardown and recovery.
+    if recoverable {
+        return emit_runtime_warning_preserving_session(app, store, message);
+    }
+
     let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics) = {
         let mut guard = store.lock().map_err(|error| error.to_string())?;
 
-        if recoverable {
-            if matches!(
-                guard.snapshot.status,
-                SessionStatus::Mirroring | SessionStatus::Recording
-            ) {
-                guard.snapshot.status = SessionStatus::Connecting;
-            }
-            guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
-            set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Ready);
-        } else {
-            guard.snapshot.status = SessionStatus::Idle;
-            guard.active_session_id = None;
-            guard.native_pairing_approved_for_session = false;
-            clear_session_identity(&mut guard);
-            clear_pairing(&mut guard);
-            reset_preview(&mut guard);
-            reset_fixture_transport(&mut guard);
-            set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Idle);
-        }
+        guard.snapshot.status = SessionStatus::Idle;
+        guard.active_session_id = None;
+        guard.native_pairing_approved_for_session = false;
+        clear_session_identity(&mut guard);
+        clear_pairing(&mut guard);
+        reset_preview(&mut guard);
+        reset_fixture_transport(&mut guard);
+        set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Idle);
 
         guard.receiver_runtime.last_error = Some(message);
         sync_preview_diagnostics(&mut guard);
@@ -589,6 +610,31 @@ pub(crate) fn emit_runtime_error(
         Some(snapshot),
         Some(preview),
         Some(preview_stream),
+        Some(receiver_runtime),
+        Some(preview_diagnostics),
+    )
+}
+
+fn emit_runtime_warning_preserving_session(
+    app: &AppHandle,
+    store: &Arc<Mutex<SessionStore>>,
+    message: String,
+) -> CommandResult<()> {
+    let (receiver_runtime, preview_diagnostics) = {
+        let mut guard = store.lock().map_err(|error| error.to_string())?;
+        guard.receiver_runtime.last_error = Some(message);
+        sync_preview_diagnostics(&mut guard);
+        (
+            guard.receiver_runtime.clone(),
+            guard.preview_diagnostics.clone(),
+        )
+    };
+
+    emit_state_updates(
+        app,
+        None,
+        None,
+        None,
         Some(receiver_runtime),
         Some(preview_diagnostics),
     )
@@ -706,7 +752,9 @@ fn handle_sidecar_event(
         return Ok(());
     }
 
-    if let SidecarEvent::VideoAccessUnit { stream_id, .. } = &event {
+    if let SidecarEvent::VideoAccessUnit { stream_id, .. }
+    | SidecarEvent::AudioFrame { stream_id, .. } = &event
+    {
         let guard = store.lock().map_err(|error| error.to_string())?;
         if !session_accepts_media(&guard, stream_id) {
             return Ok(());
@@ -736,12 +784,42 @@ fn handle_sidecar_event(
         _ => None,
     };
 
+    let validated_audio_payload = match &event {
+        SidecarEvent::AudioFrame {
+            sample_rate,
+            channels,
+            bits_per_sample,
+            payload_base64,
+            ..
+        } => {
+            if !(8_000..=192_000).contains(sample_rate)
+                || !(1..=2).contains(channels)
+                || *bits_per_sample != 16
+                || payload_base64.len() > MAX_AUDIO_FRAME_BYTES.saturating_mul(2)
+            {
+                return Err(String::from("receiver sent an unsupported PCM audio frame"));
+            }
+            let payload = BASE64_STANDARD
+                .decode(payload_base64.as_bytes())
+                .map_err(|error| format!("failed to decode receiver audio payload: {error}"))?;
+            let frame_alignment = usize::from(*channels) * 2;
+            if payload.is_empty()
+                || payload.len() > MAX_AUDIO_FRAME_BYTES
+                || payload.len() % frame_alignment != 0
+            {
+                return Err(String::from("receiver sent an invalid PCM audio frame"));
+            }
+            Some(payload_base64.clone())
+        }
+        _ => None,
+    };
+
     let mut request_keyframe: Option<(String, String)> = None;
     let mut stop_session_request: Option<String> = None;
     let mut cancel_pairing_request: Option<(String, String)> = None;
     let mut restart_sidecar = false;
     let mut receiver_media_accepted = false;
-    let mut connecting_watchdog: Option<(u64, String, String)> = None;
+    let mut connecting_watchdog: Option<ConnectingWatchdogContext> = None;
     let mut history_entries: Vec<ConnectionHistoryEntry> = Vec::new();
 
     let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics, pairing) = {
@@ -750,6 +828,8 @@ fn handle_sidecar_event(
         let mut emit_preview = false;
         let mut emit_preview_stream = false;
         let mut emit_pairing = false;
+        let mut emit_receiver_runtime = true;
+        let mut emit_preview_diagnostics = true;
 
         match event {
             SidecarEvent::ReceiverReady {
@@ -799,6 +879,8 @@ fn handle_sidecar_event(
                 }
                 guard.connection_attempt_generation =
                     guard.connection_attempt_generation.wrapping_add(1);
+                guard.connection_attempt_has_video = false;
+                guard.last_audio_error_report_at = None;
                 let connection_attempt_generation = guard.connection_attempt_generation;
                 let watchdog_session_id = session_id.clone();
                 let watchdog_stream_id = stream_id.clone();
@@ -928,11 +1010,11 @@ fn handle_sidecar_event(
                 if guard.active_session_id.as_deref() == Some(watchdog_session_id.as_str())
                     && matches!(guard.snapshot.status, SessionStatus::Connecting)
                 {
-                    connecting_watchdog = Some((
+                    connecting_watchdog = Some(ConnectingWatchdogContext {
                         connection_attempt_generation,
-                        watchdog_session_id,
-                        watchdog_stream_id,
-                    ));
+                        session_id: watchdog_session_id,
+                        stream_id: watchdog_stream_id,
+                    });
                 }
 
                 history_entries.push(ConnectionHistoryEntry {
@@ -1178,6 +1260,7 @@ fn handle_sidecar_event(
                     return Ok(());
                 }
 
+                let previous_status = guard.snapshot.status;
                 let waiting_for_local_approval = guard.pending_local_session_approval;
                 let previous_sample_index = guard.preview_diagnostics.last_access_unit_index;
                 let sample_index_restarted =
@@ -1259,7 +1342,12 @@ fn handle_sidecar_event(
                         "waiting for local approval before MirrorSim starts streaming",
                     ));
                     emit_snapshot = true;
-                } else if !push_result.sample_enqueued {
+                } else if !push_result.sample_enqueued
+                    && !matches!(
+                        previous_status,
+                        SessionStatus::Mirroring | SessionStatus::Recording
+                    )
+                {
                     guard.snapshot.status = SessionStatus::Connecting;
                     guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
                     guard.receiver_runtime.stream_id = stream_id;
@@ -1271,7 +1359,8 @@ fn handle_sidecar_event(
                     ));
 
                     emit_snapshot = true;
-                } else {
+                } else if push_result.sample_enqueued {
+                    guard.connection_attempt_has_video = true;
                     if guard.snapshot.status != SessionStatus::Recording {
                         guard.snapshot.status = SessionStatus::Mirroring;
                     }
@@ -1298,6 +1387,50 @@ fn handle_sidecar_event(
                 }
 
                 sync_preview_diagnostics(&mut guard);
+                let state_changed = previous_status != guard.snapshot.status;
+                let media_state_emit_due = guard
+                    .last_media_state_emit_at
+                    .is_none_or(|last_emit| last_emit.elapsed() >= MEDIA_STATE_EMIT_INTERVAL);
+                let should_emit_media_state = state_changed
+                    || needs_decoder_recovery
+                    || push_result.init_segment_became_available
+                    || media_state_emit_due;
+                if should_emit_media_state {
+                    guard.last_media_state_emit_at = Some(Instant::now());
+                }
+                emit_snapshot &= state_changed || needs_decoder_recovery;
+                emit_preview &= should_emit_media_state;
+                emit_receiver_runtime = should_emit_media_state;
+                emit_preview_diagnostics = should_emit_media_state;
+            }
+            SidecarEvent::AudioFrame {
+                stream_id,
+                pts,
+                sample_rate,
+                channels,
+                bits_per_sample,
+                payload_base64: _,
+            } => {
+                if !session_accepts_media(&guard, &stream_id)
+                    || guard.pending_local_session_approval
+                {
+                    return Ok(());
+                }
+                let payload_base64 = validated_audio_payload
+                    .ok_or_else(|| String::from("receiver audio payload was unavailable"))?;
+                queue_preview_audio_frame(
+                    &mut guard,
+                    PreviewAudioFramePayload {
+                        stream_id,
+                        pts,
+                        sample_rate,
+                        channels,
+                        bits_per_sample,
+                        payload_base64,
+                    },
+                );
+                emit_receiver_runtime = false;
+                emit_preview_diagnostics = false;
             }
             SidecarEvent::StreamDiscontinuity {
                 stream_id,
@@ -1323,6 +1456,10 @@ fn handle_sidecar_event(
                 let session_stopped = reason == "session_stopped";
                 let sender_disconnected = reason == "sender_disconnected";
                 let should_resume_listening = session_stopped || sender_disconnected;
+                let mirror_transport_interrupted = is_transient_mirror_transport_interruption(
+                    &reason,
+                    requires_init_segment_refresh,
+                );
 
                 if should_resume_listening {
                     resume_listening_after_disconnect(&mut guard, stream_id.clone());
@@ -1330,6 +1467,28 @@ fn handle_sidecar_event(
                     emit_preview = true;
                     emit_preview_stream = true;
                     emit_pairing = true;
+                } else if mirror_transport_interrupted {
+                    // The iPhone can cycle only its mirror-data TCP connection while
+                    // leaving the AirPlay control session established. Preserve the
+                    // decoder dependency chain and last drawable frame while the data
+                    // channel is interrupted instead of presenting a permanently frozen
+                    // Live session. A new access unit restores Mirroring automatically. Do
+                    // not time out this state: the AirPlay control session is still
+                    // established, and only the sender or user should end it.
+                    guard.connection_attempt_generation =
+                        guard.connection_attempt_generation.wrapping_add(1);
+                    guard.connection_attempt_has_video = false;
+                    if matches!(
+                        guard.snapshot.status,
+                        SessionStatus::Mirroring | SessionStatus::Recording
+                    ) {
+                        guard.snapshot.status = SessionStatus::Connecting;
+                        emit_snapshot = true;
+                    }
+                    guard.receiver_runtime.state = ReceiverRuntimeState::Ready;
+                    guard.receiver_runtime.last_error = Some(String::from(
+                        "the iPhone interrupted its mirror-data connection; waiting for the existing AirPlay session to resume",
+                    ));
                 } else {
                     prepare_live_transport(&mut guard, stream_id.clone());
                     guard.remux_blueprint.reset_live_preview(stream_id.clone());
@@ -1388,6 +1547,10 @@ fn handle_sidecar_event(
                         format!(
                             "{disconnected_device_name} disconnected. MirrorSim is listening for another iPhone connection."
                         )
+                    } else if mirror_transport_interrupted {
+                        format!(
+                            "{disconnected_device_name} interrupted its mirror-data connection. MirrorSim is keeping the AirPlay session attached while it waits for video to resume."
+                        )
                     } else {
                         format!("Stream discontinuity: {reason}")
                     },
@@ -1410,10 +1573,21 @@ fn handle_sidecar_event(
                 if guard.active_session_id.is_none() {
                     return Ok(());
                 }
+                let auxiliary_audio_error = is_auxiliary_audio_error(&code, recoverable);
+                if auxiliary_audio_error {
+                    let report_is_due =
+                        guard.last_audio_error_report_at.is_none_or(|last_report| {
+                            last_report.elapsed() >= AUDIO_ERROR_REPORT_INTERVAL
+                        });
+                    if !report_is_due {
+                        return Ok(());
+                    }
+                    guard.last_audio_error_report_at = Some(Instant::now());
+                }
                 let snapshot = guard.snapshot.clone();
                 drop(guard);
 
-                if !matches!(snapshot.status, SessionStatus::Idle) {
+                if !auxiliary_audio_error && !matches!(snapshot.status, SessionStatus::Idle) {
                     let _ = note_device_failure(
                         app,
                         &snapshot.device_name,
@@ -1449,8 +1623,12 @@ fn handle_sidecar_event(
                     },
                 );
 
-                let result =
-                    emit_runtime_error(app, store, format!("{code}: {message}"), recoverable);
+                let runtime_message = format!("{code}: {message}");
+                let result = if auxiliary_audio_error {
+                    emit_runtime_warning_preserving_session(app, store, runtime_message)
+                } else {
+                    emit_runtime_error(app, store, runtime_message, recoverable)
+                };
                 if !recoverable {
                     stop_sidecar_runtime(sidecar);
                 }
@@ -1462,8 +1640,8 @@ fn handle_sidecar_event(
             emit_snapshot.then(|| guard.snapshot.clone()),
             emit_preview.then(|| guard.preview.clone()),
             emit_preview_stream.then(|| guard.preview_stream.clone()),
-            Some(guard.receiver_runtime.clone()),
-            Some(guard.preview_diagnostics.clone()),
+            emit_receiver_runtime.then(|| guard.receiver_runtime.clone()),
+            emit_preview_diagnostics.then(|| guard.preview_diagnostics.clone()),
             emit_pairing.then(|| guard.pairing.clone()),
         )
     };
@@ -1550,15 +1728,13 @@ fn handle_sidecar_event(
         emit_pairing_status(app, pairing)?;
     }
 
-    if let Some((connection_attempt_generation, session_id, stream_id)) = connecting_watchdog {
+    if let Some(context) = connecting_watchdog {
         spawn_connecting_watchdog(
             app.clone(),
             store.clone(),
             sidecar.clone(),
             sidecar_generation,
-            connection_attempt_generation,
-            session_id,
-            stream_id,
+            context,
         );
     }
 
@@ -1574,11 +1750,14 @@ fn spawn_connecting_watchdog(
     store: Arc<Mutex<SessionStore>>,
     sidecar: Arc<Mutex<Option<SidecarRuntime>>>,
     sidecar_generation: u64,
-    connection_attempt_generation: u64,
-    session_id: String,
-    stream_id: String,
+    context: ConnectingWatchdogContext,
 ) {
     thread::spawn(move || {
+        let ConnectingWatchdogContext {
+            connection_attempt_generation,
+            session_id,
+            stream_id,
+        } = context;
         let mut waiting_for_media_since: Option<Instant> = None;
 
         loop {
@@ -1600,7 +1779,8 @@ fn spawn_connecting_watchdog(
 
             match watchdog_state {
                 ConnectingWatchdogState::Stop => return,
-                ConnectingWatchdogState::WaitingForApproval | ConnectingWatchdogState::Healthy => {
+                ConnectingWatchdogState::Healthy => return,
+                ConnectingWatchdogState::WaitingForApproval => {
                     waiting_for_media_since = None;
                     continue;
                 }
@@ -2088,10 +2268,12 @@ pub(crate) fn ensure_bonjour_ready() -> CommandResult<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        connecting_watchdog_state, media_timeline_restarted, needs_local_session_approval,
-        pairing_policy_rejection, read_bounded_line, session_accepts_media,
-        should_persist_native_pairing_approval, should_reset_sidecar_restart_budget,
-        validate_pairing_event_correlation, ConnectingWatchdogState, PairingEventCorrelation,
+        connecting_watchdog_state, is_auxiliary_audio_error,
+        is_transient_mirror_transport_interruption, media_timeline_restarted,
+        needs_local_session_approval, pairing_policy_rejection, read_bounded_line,
+        session_accepts_media, should_persist_native_pairing_approval,
+        should_reset_sidecar_restart_budget, validate_pairing_event_correlation,
+        ConnectingWatchdogState, PairingEventCorrelation, MIRROR_TRANSPORT_INTERRUPTED_REASON,
         SIDECAR_RESTART_STABILITY_WINDOW,
     };
     use crate::models::{PairingPhase, SessionStatus};
@@ -2133,6 +2315,29 @@ mod tests {
     }
 
     #[test]
+    fn invalid_audio_is_an_auxiliary_warning_only_when_recoverable() {
+        assert!(is_auxiliary_audio_error("invalid_audio_frame", true));
+        assert!(!is_auxiliary_audio_error("invalid_audio_frame", false));
+        assert!(!is_auxiliary_audio_error("video_decode_failed", true));
+    }
+
+    #[test]
+    fn only_non_refreshing_mirror_socket_interruptions_keep_the_session_attached() {
+        assert!(is_transient_mirror_transport_interruption(
+            MIRROR_TRANSPORT_INTERRUPTED_REASON,
+            false
+        ));
+        assert!(!is_transient_mirror_transport_interruption(
+            MIRROR_TRANSPORT_INTERRUPTED_REASON,
+            true
+        ));
+        assert!(!is_transient_mirror_transport_interruption(
+            "sender_disconnected",
+            false
+        ));
+    }
+
+    #[test]
     fn connecting_watchdog_is_correlated_and_pauses_for_approval() {
         let mut store = connected_store();
         store.connection_attempt_generation = 7;
@@ -2153,6 +2358,14 @@ mod tests {
         assert_eq!(
             connecting_watchdog_state(&store, 7, "session-1", "stream-1"),
             ConnectingWatchdogState::Healthy
+        );
+
+        store.connection_attempt_has_video = true;
+        store.snapshot.status = SessionStatus::Connecting;
+        assert_eq!(
+            connecting_watchdog_state(&store, 7, "session-1", "stream-1"),
+            ConnectingWatchdogState::Healthy,
+            "an established video session must never re-enter the initial connection timeout"
         );
 
         assert_eq!(

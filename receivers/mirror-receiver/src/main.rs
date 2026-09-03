@@ -170,11 +170,9 @@ where
                 };
             }
             "--airplayserver-exe" => {
-                airplayserver_exe = Some(
-                    iter.next().ok_or_else(|| {
-                        String::from("missing executable path after --airplayserver-exe")
-                    })?,
-                );
+                airplayserver_exe = Some(iter.next().ok_or_else(|| {
+                    String::from("missing executable path after --airplayserver-exe")
+                })?);
             }
             "--airplayserver-arg" => {
                 airplayserver_args.push(iter.next().ok_or_else(|| {
@@ -182,9 +180,9 @@ where
                 })?);
             }
             "--transport" => {
-                let _ = iter.next().ok_or_else(|| {
-                    String::from("missing transport value after --transport")
-                })?;
+                let _ = iter
+                    .next()
+                    .ok_or_else(|| String::from("missing transport value after --transport"))?;
             }
             other => {
                 return Err(format!("unsupported argument '{other}'"));
@@ -209,13 +207,14 @@ fn emit_event(event: SidecarEvent) -> io::Result<()> {
 fn emit_receiver_ready(runtime: &BackendRuntime) -> io::Result<()> {
     emit_event(SidecarEvent::ReceiverReady {
         receiver_id: String::from(runtime.receiver_id()),
-        protocol_version: String::from("0.5.0"),
+        protocol_version: String::from("0.6.0"),
         capabilities: runtime.capabilities(),
     })
 }
 
 fn run() -> io::Result<()> {
-    let options = parse_cli_args(env::args()).map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
+    let options = parse_cli_args(env::args())
+        .map_err(|message| io::Error::new(io::ErrorKind::InvalidInput, message))?;
     let mut runtime = BackendRuntime::start(&options)?;
     let mut session_state = SessionState::new();
 
@@ -261,15 +260,13 @@ fn run() -> io::Result<()> {
                 emit_event(SidecarEvent::SessionStarted {
                     session_id,
                     stream_id: expected_stream_id,
-                    device_name: device_hint.unwrap_or_else(|| String::from(runtime.default_device_name())),
+                    device_name: device_hint
+                        .unwrap_or_else(|| String::from(runtime.default_device_name())),
                 })?;
             }
             SidecarCommand::StopSession { session_id } => {
                 emit_event(SidecarEvent::StreamDiscontinuity {
-                    stream_id: session_state
-                        .active_stream_id
-                        .take()
-                        .unwrap_or(session_id),
+                    stream_id: session_state.active_stream_id.take().unwrap_or(session_id),
                     reason: String::from("session_stopped"),
                     requires_init_segment_refresh: false,
                 })?;
@@ -322,14 +319,18 @@ mod tests {
         .expect("airplayserver args should parse");
 
         assert_eq!(options.backend, BackendMode::AirPlayServer);
-        assert_eq!(options.airplayserver_exe.as_deref(), Some("C:/tools/AirPlayServer.exe"));
+        assert_eq!(
+            options.airplayserver_exe.as_deref(),
+            Some("C:/tools/AirPlayServer.exe")
+        );
         assert_eq!(options.airplayserver_args, vec![String::from("/config")]);
     }
 
     #[test]
     fn start_session_command_parses() {
         let payload = r#"{"name":"start_session","session_id":"session-1","device_hint":"iPhone 15 Pro","expected_stream_id":"fixture-preview-stream"}"#;
-        let command: SidecarCommand = serde_json::from_str(payload).expect("start_session should parse");
+        let command: SidecarCommand =
+            serde_json::from_str(payload).expect("start_session should parse");
 
         match command {
             SidecarCommand::StartSession {

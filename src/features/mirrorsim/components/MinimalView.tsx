@@ -10,6 +10,8 @@ import { WindowControls } from "./WindowControls";
 type MinimalViewProps = {
   canCapture: boolean;
   canRecord: boolean;
+  audioAvailable: boolean;
+  audioMuted: boolean;
   captureNotice: string | null;
   commandError: string | null;
   commandPending: boolean;
@@ -20,6 +22,7 @@ type MinimalViewProps = {
   minimalFloatingButtonClass: string;
   minimalShellRef: RefObject<HTMLDivElement | null>;
   onCapture: () => void;
+  onToggleAudio: () => void;
   onFit: () => void;
   onGoConsole: () => void;
   onOpenSettings: () => void;
@@ -41,6 +44,8 @@ type MinimalViewProps = {
 export function MinimalView({
   canCapture,
   canRecord,
+  audioAvailable,
+  audioMuted,
   captureNotice,
   commandError,
   commandPending,
@@ -51,6 +56,7 @@ export function MinimalView({
   minimalFloatingButtonClass,
   minimalShellRef,
   onCapture,
+  onToggleAudio,
   onFit,
   onGoConsole,
   onOpenSettings,
@@ -118,6 +124,16 @@ export function MinimalView({
               >
                 <Icon name="record" size={14} />
               </button>
+              <button
+                type="button"
+                className={minimalFloatingButtonClass}
+                onClick={onToggleAudio}
+                disabled={!audioAvailable}
+                title={!audioAvailable ? "Audio is unavailable in this receiver" : audioMuted ? "Unmute iPhone audio" : "Mute iPhone audio"}
+                aria-pressed={audioMuted}
+              >
+                <Icon name={audioMuted ? "volume-off" : "volume"} size={14} />
+              </button>
               <button type="button" className={minimalFloatingButtonClass} onClick={onRotate} title="Rotate device">
                 <Icon name="rotate" size={14} />
               </button>
@@ -166,12 +182,12 @@ export function MinimalView({
       </div>
 
       {(captureNotice || commandError) && (
-        <div className="pointer-events-none fixed bottom-3 left-1/2 z-50 max-w-[calc(100vw-24px)] -translate-x-1/2">
+        <div className="pointer-events-none fixed bottom-3 left-1/2 z-50 w-[calc(100vw-24px)] max-w-96 -translate-x-1/2">
           <div
             role={commandError ? "alert" : "status"}
             aria-live={commandError ? "assertive" : "polite"}
             className={cn(
-              "max-w-90 truncate rounded-lg border px-3 py-2 text-[11px] font-medium shadow-2xl backdrop-blur",
+              "pointer-events-auto max-h-32 select-text overflow-y-auto whitespace-pre-wrap break-words rounded-lg border px-3 py-2 text-[11px] font-medium leading-4 shadow-2xl backdrop-blur",
               commandError
                 ? "border-red-400/25 bg-red-950/85 text-red-100"
                 : "border-emerald-300/20 bg-[#101418]/90 text-emerald-100",

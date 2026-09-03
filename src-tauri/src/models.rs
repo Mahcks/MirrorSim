@@ -191,21 +191,17 @@ pub(crate) enum PreviewDeliveryMode {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PreviewStreamDescriptor {
     pub(crate) stream_id: String,
+    pub(crate) config_generation: u64,
     pub(crate) transport: ReceiverTransport,
     pub(crate) delivery_mode: PreviewDeliveryMode,
     pub(crate) mime_type: String,
+    pub(crate) codec: String,
+    pub(crate) coded_width: u16,
+    pub(crate) coded_height: u16,
+    pub(crate) decoder_config_hex: String,
     pub(crate) init_segment_path: String,
     pub(crate) media_segment_paths: Vec<String>,
     pub(crate) should_loop: bool,
-}
-
-#[derive(Clone, Serialize)]
-#[serde(rename_all = "camelCase")]
-pub(crate) struct PreviewMediaSegmentPayload {
-    pub(crate) sequence_number: u32,
-    pub(crate) first_sample_index: u32,
-    pub(crate) last_sample_index: u32,
-    pub(crate) bytes: Vec<u8>,
 }
 
 #[derive(Clone, Serialize)]
@@ -254,6 +250,17 @@ pub(crate) struct PreviewDiagnosticsSnapshot {
     pub(crate) last_delivered_sequence_number: Option<u32>,
     pub(crate) last_delivered_first_sample_index: Option<u32>,
     pub(crate) last_delivered_last_sample_index: Option<u32>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PreviewAudioFramePayload {
+    pub(crate) stream_id: String,
+    pub(crate) pts: u64,
+    pub(crate) sample_rate: u32,
+    pub(crate) channels: u16,
+    pub(crate) bits_per_sample: u16,
+    pub(crate) payload_base64: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -314,6 +321,15 @@ pub(crate) enum SidecarEvent {
         pts: u64,
         dts: u64,
         duration: u32,
+        #[serde(rename = "payloadBase64")]
+        payload_base64: String,
+    },
+    AudioFrame {
+        stream_id: String,
+        pts: u64,
+        sample_rate: u32,
+        channels: u16,
+        bits_per_sample: u16,
         #[serde(rename = "payloadBase64")]
         payload_base64: String,
     },

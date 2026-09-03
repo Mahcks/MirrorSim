@@ -1,18 +1,21 @@
 use crate::models::{
-    PairingEntryMode, PairingPhase, PairingSnapshot, PreviewDeliveryMode,
+    PairingEntryMode, PairingPhase, PairingSnapshot, PreviewAudioFramePayload, PreviewDeliveryMode,
     PreviewDiagnosticsSnapshot, PreviewStreamDescriptor, PreviewTelemetry, ReceiverRuntimeSnapshot,
     ReceiverRuntimeState, ReceiverTransport, SessionSnapshot, SessionStatus,
 };
 use crate::preview_fragments::LivePreviewBuffer;
 use crate::remux::RemuxBlueprint;
 use std::collections::VecDeque;
+use std::time::Instant;
 
 const IDLE_DEVICE_NAME: &str = "Waiting for iPhone";
 const MAX_CLOSED_PAIRING_CHALLENGES: usize = 32;
+pub(crate) const MAX_QUEUED_AUDIO_FRAMES: usize = 96;
 
 pub(crate) struct SessionStore {
     pub(crate) sequence: u64,
     pub(crate) connection_attempt_generation: u64,
+    pub(crate) connection_attempt_has_video: bool,
     pub(crate) active_session_id: Option<String>,
     pub(crate) require_local_session_approval: bool,
     pub(crate) require_known_device: bool,
@@ -24,22 +27,28 @@ pub(crate) struct SessionStore {
     pub(crate) pairing: PairingSnapshot,
     pub(crate) preview: PreviewTelemetry,
     pub(crate) preview_stream: PreviewStreamDescriptor,
+    pub(crate) preview_config_generation: u64,
     pub(crate) live_preview_buffer: LivePreviewBuffer,
+    pub(crate) preview_audio_frames: VecDeque<PreviewAudioFramePayload>,
     pub(crate) remux_blueprint: RemuxBlueprint,
     pub(crate) receiver_runtime: ReceiverRuntimeSnapshot,
     pub(crate) preview_diagnostics: PreviewDiagnosticsSnapshot,
+    pub(crate) preview_client_diagnostics: Option<serde_json::Value>,
     pub(crate) sidecar_logs: VecDeque<String>,
+    pub(crate) last_media_state_emit_at: Option<Instant>,
+    pub(crate) last_audio_error_report_at: Option<Instant>,
 }
 
 impl Default for SessionStore {
     fn default() -> Self {
         let remux_blueprint = RemuxBlueprint::fixture_preview();
         let preview_stream =
-            preview_stream_from_blueprint(&remux_blueprint, ReceiverTransport::Fixture);
+            preview_stream_from_blueprint(&remux_blueprint, ReceiverTransport::Fixture, 0);
 
         Self {
             sequence: 0,
             connection_attempt_generation: 0,
+            connection_attempt_has_video: false,
             active_session_id: None,
             require_local_session_approval: false,
             require_known_device: false,
@@ -87,7 +96,9 @@ impl Default for SessionStore {
                 activity: 0.0,
             },
             preview_stream,
+            preview_config_generation: 0,
             live_preview_buffer: LivePreviewBuffer::new(),
+            preview_audio_frames: VecDeque::new(),
             remux_blueprint: remux_blueprint.clone(),
             receiver_runtime: ReceiverRuntimeSnapshot {
                 state: ReceiverRuntimeState::Idle,
@@ -114,7 +125,10 @@ impl Default for SessionStore {
                 last_delivered_first_sample_index: None,
                 last_delivered_last_sample_index: None,
             },
+            preview_client_diagnostics: None,
             sidecar_logs: VecDeque::new(),
+            last_media_state_emit_at: None,
+            last_audio_error_report_at: None,
         }
     }
 }
@@ -122,15 +136,21 @@ impl Default for SessionStore {
 pub(crate) fn preview_stream_from_blueprint(
     blueprint: &RemuxBlueprint,
     transport: ReceiverTransport,
+    config_generation: u64,
 ) -> PreviewStreamDescriptor {
     PreviewStreamDescriptor {
         stream_id: blueprint.stream_id.clone(),
+        config_generation,
         transport,
         delivery_mode: match transport {
             ReceiverTransport::Fixture => PreviewDeliveryMode::StaticPaths,
             ReceiverTransport::Airplayserver => PreviewDeliveryMode::CommandStream,
         },
         mime_type: blueprint.mime_type.clone(),
+        codec: blueprint.track.codec.clone(),
+        coded_width: blueprint.track.width,
+        coded_height: blueprint.track.height,
+        decoder_config_hex: blueprint.track.decoder_config_hex.clone(),
         init_segment_path: blueprint.init_segment_path.clone(),
         media_segment_paths: blueprint
             .media_segments
@@ -193,6 +213,13 @@ pub(crate) fn reset_preview(store: &mut SessionStore) {
         latency_ms: 0,
         activity: 0.0,
     };
+}
+
+pub(crate) fn queue_preview_audio_frame(store: &mut SessionStore, frame: PreviewAudioFramePayload) {
+    while store.preview_audio_frames.len() >= MAX_QUEUED_AUDIO_FRAMES {
+        store.preview_audio_frames.pop_front();
+    }
+    store.preview_audio_frames.push_back(frame);
 }
 
 pub(crate) fn clear_current_device_identity(store: &mut SessionStore) {
@@ -308,8 +335,10 @@ pub(crate) fn resume_local_session_approval(store: &mut SessionStore) {
 pub(crate) fn reset_fixture_transport(store: &mut SessionStore) {
     let remux_blueprint = RemuxBlueprint::fixture_preview();
     store.preview_stream =
-        preview_stream_from_blueprint(&remux_blueprint, ReceiverTransport::Fixture);
+        preview_stream_from_blueprint(&remux_blueprint, ReceiverTransport::Fixture, 0);
+    store.preview_config_generation = 0;
     store.live_preview_buffer.reset();
+    store.preview_audio_frames.clear();
     store.remux_blueprint = remux_blueprint.clone();
     store.receiver_runtime.transport = ReceiverTransport::Fixture;
     store.receiver_runtime.stream_id = remux_blueprint.stream_id;
@@ -318,17 +347,26 @@ pub(crate) fn reset_fixture_transport(store: &mut SessionStore) {
 
 pub(crate) fn prepare_live_transport(store: &mut SessionStore, stream_id: String) {
     store.live_preview_buffer.reset();
+    store.preview_audio_frames.clear();
     store.remux_blueprint = RemuxBlueprint::live_preview(stream_id.clone());
-    store.preview_stream =
-        preview_stream_from_blueprint(&store.remux_blueprint, ReceiverTransport::Airplayserver);
+    store.preview_config_generation = 0;
+    store.preview_stream = preview_stream_from_blueprint(
+        &store.remux_blueprint,
+        ReceiverTransport::Airplayserver,
+        store.preview_config_generation,
+    );
     store.receiver_runtime.transport = ReceiverTransport::Airplayserver;
     store.receiver_runtime.stream_id = stream_id;
     reset_preview_diagnostics(store, ReceiverTransport::Airplayserver, false);
 }
 
 pub(crate) fn refresh_live_preview_descriptor(store: &mut SessionStore) {
-    store.preview_stream =
-        preview_stream_from_blueprint(&store.remux_blueprint, ReceiverTransport::Airplayserver);
+    store.preview_config_generation = store.preview_config_generation.wrapping_add(1).max(1);
+    store.preview_stream = preview_stream_from_blueprint(
+        &store.remux_blueprint,
+        ReceiverTransport::Airplayserver,
+        store.preview_config_generation,
+    );
 }
 
 pub(crate) fn set_receiver_runtime_state(store: &mut SessionStore, state: ReceiverRuntimeState) {
@@ -372,10 +410,38 @@ pub(crate) fn preview_activity(size_bytes: usize) -> f32 {
 mod tests {
     use super::{
         mark_pairing_challenge_closed, pairing_challenge_is_closed, prepare_live_transport,
-        resume_listening_after_disconnect, resume_local_session_approval, SessionStore,
-        MAX_CLOSED_PAIRING_CHALLENGES,
+        queue_preview_audio_frame, resume_listening_after_disconnect,
+        resume_local_session_approval, SessionStore, MAX_CLOSED_PAIRING_CHALLENGES,
+        MAX_QUEUED_AUDIO_FRAMES,
     };
-    use crate::models::{PairingEntryMode, PairingPhase, ReceiverRuntimeState, SessionStatus};
+    use crate::models::{
+        PairingEntryMode, PairingPhase, PreviewAudioFramePayload, ReceiverRuntimeState,
+        SessionStatus,
+    };
+
+    #[test]
+    fn audio_queue_drops_the_oldest_frames_at_its_capacity() {
+        let mut store = SessionStore::default();
+        for pts in 0..(MAX_QUEUED_AUDIO_FRAMES as u64 + 5) {
+            queue_preview_audio_frame(
+                &mut store,
+                PreviewAudioFramePayload {
+                    stream_id: String::from("stream"),
+                    pts,
+                    sample_rate: 44_100,
+                    channels: 2,
+                    bits_per_sample: 16,
+                    payload_base64: String::from("AAAAAA=="),
+                },
+            );
+        }
+
+        assert_eq!(store.preview_audio_frames.len(), MAX_QUEUED_AUDIO_FRAMES);
+        assert_eq!(
+            store.preview_audio_frames.front().map(|frame| frame.pts),
+            Some(5)
+        );
+    }
 
     const SAMPLE_SPS: [u8; 28] = [
         0x67, 0x42, 0xC0, 0x1E, 0xDA, 0x02, 0x80, 0xBF, 0xE5, 0xC0, 0x5A, 0x80, 0x80, 0x80, 0xA0,

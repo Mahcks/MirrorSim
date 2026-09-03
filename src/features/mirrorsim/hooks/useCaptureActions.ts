@@ -13,6 +13,7 @@ import {
 import type {
   AppPreferences,
   Capture,
+  Orientation,
   RecordingSettings,
   SavedCaptureFile,
   ScreenshotCaptureOverrides,
@@ -21,6 +22,8 @@ import type {
   SessionSnapshot,
 } from "@/features/mirrorsim/types";
 import { getRecordingFailureRecovery } from "@/features/mirrorsim/recordingFlow";
+import { createCaptureSurface } from "@/features/mirrorsim/captureSurface";
+import { getRetainedPreviewFrame } from "@/mockPreviewStream";
 
 type UseCaptureActionsArgs = {
   appPreferences: AppPreferences;
@@ -38,6 +41,8 @@ type UseCaptureActionsArgs = {
   setScreenshotSettings: Dispatch<SetStateAction<ScreenshotSettings>>;
   setSession: Dispatch<SetStateAction<SessionSnapshot>>;
   videoEl: HTMLVideoElement | null;
+  orientation: Orientation;
+  recordingAudioTrack: MediaStreamTrack | null;
 };
 
 type RecordingWriteSession = SavedCaptureFile & {
@@ -60,6 +65,8 @@ export function useCaptureActions({
   setScreenshotSettings,
   setSession,
   videoEl,
+  orientation,
+  recordingAudioTrack,
 }: UseCaptureActionsArgs) {
   const [recElapsed, setRecElapsed] = useState(0);
   const [localRecordingActive, setLocalRecordingActive] = useState(false);
@@ -72,6 +79,7 @@ export function useCaptureActions({
   const recordingElapsedRef = useRef(0);
   const captureInFlightRef = useRef(false);
   const recordingTransitionRef = useRef(false);
+  const recordingRenderCleanupRef = useRef<(() => void) | null>(null);
 
   useEffect(() => {
     const recorder = mediaRecorderRef.current;
@@ -100,21 +108,27 @@ export function useCaptureActions({
     return () => window.clearInterval(intervalId);
   }, [isRec, localRecordingActive]);
 
-  async function captureVideoFrameBlob(): Promise<Blob> {
-    if (!videoEl || videoEl.readyState < 2 || videoEl.videoWidth === 0 || videoEl.videoHeight === 0) {
+  async function captureVideoFrameBlob(includeDeviceFrame: boolean): Promise<Blob> {
+    if (!videoEl) {
       throw new Error("Live preview is not ready for screenshots yet.");
     }
 
-    const canvas = document.createElement("canvas");
-    canvas.width = videoEl.videoWidth;
-    canvas.height = videoEl.videoHeight;
-
-    const context = canvas.getContext("2d");
-    if (!context) {
-      throw new Error("Could not create screenshot canvas.");
+    const retainedFrame = getRetainedPreviewFrame(videoEl);
+    const source = retainedFrame?.canvas ?? videoEl;
+    const sourceWidth = retainedFrame?.width ?? videoEl.videoWidth;
+    const sourceHeight = retainedFrame?.height ?? videoEl.videoHeight;
+    if (sourceWidth === 0 || sourceHeight === 0) {
+      throw new Error("MirrorSim has not decoded a frame to screenshot yet.");
     }
 
-    context.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+    const { canvas, draw } = createCaptureSurface(
+      source,
+      sourceWidth,
+      sourceHeight,
+      orientation,
+      includeDeviceFrame,
+    );
+    draw();
 
     const blob = await new Promise<Blob | null>((resolve) => {
       canvas.toBlob(resolve, "image/png");
@@ -200,8 +214,10 @@ export function useCaptureActions({
     setCommandError(null);
   }
 
-  function getRecordingMimeType() {
-    const candidates = ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
+  function getRecordingMimeType(hasAudio: boolean) {
+    const candidates = hasAudio
+      ? ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
+      : ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
 
     for (const candidate of candidates) {
       if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(candidate)) {
@@ -213,7 +229,15 @@ export function useCaptureActions({
   }
 
   async function startLocalRecording(fileName: string) {
-    if (!videoEl || videoEl.readyState < 2 || videoEl.videoWidth === 0 || videoEl.videoHeight === 0) {
+    if (!videoEl) {
+      throw new Error("Live preview is not ready for recording yet.");
+    }
+
+    const retainedFrame = getRetainedPreviewFrame(videoEl);
+    const previewSource = retainedFrame?.canvas ?? videoEl;
+    const sourceWidth = retainedFrame?.width ?? videoEl.videoWidth;
+    const sourceHeight = retainedFrame?.height ?? videoEl.videoHeight;
+    if (sourceWidth === 0 || sourceHeight === 0) {
       throw new Error("Live preview is not ready for recording yet.");
     }
 
@@ -221,25 +245,65 @@ export function useCaptureActions({
       throw new Error("Recording is not available in this environment.");
     }
 
-    const previewVideo = videoEl as HTMLVideoElement & { captureStream?: () => MediaStream };
-    const previewCaptureStream = typeof previewVideo.captureStream === "function" ? previewVideo.captureStream() : null;
+    const previewVideo = videoEl as HTMLVideoElement & { captureStream?: (frameRate?: number) => MediaStream };
+    const previewCanvas = retainedFrame?.canvas as (HTMLCanvasElement & {
+      captureStream?: (frameRate?: number) => MediaStream;
+    }) | undefined;
+    let previewCaptureStream: MediaStream | null = null;
+    if (recordingSettings.includeDeviceFrame) {
+      const { canvas, draw } = createCaptureSurface(
+        previewSource,
+        sourceWidth,
+        sourceHeight,
+        orientation,
+        true,
+      );
+      const framedCanvas = canvas as HTMLCanvasElement & { captureStream?: (frameRate?: number) => MediaStream };
+      previewCaptureStream = framedCanvas.captureStream?.(30) ?? null;
+      let animationFrameId = 0;
+      const renderFrame = () => {
+        draw();
+        animationFrameId = window.requestAnimationFrame(renderFrame);
+      };
+      renderFrame();
+      recordingRenderCleanupRef.current = () => window.cancelAnimationFrame(animationFrameId);
+    } else {
+      previewCaptureStream = typeof previewCanvas?.captureStream === "function"
+        ? previewCanvas.captureStream(30)
+        : typeof previewVideo.captureStream === "function"
+          ? previewVideo.captureStream()
+          : null;
+    }
     if (!previewCaptureStream) {
+      recordingRenderCleanupRef.current?.();
+      recordingRenderCleanupRef.current = null;
       throw new Error("The preview surface cannot be captured for recording here.");
     }
+    if (recordingAudioTrack) {
+      previewCaptureStream.addTrack(recordingAudioTrack.clone());
+    }
 
-    const mimeType = getRecordingMimeType();
+    const mimeType = getRecordingMimeType(Boolean(recordingAudioTrack));
     const mediaRecorder = mimeType
       ? new MediaRecorder(previewCaptureStream, { mimeType })
       : new MediaRecorder(previewCaptureStream);
 
-    const writeSession = await invoke<RecordingWriteSession>("begin_recording_save", {
-      request: {
-        fileName,
-        location: recordingSettings.saveLocation,
-        customDirectory:
-          recordingSettings.saveLocation === "custom" ? recordingSettings.customSavePath.trim() || null : null,
-      },
-    });
+    let writeSession: RecordingWriteSession;
+    try {
+      writeSession = await invoke<RecordingWriteSession>("begin_recording_save", {
+        request: {
+          fileName,
+          location: recordingSettings.saveLocation,
+          customDirectory:
+            recordingSettings.saveLocation === "custom" ? recordingSettings.customSavePath.trim() || null : null,
+        },
+      });
+    } catch (error) {
+      previewCaptureStream.getTracks().forEach((track) => track.stop());
+      recordingRenderCleanupRef.current?.();
+      recordingRenderCleanupRef.current = null;
+      throw error;
+    }
     recordingWriteSessionRef.current = writeSession;
     recordingWriteChainRef.current = Promise.resolve();
     recordingWriteErrorRef.current = null;
@@ -313,6 +377,8 @@ export function useCaptureActions({
       recordingId: writeSession.recordingId,
     });
     recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    recordingRenderCleanupRef.current?.();
+    recordingRenderCleanupRef.current = null;
     recordingStreamRef.current = null;
     mediaRecorderRef.current = null;
     recordingWriteSessionRef.current = null;
@@ -324,6 +390,8 @@ export function useCaptureActions({
   async function abortUnstartedRecording() {
     const recordingId = recordingWriteSessionRef.current?.recordingId;
     recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+    recordingRenderCleanupRef.current?.();
+    recordingRenderCleanupRef.current = null;
     recordingStreamRef.current = null;
     mediaRecorderRef.current = null;
     recordingWriteSessionRef.current = null;
@@ -380,6 +448,8 @@ export function useCaptureActions({
       return null;
     } finally {
       recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+      recordingRenderCleanupRef.current?.();
+      recordingRenderCleanupRef.current = null;
       recordingStreamRef.current = null;
       recordingTransitionRef.current = false;
       setCommandPending(false);
@@ -436,7 +506,7 @@ export function useCaptureActions({
         saveLocation: captureSettings.saveLocation,
         customSavePath: captureSettings.customSavePath,
       });
-      const screenshotBlob = await captureVideoFrameBlob();
+      const screenshotBlob = await captureVideoFrameBlob(captureSettings.includeDeviceFrame);
       let savedScreenshot: SavedCaptureFile | null = null;
 
       if (captureSettings.saveToDisk) {

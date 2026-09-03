@@ -1,59 +1,62 @@
-# MirrorSim v0.1.3
+# MirrorSim v0.1.4
 
-MirrorSim v0.1.3 is a reliability and security release focused on real iPhone connections, pairing, preview recovery, recording safety, and dependable updates.
+MirrorSim v0.1.4 adds local iPhone audio, presentation-ready framed exports, and a focused production-readiness pass across the desktop UI, privacy controls, and native receiver boundary.
 
 ## Highlights
 
-- Keeps the receiver listening after an iPhone disconnects and clearly restores the connection instructions.
-- Uses the AirPlay pairing public key as the persistent device identity instead of trusting sender-provided metadata.
-- Binds trust approval to the exact receiver session and pairing challenge so stale prompts cannot approve a later request.
-- Restarts a crashed receiver with bounded backoff and restores the active listening session automatically.
-- Shows explicit initialization, Bonjour, connection, and preview-recovery states with contextual actions.
-- Reworks the opening flow around a single “Start listening” action, shows iPhone connection steps immediately, and only reports “Listening” after the receiver is actually ready.
-- Makes the device preview fit smaller Console windows and makes zoom work consistently in Minimal mode.
-- Keeps Minimal mode's title bar and drag surface spanning the full window when the phone frame is centered inside a wider viewport.
+- Plays decoded iPhone audio locally with mute and volume controls in Console, Minimal, and Preferences.
+- Includes iPhone audio in new `.webm` recordings even when local playback is muted.
+- Adds independent **Include device frame** options for screenshots and recordings.
+- Splits Preferences into General, Capture, Connection, Devices, and Support sections.
+- Adds About & Support with the installed version, a manual update check, project and issue links, licensing, privacy behavior, and known limitations.
+- Uses genuine Windows fullscreen instead of maximizing the app window.
+- Lets update notices be hidden until the next launch.
 
-## Fixed
+## Fixed and hardened
 
-- Interrupted recordings are finalized instead of silently discarded on disconnect or app close, and failed finalization remains retryable with the recovery path reported.
-- Screenshot and recording filenames never overwrite an existing capture, even when timestamps collide.
-- Recording finalization uses a no-overwrite move rather than filesystem hard links, so custom FAT, exFAT, network, and cloud-backed folders remain supported.
-- Preview buffering now evicts only to a decodable keyframe boundary and waits for random access after a full queue drop.
-- Oversized receiver messages and H.264 access units are rejected before unbounded allocation.
-- Malformed H.264 SPS and Exp-Golomb data is rejected with checked parsing rather than risking overflow or a panic.
-- Bonjour detection uses the Windows Service Control Manager API and no longer depends on localized `sc.exe` output.
-- Preferences save in order, keep a revisioned fallback through quick closes or native-store failures, and report persistence errors.
-- Only one MirrorSim instance can run at a time, preventing competing receiver and registry writers.
-- Trust and history registries use durable, atomic replacement with a recoverable backup.
-- Pairing preempts Preferences, only one focus trap can be active, and global shortcuts cannot mutate the app behind an open dialog.
-- Destructive trusted-device resets and forget actions now require an explicit second confirmation.
-- Receiver shutdown cancels pending pairing waits instead of hanging for the full approval timeout.
+- Long Minimal-mode errors wrap and remain readable instead of being truncated.
+- Exported diagnostics redact stable device IDs, trust keys, session IDs, and pairing challenge IDs, including occurrences copied into sidecar logs.
+- Orientation copy now matches actual behavior: rotation stays explicit because media dimensions do not reliably describe the physical phone orientation.
+- PCM events are format-validated and size-limited at both the native adapter and Rust boundary.
+- Invalid or missing audio packets are dropped and rate-limited without changing the live video state or flooding connection history.
+- Recoverable receiver warnings no longer own the session state machine or rebuild a healthy video decoder; only explicit stream discontinuities can reset live media.
+- The initial connection watchdog retires after the first accepted video frame, so a later recoverable audio fault cannot reset an established mirroring session back to Listening.
+- The desktop audio queue is bounded and drops stale frames rather than allowing a stalled UI to grow memory indefinitely.
+- Audio scheduling resets after timestamp discontinuities and excessive backlog to stay close to live playback.
+- H.264 serialization now runs on a bounded receiver worker so a busy desktop UI cannot back-pressure and lag the iPhone.
+- Live AirPlay video now uses a continuous WebCodecs H.264 decoder instead of retaining an ever-growing Media Source buffer, preventing long sessions from exhausting the browser media buffer.
+- WebCodecs frames render directly to a persistent canvas instead of depending on a second browser video-presentation pipeline.
+- The live canvas is preserved and moved with the video host across Minimal/Console remounts, preventing a healthy decoder from continuing inside a detached window surface.
+- Decoder ownership changes are explicit instead of masquerading as an empty queue; stale clients automatically reacquire the stream and preview generations remain monotonic across resets.
+- Overlapping development/HMR attachments serialize decoder preparation, closing a race where an already-disposed preview could invalidate the active one.
+- Equivalent receiver descriptor refreshes no longer recreate the decoder, and recoverable connection transitions preserve the last drawable frame instead of erasing it.
+- Canvas capture is now created only while recording instead of duplicating every decoded frame through an always-on hidden video bridge.
+- Standalone AirPlay SPS/PPS changes are staged until the next real IDR, so codec metadata cannot invalidate an otherwise healthy decoder chain.
+- Catch-up and stall recovery no longer seek into dependent H.264 frames; AirPlay sessions that provide only one initial IDR keep their decoder continuity.
+- Explicit preview rebuilds are primed from a bounded keyframe group when one is available and otherwise report that a fresh Screen Mirroring connection is required instead of loading forever.
+- Live playback no longer performs keyframe-unaware 20-second MSE eviction, which could erase the active H.264 dependency chain and freeze on an old frame.
+- Preview diagnostics now report buffered ranges, keyframe distance, empty appends, decoder-client recoveries, canvas attachment/context loss, sampled pixel luma, and the latest browser media event/error.
+- Frontend decoder diagnostics are retained in exported support reports every two seconds, so a future black-frame report can distinguish handoff, decoding, canvas, and source failures.
+- Screenshots retain and capture the last decoded canvas frame across playback errors and preview retries, making freeze reports diagnosable even after the video bridge is torn down.
+- Connection-history rows receive collision-resistant IDs and legacy duplicates no longer produce repeated React key errors.
+- The native receiver keeps its mirror listener alive when an iPhone cycles the data socket during an app or video transition.
+- Mirror-data socket interruptions now leave the AirPlay control session attached while preserving the decoder and last drawable frame; a resumed socket restores the live session without making the user select MirrorSim again.
+- A sender pause immediately followed by a closed mirror-data socket no longer remains falsely Live or leaves the last frame looking like an active stream. MirrorSim reports that it is reconnecting and waits for the existing AirPlay session until the iPhone or user disconnects.
+- Mirror timing probes now use the protocol's multi-second cadence and a realistic response window instead of retrying roughly 100 times per second when the iPhone takes longer than 1 ms to answer.
+- Native diagnostics now preserve more than thirty minutes of pipeline history and record AirPlay control requests, control-socket lifecycle, timing timeouts, and mirror-data generations around an interruption.
+- A malformed H.264 access unit is dropped instead of terminating the complete AirPlay session.
+- Development diagnostics now retain native transport transitions and two-second video/audio pipeline counters.
 
-## Runtime and release integrity
+## Receiver requirement
 
-- Moves compressed H.264 directly through the headless sidecar path without unnecessary decode and audio allocation.
-- Separates validation, signed artifact construction, and GitHub publishing into least-privilege jobs.
-- Pins every GitHub Action to an immutable commit.
-- Scans both Rust lockfiles against RustSec during CI, weekly scheduled validation, and every release; the two current `quick-xml` advisories are resolved.
-- Cryptographically verifies every generated updater signature against the public key embedded in MirrorSim before publishing.
-- Validates the native runtime file inventory, x64 architecture, and protocol handshake before packaging.
-- Publishes SHA-256 checksums and GitHub build-provenance attestations with the installer, MSI, portable zip, updater signatures, and updater manifest.
+This release requires AirPlayServer adapter protocol `0.6.0` with the `pcm-audio` capability. Publish and pin the matching AirPlayServer runtime release before tagging MirrorSim v0.1.4.
 
 ## Install
 
 Choose one of the attached Windows builds:
 
-- `MirrorSim_*_x64-setup.exe` - recommended NSIS installer.
-- `MirrorSim_*_x64_en-US.msi` - MSI package for managed or advanced installations.
-- `MirrorSim-portable-*.zip` - portable build with no installation required.
+- `MirrorSim_*_x64-setup.exe` — recommended NSIS installer.
+- `MirrorSim_*_x64_en-US.msi` — MSI package for managed or advanced installations.
+- `MirrorSim-portable-*.zip` — portable build with no installation required.
 
-Windows may show a SmartScreen warning because the binaries are updater-signed but are not yet backed by a commercial Windows code-signing certificate.
-
-## Requirements
-
-- Windows 10 or Windows 11, 64-bit.
-- Bonjour for Windows.
-- An iPhone and PC reachable on the same local network.
-- Permission for MirrorSim to communicate through Windows Firewall on private networks.
-
-SHA-256 hashes are included in `checksums.txt`. The GitHub release also includes signed updater artifacts, `latest.json`, and build-provenance attestations.
+Windows may show a SmartScreen warning because the binaries are updater-signed but are not yet backed by a commercial Windows code-signing certificate. SHA-256 hashes are included in `checksums.txt`, and the GitHub release includes updater artifacts and build-provenance attestations.

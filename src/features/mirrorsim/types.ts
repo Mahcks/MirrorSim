@@ -8,7 +8,12 @@ export type SessionCommand =
   | "get_preview_telemetry"
   | "get_preview_stream_descriptor"
   | "get_preview_init_segment"
+  | "prepare_preview_decoder_stream"
+  | "take_preview_video_access_unit"
   | "take_preview_media_segment"
+  | "prepare_preview_media_stream"
+  | "take_preview_audio_frames"
+  | "report_preview_client_diagnostics"
   | "get_preview_diagnostics"
   | "get_receiver_runtime"
   | "get_bonjour_status"
@@ -144,6 +149,7 @@ export type ScreenshotSettings = {
   customSavePath: string;
   fileNamePrefix: string;
   includeTimestamp: boolean;
+  includeDeviceFrame: boolean;
 };
 
 export type RecordingSettings = {
@@ -152,6 +158,7 @@ export type RecordingSettings = {
   fileNamePrefix: string;
   includeTimestamp: boolean;
   autoReveal: boolean;
+  includeDeviceFrame: boolean;
 };
 
 export type AppPreferences = {
@@ -167,6 +174,8 @@ export type AppPreferences = {
   autoStartDiscovery: boolean;
   autoReconnectOnDrop: boolean;
   openDiagnosticsOnError: boolean;
+  audioMuted: boolean;
+  audioVolume: number;
   receiverDisplayName: string;
   lastMode: AppMode;
   lastOrientation: Orientation;
@@ -191,6 +200,15 @@ export type SavedCaptureFile = {
   filePath: string;
 };
 
+export type PreviewAudioFrame = {
+  streamId: string;
+  pts: number;
+  sampleRate: number;
+  channels: number;
+  bitsPerSample: number;
+  payloadBase64: string;
+};
+
 export type IconName =
   | "phone"
   | "camera"
@@ -207,4 +225,6 @@ export type IconName =
   | "chevron-right"
   | "chevron-down"
   | "compress"
-  | "console";
+  | "console"
+  | "volume"
+  | "volume-off";

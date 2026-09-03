@@ -8,7 +8,7 @@
 
 MirrorSim mirrors an iPhone over AirPlay into a clean, presentation-ready device-frame window on Windows — no cable, no clutter, no generic receiver UI in your screenshots. Point your iPhone at it from Control Center and you get a focused, floating device frame ready for demos, QA, screen recordings, and walkthroughs.
 
-<!-- TODO: replace with a real demo GIF (~10-15s) showing: launch MirrorSim -> iPhone Control Center -> Screen Mirroring -> live mirrored preview in Minimal mode -> a quick screenshot/recording capture. Suggested size: under 8MB, ~800px wide. Tools: ScreenToGif (free, Windows) or ffmpeg (mp4 -> optimized gif via palette generation). Save as docs/images/demo.gif and reference it here. -->
+<!-- A real-device demo belongs here once recorded. Capture 10-15 seconds showing Start listening -> iPhone Screen Mirroring -> live Minimal view -> one capture, then run: bun run demo:gif -- -InputFile C:\path\to\demo.mp4 -->
 
 <p align="center">
   <img src="docs/images/map-minimal-vertical.png" alt="MirrorSim Minimal mode mirroring Apple Maps in portrait orientation" width="300">
@@ -54,9 +54,9 @@ Screen mirroring an iPhone on Windows usually means QuickTime on a Mac you don't
 - Live iPhone screen mirroring over Wi-Fi
 - Minimal floating device-frame mode for demos and recordings
 - Console mode with connection state, diagnostics, capture history, and controls
-- Portrait and landscape framing with automatic orientation updates
-- Screenshots to disk and/or clipboard
-- Local `.webm` screen recordings from the preview surface
+- Explicit portrait and landscape framing that is not fooled by apps publishing a separate landscape video surface
+- Screenshots to disk and/or clipboard, with an optional presentation-ready device frame
+- Local `.webm` screen recordings with iPhone audio and an optional device frame
 - Adjustable preview quality and live-edge catch-up presets
 - Trusted-device preferences and receiver access controls
 - Bonjour readiness checks and helpful troubleshooting actions
@@ -111,7 +111,7 @@ MirrorSim ships in two formats:
 ## Use MirrorSim
 
 1. Launch MirrorSim.
-2. Click **Start**.
+2. Click **Start listening**.
 3. On your iPhone, open Control Center.
 4. Tap **Screen Mirroring**.
 5. Choose the receiver name shown in MirrorSim, usually `MirrorSim`.
@@ -123,7 +123,7 @@ The live iPhone preview appears inside the device frame. Use Minimal mode when y
 
 ## Modes
 
-**Minimal mode** is the showcase view: just the device frame, a compact title bar, and quick controls for capture, recording, rotation, preferences, and switching back to Console.
+**Minimal mode** is the showcase view: just the device frame, a compact title bar, and quick controls for capture, recording, audio, rotation, preferences, and switching back to Console.
 
 **Console mode** is the control room: connection status, Bonjour state, diagnostics, capture history, recording controls, trusted devices, and troubleshooting tools.
 
@@ -142,7 +142,7 @@ Default filenames:
 - Screenshots: `mirrorsim_screenshot_YYYYMMDD_HHMMSS.png`
 - Recordings: `mirrorsim_recording_YYYYMMDD_HHMMSS.webm`
 
-Preferences let you choose whether screenshots save to disk, copy to clipboard, or both. You can also change the screenshot and recording folders.
+Preferences let you choose whether screenshots save to disk, copy to clipboard, or both. You can also change the screenshot and recording folders and independently include the device frame in each export type. Muting local playback does not remove iPhone audio from new recordings.
 
 ---
 
@@ -157,7 +157,7 @@ Preferences let you choose whether screenshots save to disk, copy to clipboard, 
 | Double-click the device | Toggle fullscreen |
 | `F1` | Toggle diagnostics, switching to Console mode if needed |
 | `H` | Hide or show the Minimal mode toolbar |
-| `Esc` | Close the active dialog or context menu |
+| `Esc` | Close the active dialog or context menu, or leave fullscreen |
 
 ---
 
@@ -177,8 +177,9 @@ Preview presets tune the desktop playback surface. They do not change the iPhone
 
 MirrorSim is focused on screen mirroring.
 
-- **System audio capture/playback is not currently included. It's actively being worked on**
-- DRM-protected video playback is not supported.
+- iPhone audio playback and recording require the bundled protocol `0.6.0` receiver runtime. Use the speaker control once if Windows suspends audio until a user gesture.
+- DRM-protected video playback is not supported and may appear black.
+- Rotation is manual because the receiver currently does not provide a trustworthy phone-orientation signal; a media app can publish landscape video while the phone remains portrait.
 - AirPlay discovery depends on Bonjour and local network/firewall conditions.
 - Sleep/wake and reconnect behavior depends partly on how iOS resumes the AirPlay sender session.
 

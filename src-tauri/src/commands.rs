@@ -5,7 +5,7 @@ use crate::history::{
 use crate::models::{
     AppUpdateInfo, BeginRecordingRequest, BonjourStatusSnapshot, CommandResult,
     ConnectionHistoryEntry, DiagnosticsExport, PairingEntryMode, PairingPhase, PairingSnapshot,
-    PreviewDiagnosticsSnapshot, PreviewMediaSegmentPayload, PreviewStreamDescriptor,
+    PreviewAudioFramePayload, PreviewDiagnosticsSnapshot, PreviewStreamDescriptor,
     PreviewTelemetry, ReceiverRuntimeSnapshot, RecordingWriteSession, RemuxBlueprintSnapshot,
     SaveScreenshotRequest, SavedScreenshot, SessionSnapshot, SessionStatus, TrustedDevice,
 };
@@ -30,13 +30,13 @@ use crate::trust::{
 };
 use crate::updater_config::{updater_is_configured, UPDATER_ENDPOINT};
 use base64::prelude::{Engine as _, BASE64_STANDARD};
-use serde_json::json;
+use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
 use std::io::{ErrorKind, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::Ordering;
-use tauri::{AppHandle, State};
+use tauri::{ipc::Response, AppHandle, State};
 use tauri_plugin_updater::UpdaterExt;
 use url::Url;
 
@@ -49,6 +49,122 @@ const KEYFRAME_REQUEST_CAPABILITY: &str = "keyframe-request";
 const MAX_SCREENSHOT_BYTES: usize = 64 * 1024 * 1024;
 const MAX_RECORDING_CHUNK_BYTES: usize = 16 * 1024 * 1024;
 const MAX_CAPTURE_NAME_ATTEMPTS: usize = 10_000;
+// sequence number + first/last sample + flags + decode time + duration.
+// Keep this in sync with PREVIEW_SEGMENT_HEADER_BYTES in mockPreviewStream.ts.
+const PREVIEW_SEGMENT_HEADER_BYTES: usize = 25;
+// sample index + flags + decode timestamp + duration. Keep this in sync with
+// PREVIEW_ACCESS_UNIT_HEADER_BYTES in mockPreviewStream.ts.
+const PREVIEW_ACCESS_UNIT_HEADER_BYTES: usize = 17;
+const PREVIEW_ACCESS_UNIT_NEEDS_RANDOM_ACCESS: u8 = 2;
+const PREVIEW_ACCESS_UNIT_CLIENT_INVALIDATED: u8 = 4;
+const MAX_RETAINED_CLIENT_DIAGNOSTIC_CHARS: usize = 4_000;
+
+fn diagnostic_key_is_sensitive(key: &str) -> bool {
+    matches!(
+        key.chars()
+            .filter(|character| character.is_ascii_alphanumeric())
+            .flat_map(char::to_lowercase)
+            .collect::<String>()
+            .as_str(),
+        "key"
+            | "deviceid"
+            | "devicekey"
+            | "currentdeviceid"
+            | "currentdevicekey"
+            | "sessionid"
+            | "challengeid"
+    )
+}
+
+fn collect_diagnostic_secrets(value: &Value, secrets: &mut Vec<String>) {
+    match value {
+        Value::Object(object) => {
+            for (key, child) in object {
+                if diagnostic_key_is_sensitive(key) {
+                    if let Some(secret) = child.as_str().filter(|secret| secret.len() >= 4) {
+                        if !secrets.iter().any(|existing| existing == secret) {
+                            secrets.push(secret.to_string());
+                        }
+                    }
+                } else {
+                    collect_diagnostic_secrets(child, secrets);
+                }
+            }
+        }
+        Value::Array(values) => {
+            for child in values {
+                collect_diagnostic_secrets(child, secrets);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn redact_diagnostics(value: &mut Value) {
+    let mut secrets = Vec::new();
+    collect_diagnostic_secrets(value, &mut secrets);
+    secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
+
+    fn redact_hex_fingerprints(text: &str) -> String {
+        let characters = text.chars().collect::<Vec<_>>();
+        let mut redacted = String::with_capacity(text.len());
+        let mut index = 0;
+        while index < characters.len() {
+            if characters[index].is_ascii_hexdigit() {
+                let start = index;
+                let mut hex_digits = 0;
+                while index < characters.len()
+                    && (characters[index].is_ascii_hexdigit()
+                        || matches!(characters[index], ':' | '-'))
+                {
+                    if characters[index].is_ascii_hexdigit() {
+                        hex_digits += 1;
+                    }
+                    index += 1;
+                }
+                if hex_digits >= 12 {
+                    redacted.push_str("[redacted-fingerprint]");
+                } else {
+                    redacted.extend(&characters[start..index]);
+                }
+            } else {
+                redacted.push(characters[index]);
+                index += 1;
+            }
+        }
+        redacted
+    }
+
+    fn redact(value: &mut Value, secrets: &[String]) {
+        match value {
+            Value::Object(object) => {
+                for (key, child) in object {
+                    if diagnostic_key_is_sensitive(key) && !child.is_null() {
+                        *child = Value::String(String::from("[redacted]"));
+                    } else {
+                        redact(child, secrets);
+                    }
+                }
+            }
+            Value::Array(values) => {
+                for child in values {
+                    redact(child, secrets);
+                }
+            }
+            Value::String(text) => {
+                for secret in secrets {
+                    if text.contains(secret) {
+                        *text = text.replace(secret, "[redacted]");
+                    }
+                }
+                *text = redact_hex_fingerprints(text);
+            }
+            _ => {}
+        }
+    }
+
+    redact(value, &secrets);
+}
 
 struct PairingConfirmationTransition {
     session_id: String,
@@ -393,35 +509,17 @@ pub(crate) fn get_preview_init_segment(
 }
 
 #[tauri::command]
-pub(crate) fn take_preview_media_segment(
+pub(crate) fn prepare_preview_media_stream(
     app: AppHandle,
     state: State<'_, AppState>,
-) -> CommandResult<Option<PreviewMediaSegmentPayload>> {
-    let (payload, receiver_runtime, preview_diagnostics) = {
+) -> CommandResult<u64> {
+    let (client_generation, receiver_runtime, preview_diagnostics) = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
-        let payload = guard
-            .live_preview_buffer
-            .take_next_segment()
-            .map(|segment| {
-                guard.preview_diagnostics.delivered_segments += 1;
-                guard.preview_diagnostics.last_delivered_sequence_number =
-                    Some(segment.descriptor.sequence_number);
-                guard.preview_diagnostics.last_delivered_first_sample_index =
-                    Some(segment.descriptor.first_sample_index);
-                guard.preview_diagnostics.last_delivered_last_sample_index =
-                    Some(segment.descriptor.last_sample_index);
-
-                PreviewMediaSegmentPayload {
-                    sequence_number: segment.descriptor.sequence_number,
-                    first_sample_index: segment.descriptor.first_sample_index,
-                    last_sample_index: segment.descriptor.last_sample_index,
-                    bytes: segment.bytes,
-                }
-            });
+        let (client_generation, _queued) = guard.live_preview_buffer.prepare_client_stream();
         guard.receiver_runtime.queued_segments = guard.live_preview_buffer.queued_segment_count();
         sync_preview_diagnostics(&mut guard);
         (
-            payload,
+            client_generation,
             guard.receiver_runtime.clone(),
             guard.preview_diagnostics.clone(),
         )
@@ -429,7 +527,130 @@ pub(crate) fn take_preview_media_segment(
 
     emit_receiver_runtime(&app, &receiver_runtime)?;
     emit_preview_diagnostics(&app, &preview_diagnostics)?;
-    Ok(payload)
+    Ok(client_generation)
+}
+
+#[tauri::command]
+pub(crate) fn prepare_preview_decoder_stream(state: State<'_, AppState>) -> CommandResult<Value> {
+    let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
+    let (client_generation, queued_access_units, needs_random_access) =
+        guard.live_preview_buffer.prepare_decoder_stream();
+    Ok(json!({
+        "clientGeneration": client_generation,
+        "queuedAccessUnits": queued_access_units,
+        "needsRandomAccess": needs_random_access,
+    }))
+}
+
+#[tauri::command]
+pub(crate) fn take_preview_video_access_unit(
+    client_generation: u64,
+    state: State<'_, AppState>,
+) -> CommandResult<Response> {
+    let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
+    let client_is_current = guard
+        .live_preview_buffer
+        .decoder_client_is_current(client_generation);
+    let access_unit = client_is_current
+        .then(|| {
+            guard
+                .live_preview_buffer
+                .take_next_decoder_access_unit_for_client(client_generation)
+        })
+        .flatten();
+    let random_access_lost =
+        client_is_current && guard.live_preview_buffer.decoder_random_access_lost();
+    let payload = access_unit
+        .map(|access_unit| {
+            let mut payload =
+                Vec::with_capacity(PREVIEW_ACCESS_UNIT_HEADER_BYTES + access_unit.bytes.len());
+            payload.extend_from_slice(&access_unit.sequence_number.to_le_bytes());
+            payload.push(u8::from(access_unit.descriptor.is_keyframe));
+            payload
+                .extend_from_slice(&access_unit.descriptor.timing.decode_timestamp.to_le_bytes());
+            payload.extend_from_slice(&access_unit.descriptor.timing.duration.to_le_bytes());
+            payload.extend_from_slice(&access_unit.bytes);
+            payload
+        })
+        .unwrap_or_else(|| {
+            if !client_is_current {
+                let mut payload = vec![0; PREVIEW_ACCESS_UNIT_HEADER_BYTES];
+                payload[4] = PREVIEW_ACCESS_UNIT_CLIENT_INVALIDATED;
+                return payload;
+            }
+            if !random_access_lost {
+                return Vec::new();
+            }
+            let mut payload = vec![0; PREVIEW_ACCESS_UNIT_HEADER_BYTES];
+            payload[4] = PREVIEW_ACCESS_UNIT_NEEDS_RANDOM_ACCESS;
+            payload
+        });
+    Ok(Response::new(payload))
+}
+
+#[tauri::command]
+pub(crate) fn report_preview_client_diagnostics(
+    diagnostics: Value,
+    state: State<'_, AppState>,
+) -> CommandResult<()> {
+    let serialized = serde_json::to_string(&diagnostics)
+        .map_err(|error| format!("could not serialize preview client diagnostics: {error}"))?;
+    if serialized.chars().count() > MAX_RETAINED_CLIENT_DIAGNOSTIC_CHARS {
+        return Err(String::from(
+            "preview client diagnostics exceeded the retained size limit",
+        ));
+    }
+    let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
+    guard.preview_client_diagnostics = Some(json!({
+        "receivedAt": now_unix_timestamp(),
+        "snapshot": diagnostics,
+    }));
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn take_preview_media_segment(
+    client_generation: u64,
+    state: State<'_, AppState>,
+) -> CommandResult<Response> {
+    let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
+    let payload = guard
+        .live_preview_buffer
+        .take_next_segment_for_client(client_generation)
+        .map(|segment| {
+            guard.preview_diagnostics.delivered_segments += 1;
+            guard.preview_diagnostics.last_delivered_sequence_number =
+                Some(segment.descriptor.sequence_number);
+            guard.preview_diagnostics.last_delivered_first_sample_index =
+                Some(segment.descriptor.first_sample_index);
+            guard.preview_diagnostics.last_delivered_last_sample_index =
+                Some(segment.descriptor.last_sample_index);
+
+            let mut payload =
+                Vec::with_capacity(PREVIEW_SEGMENT_HEADER_BYTES + segment.bytes.len());
+            payload.extend_from_slice(&segment.descriptor.sequence_number.to_le_bytes());
+            payload.extend_from_slice(&segment.descriptor.first_sample_index.to_le_bytes());
+            payload.extend_from_slice(&segment.descriptor.last_sample_index.to_le_bytes());
+            payload.push(u8::from(segment.descriptor.starts_with_keyframe));
+            payload.extend_from_slice(&segment.descriptor.decode_time.to_le_bytes());
+            payload.extend_from_slice(&segment.descriptor.duration.to_le_bytes());
+            payload.extend_from_slice(&segment.bytes);
+            payload
+        })
+        .unwrap_or_default();
+    guard.receiver_runtime.queued_segments = guard.live_preview_buffer.queued_segment_count();
+    sync_preview_diagnostics(&mut guard);
+    Ok(Response::new(payload))
+}
+
+#[tauri::command]
+pub(crate) fn take_preview_audio_frames(
+    state: State<'_, AppState>,
+) -> CommandResult<Vec<PreviewAudioFramePayload>> {
+    const MAX_FRAMES_PER_POLL: usize = 24;
+    let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
+    let count = guard.preview_audio_frames.len().min(MAX_FRAMES_PER_POLL);
+    Ok(guard.preview_audio_frames.drain(..count).collect())
 }
 
 #[tauri::command]
@@ -853,10 +1074,7 @@ pub(crate) fn take_screenshot(
     let snapshot = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
 
-        if !matches!(
-            guard.snapshot.status,
-            SessionStatus::Mirroring | SessionStatus::Recording
-        ) {
+        if !session_status_allows_screenshot(&guard.snapshot.status) {
             return Err(String::from("session is not ready for screenshots"));
         }
 
@@ -866,6 +1084,13 @@ pub(crate) fn take_screenshot(
 
     emit_session_status(&app, &snapshot)?;
     Ok(snapshot)
+}
+
+fn session_status_allows_screenshot(status: &SessionStatus) -> bool {
+    matches!(
+        status,
+        SessionStatus::Connecting | SessionStatus::Mirroring | SessionStatus::Recording
+    )
 }
 
 #[tauri::command]
@@ -1513,13 +1738,21 @@ pub(crate) fn export_diagnostics_report(
     let history = get_saved_connection_history(&app)?;
     let trusted_devices = get_trusted_devices_from_registry(&app)?;
     let bonjour = query_bonjour_status();
-    let (session, pairing, receiver_runtime, preview_diagnostics, sidecar_logs) = {
+    let (
+        session,
+        pairing,
+        receiver_runtime,
+        preview_diagnostics,
+        preview_client_diagnostics,
+        sidecar_logs,
+    ) = {
         let guard = state.inner.lock().map_err(|error| error.to_string())?;
         (
             guard.snapshot.clone(),
             guard.pairing.clone(),
             guard.receiver_runtime.clone(),
             guard.preview_diagnostics.clone(),
+            guard.preview_client_diagnostics.clone(),
             guard.sidecar_logs.iter().cloned().collect::<Vec<_>>(),
         )
     };
@@ -1528,7 +1761,7 @@ pub(crate) fn export_diagnostics_report(
         serde_json::from_str(include_str!("../../receivers/runtime-manifest.json"))
             .map_err(|error| format!("bundled runtime manifest is invalid: {error}"))?;
 
-    let report = json!({
+    let mut report = json!({
         "exportedAt": now_unix_timestamp(),
         "application": {
             "name": "MirrorSim",
@@ -1544,10 +1777,12 @@ pub(crate) fn export_diagnostics_report(
         "pairing": pairing,
         "receiverRuntime": receiver_runtime,
         "previewDiagnostics": preview_diagnostics,
+        "previewClientDiagnostics": preview_client_diagnostics,
         "trustedDevices": trusted_devices,
         "history": history,
         "sidecarLogs": sidecar_logs,
     });
+    redact_diagnostics(&mut report);
 
     export_diagnostics_value(&app, &report)
 }
@@ -1575,14 +1810,42 @@ pub(crate) fn refresh_receiver_readiness(
 mod tests {
     use super::{
         app_update_install_allowed, begin_pairing_confirmation, capture_path_candidate,
-        mark_session_stopped, persist_recording_without_overwrite, rollback_pairing_confirmation,
-        validated_capture_path,
+        mark_session_stopped, persist_recording_without_overwrite, redact_diagnostics,
+        rollback_pairing_confirmation, session_status_allows_screenshot, validated_capture_path,
     };
     use crate::models::{PairingPhase, SessionStatus};
     use crate::state::SessionStore;
     use std::fs;
     use std::path::Path;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn diagnostic_exports_redact_device_and_pairing_fingerprints_everywhere() {
+        let mut report = serde_json::json!({
+            "session": {
+                "currentDeviceId": "stable-phone-id",
+                "currentDeviceKey": "stable-trust-key",
+            },
+            "pairing": {
+                "sessionId": "session-secret",
+                "challengeId": "challenge-secret",
+            },
+            "trustedDevices": [{
+                "key": "stable-trust-key",
+                "deviceId": "stable-phone-id",
+            }],
+            "sidecarLogs": ["phone stable-phone-id used stable-trust-key in session-secret from aa:bb:cc:dd:ee:ff"],
+        });
+
+        redact_diagnostics(&mut report);
+        let serialized = serde_json::to_string(&report).expect("serialize redacted report");
+        assert!(!serialized.contains("stable-phone-id"));
+        assert!(!serialized.contains("stable-trust-key"));
+        assert!(!serialized.contains("session-secret"));
+        assert!(!serialized.contains("challenge-secret"));
+        assert!(!serialized.contains("aa:bb:cc:dd:ee:ff"));
+        assert!(serialized.contains("[redacted]"));
+    }
 
     #[test]
     fn capture_path_accepts_a_plain_expected_filename() {
@@ -1609,6 +1872,17 @@ mod tests {
             capture_path_candidate(requested, 2).expect("second candidate"),
             Path::new("C:/captures/MirrorSim Capture (2).png")
         );
+    }
+
+    #[test]
+    fn screenshots_remain_available_while_transport_reconnects() {
+        assert!(session_status_allows_screenshot(&SessionStatus::Connecting));
+        assert!(session_status_allows_screenshot(&SessionStatus::Mirroring));
+        assert!(session_status_allows_screenshot(&SessionStatus::Recording));
+        assert!(!session_status_allows_screenshot(
+            &SessionStatus::Discovering
+        ));
+        assert!(!session_status_allows_screenshot(&SessionStatus::Idle));
     }
 
     #[test]
@@ -1663,7 +1937,7 @@ mod tests {
         store.snapshot.device_name = String::from("Max's iPhone");
         store.snapshot.current_device_id = Some(String::from("phone-id"));
         store.snapshot.receiver_id = Some(String::from("MirrorSim"));
-        store.snapshot.receiver_protocol_version = Some(String::from("0.5.0"));
+        store.snapshot.receiver_protocol_version = Some(String::from("0.6.0"));
         store.snapshot.receiver_capabilities = vec![String::from("pairing-trust-control")];
 
         mark_session_stopped(&mut store);

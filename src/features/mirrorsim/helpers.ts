@@ -8,7 +8,7 @@ import {
   PREFERENCES_STORAGE_KEY,
   PREFERENCES_STORE_PATH,
 } from "./constants";
-import type { RecordingSettings, ScreenshotSettings, StoredPreferences } from "./types";
+import type { RecordingSettings, ScreenshotSettings, SessionState, StoredPreferences } from "./types";
 
 let preferencesStorePromise: ReturnType<typeof loadStore> | null = null;
 
@@ -70,6 +70,19 @@ const APPLE_MODEL_NAMES: Record<string, string> = {
 };
 
 export const fmtError = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+export function canCapturePreviewFrame(
+  status: SessionState,
+  hasRetainedFrame: boolean,
+  hasCurrentSurfaceFrame: boolean,
+) {
+  if (status === "connecting") {
+    return hasRetainedFrame;
+  }
+
+  return (status === "mirroring" || status === "recording")
+    && (hasRetainedFrame || hasCurrentSurfaceFrame);
+}
 
 export function formatAppleDeviceModel(model: string | null | undefined) {
   const trimmed = model?.trim();
@@ -140,6 +153,10 @@ export function mergeStoredPreferences(stored: StoredPreferences | null) {
   const stringOr = (value: unknown, fallback: string) => typeof value === "string" ? value : fallback;
   const enumOr = <T extends string>(value: unknown, allowed: readonly T[], fallback: T): T =>
     typeof value === "string" && allowed.includes(value as T) ? value as T : fallback;
+  const numberInRangeOr = (value: unknown, minimum: number, maximum: number, fallback: number) =>
+    typeof value === "number" && Number.isFinite(value)
+      ? Math.min(maximum, Math.max(minimum, value))
+      : fallback;
   const screenshots = stored?.screenshots;
   const recordings = stored?.recordings;
   const app = stored?.app;
@@ -152,6 +169,7 @@ export function mergeStoredPreferences(stored: StoredPreferences | null) {
       customSavePath: stringOr(screenshots?.customSavePath, defaultScreenshotSettings.customSavePath),
       fileNamePrefix: stringOr(screenshots?.fileNamePrefix, defaultScreenshotSettings.fileNamePrefix),
       includeTimestamp: booleanOr(screenshots?.includeTimestamp, defaultScreenshotSettings.includeTimestamp),
+      includeDeviceFrame: booleanOr(screenshots?.includeDeviceFrame, defaultScreenshotSettings.includeDeviceFrame),
     },
     recordings: {
       saveLocation: enumOr(recordings?.saveLocation, ["pictures", "documents", "downloads", "custom"], defaultRecordingSettings.saveLocation),
@@ -159,6 +177,7 @@ export function mergeStoredPreferences(stored: StoredPreferences | null) {
       fileNamePrefix: stringOr(recordings?.fileNamePrefix, defaultRecordingSettings.fileNamePrefix),
       includeTimestamp: booleanOr(recordings?.includeTimestamp, defaultRecordingSettings.includeTimestamp),
       autoReveal: booleanOr(recordings?.autoReveal, defaultRecordingSettings.autoReveal),
+      includeDeviceFrame: booleanOr(recordings?.includeDeviceFrame, defaultRecordingSettings.includeDeviceFrame),
     },
     app: {
       launchMode: enumOr(app?.launchMode, ["console", "minimal"], defaultAppPreferences.launchMode),
@@ -173,6 +192,8 @@ export function mergeStoredPreferences(stored: StoredPreferences | null) {
       autoStartDiscovery: booleanOr(app?.autoStartDiscovery, defaultAppPreferences.autoStartDiscovery),
       autoReconnectOnDrop: booleanOr(app?.autoReconnectOnDrop, defaultAppPreferences.autoReconnectOnDrop),
       openDiagnosticsOnError: booleanOr(app?.openDiagnosticsOnError, defaultAppPreferences.openDiagnosticsOnError),
+      audioMuted: booleanOr(app?.audioMuted, defaultAppPreferences.audioMuted),
+      audioVolume: numberInRangeOr(app?.audioVolume, 0, 1, defaultAppPreferences.audioVolume),
       receiverDisplayName: stringOr(app?.receiverDisplayName, defaultAppPreferences.receiverDisplayName),
       lastMode: enumOr(app?.lastMode, ["console", "minimal"], defaultAppPreferences.lastMode),
       lastOrientation: enumOr(app?.lastOrientation, ["portrait", "landscape"], defaultAppPreferences.lastOrientation),

@@ -72,7 +72,11 @@ pub(crate) fn append_history_entry(
         .map_err(|error| error.to_string())?;
     let mut registry = load_registry(app)?;
     if entry.id.trim().is_empty() {
-        entry.id = format!("event-{}-{}", entry.occurred_at, registry.entries.len() + 1);
+        let unique_time = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_nanos())
+            .unwrap_or(0);
+        entry.id = format!("event-{}-{unique_time}", entry.occurred_at);
     }
 
     registry.entries.push(entry);

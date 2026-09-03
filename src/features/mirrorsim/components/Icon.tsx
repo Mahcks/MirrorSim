@@ -119,5 +119,18 @@ export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
           <path d="M7.5 10.5 10 13l-2.5 2.5M12.5 15.5h4" />
         </svg>
       );
+    case "volume":
+      return (
+        <svg {...p}>
+          <path d="M5 9v6h4l5 4V5L9 9H5z" />
+          <path d="M17 9a4 4 0 0 1 0 6M19.5 6.5a7.5 7.5 0 0 1 0 11" />
+        </svg>
+      );
+    case "volume-off":
+      return (
+        <svg {...p}>
+          <path d="M5 9v6h4l5 4V5L9 9H5zM18 9l4 4m0-4-4 4" />
+        </svg>
+      );
   }
 }
