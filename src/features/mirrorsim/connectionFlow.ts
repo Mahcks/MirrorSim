@@ -51,9 +51,6 @@ export function getConnectionPresentation({
     || pairing.phase === "awaiting-trust"
     || pairing.phase === "failed";
   const pairingInProgress = pairing.phase === "verifying";
-  const receiverIdentity = session.receiverId
-    ? `${session.receiverId}${session.receiverProtocolVersion ? ` v${session.receiverProtocolVersion}` : ""}`
-    : null;
   const phoneSteps: [string, string, string] = [
     "Open Control Center",
     "Tap Screen Mirroring",
@@ -127,7 +124,7 @@ export function getConnectionPresentation({
     headline = session.currentDeviceNickname ?? (session.deviceName === "Waiting for iPhone"
       ? "Preparing iPhone preview"
       : session.deviceName);
-    supportingText = "The iPhone is connected. MirrorSim is waiting for the first decodable video frame.";
+    supportingText = "Your iPhone connected. The picture should appear in a moment.";
     secondaryLabel = "iPhone connected";
     titlebarLabel = "Connecting";
     tone = "active";
@@ -140,7 +137,7 @@ export function getConnectionPresentation({
   } else if (session.status === "discovering") {
     headline = "Listening for your iPhone";
     supportingText = "MirrorSim is ready for a connection. Finish these steps on your iPhone.";
-    secondaryLabel = receiverIdentity ?? `Visible as ${receiverDisplayName}`;
+    secondaryLabel = `Available as ${receiverDisplayName}`;
     titlebarLabel = "Listening";
     tone = "active";
   } else if (receiverRuntime.lastError) {

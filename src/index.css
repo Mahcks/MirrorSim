@@ -18,6 +18,93 @@ body {
 	color: #f5f7fa;
 }
 
+button:focus-visible,
+summary:focus-visible,
+[role="button"]:focus-visible {
+	outline: 2px solid rgb(103 232 249 / 0.7);
+	outline-offset: 2px;
+}
+
+button[data-tooltip] {
+	position: relative;
+}
+
+button[data-tooltip]::after {
+	position: absolute;
+	top: calc(100% + 7px);
+	left: 50%;
+	z-index: 300;
+	max-width: min(260px, calc(100vw - 16px));
+	padding: 5px 8px;
+	border: 1px solid rgb(255 255 255 / 0.12);
+	border-radius: 6px;
+	background: rgb(27 29 33 / 0.98);
+	box-shadow: 0 8px 24px rgb(0 0 0 / 0.4);
+	color: rgb(255 255 255 / 0.9);
+	content: attr(data-tooltip);
+	font-size: 10px;
+	font-weight: 500;
+	line-height: 14px;
+	opacity: 0;
+	pointer-events: none;
+	transform: translate(-50%, -2px);
+	transition: opacity 100ms ease, transform 100ms ease;
+	transition-delay: 0ms;
+	white-space: nowrap;
+}
+
+button[data-tooltip]:hover::after,
+button[data-tooltip]:focus-visible::after {
+	opacity: 1;
+	transform: translate(-50%, 0);
+	transition-delay: 350ms;
+}
+
+button[data-tooltip][data-tooltip-align="start"]::after {
+	left: 0;
+	transform: translateY(-2px);
+}
+
+button[data-tooltip][data-tooltip-align="start"]:hover::after,
+button[data-tooltip][data-tooltip-align="start"]:focus-visible::after {
+	transform: translateY(0);
+}
+
+button[data-tooltip][data-tooltip-align="end"]::after {
+	right: 0;
+	left: auto;
+	transform: translateY(-2px);
+}
+
+button[data-tooltip][data-tooltip-align="end"]:hover::after,
+button[data-tooltip][data-tooltip-align="end"]:focus-visible::after {
+	transform: translateY(0);
+}
+
+button[data-tooltip][data-tooltip-side="top"]::after {
+	top: auto;
+	bottom: calc(100% + 7px);
+}
+
+button[data-tooltip][data-tooltip-side="right"]::after {
+	top: 50%;
+	left: calc(100% + 7px);
+	transform: translate(-2px, -50%);
+}
+
+button[data-tooltip][data-tooltip-side="right"]:hover::after,
+button[data-tooltip][data-tooltip-side="right"]:focus-visible::after {
+	transform: translate(0, -50%);
+}
+
+button[data-tooltip]:disabled {
+	opacity: 1;
+}
+
+button[data-tooltip]:disabled > svg {
+	opacity: 0.3;
+}
+
 @media (prefers-reduced-motion: reduce) {
 	*,
 	*::before,

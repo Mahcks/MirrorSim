@@ -23,6 +23,7 @@ type DeviceFrameProps = {
   bonjourNeedsAttention: boolean;
   sessionHeadline: string;
   sessionSupportingText: string;
+  compactIdlePresentation?: boolean;
   showPhoneSteps: boolean;
   phoneSteps: [string, string, string];
   primarySessionActionLabel: string;
@@ -58,6 +59,7 @@ export function DeviceFrame({
   bonjourNeedsAttention,
   sessionHeadline,
   sessionSupportingText,
+  compactIdlePresentation = false,
   showPhoneSteps,
   phoneSteps,
   primarySessionActionLabel,
@@ -237,12 +239,17 @@ export function DeviceFrame({
                   </span>
                 )}
               </div>
-              <h3 className="text-[15px] font-semibold leading-tight tracking-[-0.025em] text-white/90">
+              <h3 className={cn(
+                "font-semibold leading-tight tracking-[-0.025em] text-white/90",
+                compactIdlePresentation ? "text-xl" : "text-[15px]",
+              )}>
                 {sessionHeadline}
               </h3>
-              <p className="mt-2 max-w-56 text-[11px] leading-[1.65] text-white/48">
-                {sessionSupportingText}
-              </p>
+              {!compactIdlePresentation && (
+                <p className="mt-2 max-w-56 text-[11px] leading-[1.65] text-white/48">
+                  {sessionSupportingText}
+                </p>
+              )}
               {showPhoneSteps && (
                 <div
                   className={cn(
@@ -271,7 +278,7 @@ export function DeviceFrame({
                   </ol>
                 </div>
               )}
-              {(isIdle || !isLive || bonjourNeedsAttention) && (
+              {!compactIdlePresentation && (isIdle || !isLive || bonjourNeedsAttention) && (
                 <button
                   type="button"
                   className={cn(

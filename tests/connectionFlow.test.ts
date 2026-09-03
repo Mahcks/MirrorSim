@@ -72,6 +72,7 @@ describe("connection flow presentation", () => {
     });
     expect(listening.headline).toBe("Listening for your iPhone");
     expect(listening.supportingText).toContain("Finish these steps");
+    expect(listening.secondaryLabel).toBe("Available as Demo Phone");
     expect(listening.phoneSteps[2]).toBe("Choose Demo Phone");
     expect(listening.showPhoneSteps).toBe(true);
   });
@@ -93,6 +94,7 @@ describe("connection flow presentation", () => {
 
     expect(result.titlebarLabel).toBe("Listening");
     expect(result.headline).toBe("Listening for your iPhone");
+    expect(result.secondaryLabel).toBe("Available as Demo Phone");
     expect(result.showPhoneSteps).toBe(true);
     expect(result.primaryActionLabel).toBe("Stop listening");
   });

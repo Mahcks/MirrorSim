@@ -78,13 +78,13 @@ export function MinimalView({
     width: Math.ceil(shellWidth * zoom),
     height: Math.ceil((MINIMAL_WINDOW_SIZE[orientation].height - MINIMAL_TITLEBAR_HEIGHT) * zoom),
   };
-  const scaledTitlebarHeight = Math.ceil(40 * zoom);
+  const scaledTitlebarHeight = Math.ceil(MINIMAL_TITLEBAR_HEIGHT * zoom);
 
   return (
     <div className="flex h-screen w-screen flex-col items-center overflow-hidden bg-transparent text-white">
       <div
         className={cn(
-          "w-full shrink-0 cursor-grab overflow-hidden border-b active:cursor-grabbing",
+          "relative z-100 w-full shrink-0 cursor-grab overflow-visible border-b active:cursor-grabbing",
           chromeHidden ? "border-white/4 bg-[#101114]" : "border-white/8 bg-[#17191d]",
         )}
         style={{ height: scaledTitlebarHeight }}
@@ -93,25 +93,34 @@ export function MinimalView({
         {/* The underlay spans the viewport; the reciprocal width keeps the chrome's
             existing zoom behavior after its transform is applied. */}
         <div
-          className="flex h-10 origin-top-left items-center justify-between px-2"
-          style={{ width: `${100 / zoom}%`, transform: `scale(${zoom})` }}
+          className="@container grid origin-top-left grid-cols-[auto_minmax(0,1fr)_auto] items-center gap-1 px-1.5"
+          style={{
+            width: `${100 / zoom}%`,
+            height: MINIMAL_TITLEBAR_HEIGHT,
+            transform: `scale(${zoom})`,
+          }}
         >
-          <div className="flex min-w-0 items-center gap-2">
-            {!chromeHidden && <WindowControls />}
-            <div className="flex min-w-0 items-center gap-2 leading-none">
-              <span className={cn("shrink-0", titlebarStateDotClass)} title={titlebarStateLabel} />
-              <span className="truncate select-none text-[11px] font-semibold tracking-[-0.015em] text-white/90">{titlebarStateLabel}</span>
-              {reconnectBadge}
-            </div>
+          {!chromeHidden ? <WindowControls compact /> : <span />}
+          <div
+            className="flex min-w-0 items-center gap-1.5 overflow-hidden px-0.5"
+            role="status"
+            aria-live="polite"
+            title={titlebarStateLabel}
+          >
+            <span className={cn("shrink-0", titlebarStateDotClass)} aria-hidden="true" />
+            <span className="min-w-0 truncate select-none text-[11px] font-semibold leading-4 tracking-[-0.015em] text-white/90">{titlebarStateLabel}</span>
+            {reconnectBadge}
           </div>
           {!chromeHidden && (
-            <div className="flex shrink-0 cursor-default items-center gap-0.5" onMouseDown={(event) => event.stopPropagation()}>
+            <div className="flex shrink-0 cursor-default items-center" onMouseDown={(event) => event.stopPropagation()}>
               <button
                 type="button"
                 className={minimalFloatingButtonClass}
                 onClick={onCapture}
                 disabled={!canCapture || commandPending}
-                title="Screenshot (Ctrl+S)"
+                data-tooltip={canCapture ? "Screenshot (Ctrl+S)" : "Screenshot available when iPhone video is ready"}
+                aria-label="Take screenshot"
+                aria-keyshortcuts="Control+S"
               >
                 <Icon name="camera" size={14} />
               </button>
@@ -120,7 +129,9 @@ export function MinimalView({
                 className={`${minimalFloatingButtonClass}${isRec ? " bg-red-500/15 text-red-300 hover:bg-red-500/20" : ""}`}
                 onClick={onRecordToggle}
                 disabled={!canRecord || commandPending}
-                title="Record (Ctrl+R)"
+                data-tooltip={isRec ? "Stop recording (Ctrl+R)" : canRecord ? "Start recording (Ctrl+R)" : "Recording available when iPhone video is ready"}
+                aria-label={isRec ? "Stop recording" : "Start recording"}
+                aria-keyshortcuts="Control+R"
               >
                 <Icon name="record" size={14} />
               </button>
@@ -129,24 +140,34 @@ export function MinimalView({
                 className={minimalFloatingButtonClass}
                 onClick={onToggleAudio}
                 disabled={!audioAvailable}
-                title={!audioAvailable ? "Audio is unavailable in this receiver" : audioMuted ? "Unmute iPhone audio" : "Mute iPhone audio"}
+                data-tooltip={!audioAvailable ? "Audio unavailable" : audioMuted ? "Unmute iPhone audio (M)" : "Mute iPhone audio (M)"}
+                aria-label={!audioAvailable ? "iPhone audio unavailable" : "Mute iPhone audio"}
+                aria-keyshortcuts="M"
                 aria-pressed={audioMuted}
               >
                 <Icon name={audioMuted ? "volume-off" : "volume"} size={14} />
               </button>
-              <button type="button" className={minimalFloatingButtonClass} onClick={onRotate} title="Rotate device">
+              <button type="button" className={minimalFloatingButtonClass} onClick={onRotate} data-tooltip="Rotate device" aria-label="Rotate device">
                 <Icon name="rotate" size={14} />
               </button>
               <button
                 type="button"
                 className={cn(minimalFloatingButtonClass, settingsOpen && "bg-cyan-400/12 text-cyan-200 hover:bg-cyan-400/18 hover:text-cyan-100")}
                 onClick={onOpenSettings}
-                title={settingsOpen ? "Close Preferences" : "Open Preferences"}
-                aria-pressed={settingsOpen}
+                data-tooltip={settingsOpen ? "Close Preferences" : "Open Preferences"}
+                aria-label={settingsOpen ? "Close Preferences" : "Open Preferences"}
+                aria-haspopup="dialog"
+                aria-expanded={settingsOpen}
               >
                 <Icon name="settings" size={14} />
               </button>
-              <button type="button" className={minimalFloatingButtonClass} onClick={onFit} title="Fit window to phone">
+              <button
+                type="button"
+                className={cn(minimalFloatingButtonClass, "@max-[420px]:hidden")}
+                onClick={onFit}
+                data-tooltip="Fit window to phone"
+                aria-label="Fit window to phone"
+              >
                 <Icon name="compress" size={14} />
               </button>
               <div className="relative">
@@ -154,7 +175,10 @@ export function MinimalView({
                   type="button"
                   className="inline-flex h-7 w-7 cursor-pointer items-center justify-center text-cyan-300 transition hover:text-white"
                   onClick={onGoConsole}
-                  title="Switch to Console (Ctrl+M)"
+                  data-tooltip="Switch to Console (Ctrl+M)"
+                  data-tooltip-align="end"
+                  aria-label="Switch to Console"
+                  aria-keyshortcuts="Control+M"
                 >
                   <Icon name="console" size={12} />
                 </button>

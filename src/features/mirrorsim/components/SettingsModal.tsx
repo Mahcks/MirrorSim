@@ -21,6 +21,7 @@ import { useModalFocus } from "@/features/mirrorsim/hooks/useModalFocus";
 type SettingsModalProps = {
   open: boolean;
   embedded?: boolean;
+  initialSection?: SettingsSection;
   appPreferences: AppPreferences;
   screenshotSettings: ScreenshotSettings;
   recordingSettings: RecordingSettings;
@@ -62,7 +63,7 @@ type SettingsModalProps = {
   onOpenThirdPartyNotices: () => void;
 };
 
-type SettingsSection = "general" | "audio" | "capture" | "connection" | "devices" | "support";
+export type SettingsSection = "general" | "audio" | "capture" | "connection" | "devices" | "support";
 
 const settingsSections: Array<{ id: SettingsSection; label: string }> = [
   { id: "general", label: "General" },
@@ -72,6 +73,18 @@ const settingsSections: Array<{ id: SettingsSection; label: string }> = [
   { id: "devices", label: "Devices" },
   { id: "support", label: "Support" },
 ];
+
+const keyboardShortcuts = [
+  ["M", "Mute or unmute iPhone audio"],
+  ["Ctrl + S", "Take a screenshot"],
+  ["Ctrl + R", "Start or stop recording"],
+  ["Ctrl + M", "Switch between Minimal and Console"],
+  ["F / Ctrl + F", "Enter or exit fullscreen"],
+  ["H", "Hide or show Minimal controls"],
+  ["Ctrl + ,", "Open Preferences"],
+  ["F1", "Open Console diagnostics"],
+  ["Esc", "Close a menu or exit fullscreen"],
+] as const;
 
 function Toggle({
   checked,
@@ -92,12 +105,12 @@ function Toggle({
       aria-label={label}
       disabled={disabled}
       onClick={() => onChange(!checked)}
-      className={`relative inline-flex h-5.5 w-10.5 shrink-0 cursor-pointer rounded-full p-0.5 transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:cursor-default disabled:opacity-40 ${
+      className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full p-0.5 transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:cursor-default disabled:opacity-40 ${
         checked ? "bg-blue-500" : "bg-white/20"
       }`}
     >
       <span
-        className={`h-4.5 w-4.5 transform rounded-full bg-white shadow-sm transition-transform duration-150 ${
+        className={`h-5 w-5 transform rounded-full bg-white shadow-sm transition-transform duration-150 ${
           checked ? "translate-x-5" : "translate-x-0"
         }`}
       />
@@ -105,18 +118,19 @@ function Toggle({
   );
 }
 
-const fieldLabel = "mb-1.5 text-[11px] text-white/45";
+const fieldLabel = "mb-1.5 text-[11px] text-white/58";
 const fieldInput = "w-full rounded-xl border border-white/8 bg-[#111315] px-3 py-2 text-sm text-white/85 outline-none placeholder:text-white/22 focus-visible:border-blue-400/60 focus-visible:ring-2 focus-visible:ring-blue-400/30 disabled:cursor-not-allowed disabled:opacity-45";
-const fieldNote = "mt-1.5 text-[11px] leading-4 text-white/38";
+const fieldNote = "mt-1.5 text-[11px] leading-4 text-white/50";
 const btn = "rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-[11px] font-medium text-white/75 transition hover:border-white/14 hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-40";
 const btnSm = "rounded-xl border border-white/8 bg-white/5 px-2.5 py-1 text-[10px] font-medium text-white/65 transition hover:border-white/14 hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-40";
 const btnDestructive = "rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-1.5 text-[11px] font-medium text-red-300 transition hover:bg-red-500/15 disabled:cursor-default disabled:opacity-40";
-const sectionHeader = "text-[10px] font-semibold uppercase tracking-[0.08em] text-white/28";
+const sectionHeader = "text-[10px] font-semibold uppercase tracking-[0.08em] text-white/45";
 const infoBox = "rounded-xl border border-white/7 bg-[#111315] p-3 text-[11px] leading-5 text-white/55";
 
 export function SettingsModal({
   open,
   embedded = false,
+  initialSection = "general",
   appPreferences,
   screenshotSettings,
   recordingSettings,
@@ -162,6 +176,7 @@ export function SettingsModal({
   const [blockReasonDrafts, setBlockReasonDrafts] = useState<Record<string, string>>({});
   const [pendingConfirmation, setPendingConfirmation] = useState<string | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
   const dialogRef = useModalFocus(open, onClose, closeButtonRef);
 
   useEffect(() => {
@@ -180,9 +195,15 @@ export function SettingsModal({
 
   useEffect(() => {
     if (open) {
-      setActiveSection("general");
+      setActiveSection(initialSection);
     }
-  }, [open]);
+  }, [initialSection, open]);
+
+  useEffect(() => {
+    if (open && contentRef.current) {
+      contentRef.current.scrollTop = 0;
+    }
+  }, [activeSection, open]);
 
   useEffect(() => {
     if (!pendingConfirmation) return;
@@ -347,15 +368,21 @@ export function SettingsModal({
           </button>
         </div>
 
-        <nav className="flex shrink-0 gap-1 overflow-x-auto border-b border-white/7 px-3 py-2" aria-label="Preference sections">
+        <nav
+          className={embedded
+            ? "grid shrink-0 grid-cols-3 gap-1 border-b border-white/7 p-2.5"
+            : "flex shrink-0 gap-1 overflow-x-auto border-b border-white/7 px-3 py-2"
+          }
+          aria-label="Preference sections"
+        >
           {settingsSections.map((section) => (
             <button
               key={section.id}
               type="button"
-              className={`shrink-0 rounded-lg px-3 py-1.5 text-[11px] font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60 ${
+              className={`${embedded ? "w-full px-2" : "shrink-0 px-3"} rounded-lg py-1.5 text-[11px] font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60 ${
                 activeSection === section.id
                   ? "bg-white/10 text-white"
-                  : "text-white/42 hover:bg-white/5 hover:text-white/75"
+                  : "text-white/58 hover:bg-white/5 hover:text-white/80"
               }`}
               aria-current={activeSection === section.id ? "page" : undefined}
               onClick={() => setActiveSection(section.id)}
@@ -366,7 +393,7 @@ export function SettingsModal({
         </nav>
 
         {/* Scrollable content */}
-        <div className={embedded ? "min-h-0 flex-1 overflow-y-auto px-4 pb-5" : "min-h-0 flex-1 overflow-y-auto px-5 pb-6"}>
+        <div ref={contentRef} className={embedded ? "min-h-0 flex-1 overflow-y-auto px-4 pb-5" : "min-h-0 flex-1 overflow-y-auto px-5 pb-6"}>
 
           {activeSection === "general" && <>
           {/* ── General ── */}
@@ -819,7 +846,7 @@ export function SettingsModal({
             <div className={`mt-3 ${infoBox}`}>
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0 flex-1">
-                  <div className="group relative inline-flex max-w-full items-center">
+                  <div className="group relative inline-flex max-w-full items-center rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60" tabIndex={0} role="group" aria-label={`Details for ${currentDeviceLabel}`}>
                     <div className="truncate text-sm font-medium text-white/88 underline decoration-dotted underline-offset-3 decoration-white/18">
                       {currentDeviceLabel}
                     </div>
@@ -868,7 +895,7 @@ export function SettingsModal({
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
-                        <div className="group relative min-w-0">
+                        <div className="group relative min-w-0 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60" tabIndex={0} role="group" aria-label={`Details for ${device.nickname ?? device.displayName}`}>
                           <div className="truncate text-sm font-medium text-white/88 underline decoration-dotted underline-offset-3 decoration-white/18">
                             {device.nickname ?? device.displayName}
                           </div>
@@ -905,7 +932,7 @@ export function SettingsModal({
                     <input
                       aria-label={`Nickname for ${device.displayName}`}
                       type="text"
-                      className="min-w-0 flex-1 rounded-xl border border-white/8 bg-[#0d0e10] px-3 py-1.5 text-[11px] text-white/85 outline-none placeholder:text-white/22"
+                      className="min-w-0 flex-1 rounded-xl border border-white/8 bg-[#0d0e10] px-3 py-1.5 text-[11px] text-white/85 outline-none placeholder:text-white/22 focus-visible:border-blue-400/60 focus-visible:ring-2 focus-visible:ring-blue-400/30"
                       value={nicknameDrafts[device.key] ?? ""}
                       onChange={(event) => setNicknameDrafts((previous) => ({ ...previous, [device.key]: event.target.value }))}
                       placeholder="Nickname"
@@ -924,7 +951,7 @@ export function SettingsModal({
                     <input
                       aria-label={`Block reason for ${device.displayName}`}
                       type="text"
-                      className="min-w-0 flex-1 rounded-xl border border-white/8 bg-[#0d0e10] px-3 py-1.5 text-[11px] text-white/85 outline-none placeholder:text-white/22"
+                      className="min-w-0 flex-1 rounded-xl border border-white/8 bg-[#0d0e10] px-3 py-1.5 text-[11px] text-white/85 outline-none placeholder:text-white/22 focus-visible:border-blue-400/60 focus-visible:ring-2 focus-visible:ring-blue-400/30"
                       value={blockReasonDrafts[device.key] ?? ""}
                       onChange={(event) => setBlockReasonDrafts((previous) => ({ ...previous, [device.key]: event.target.value }))}
                       placeholder="Block reason (optional)"
@@ -956,6 +983,16 @@ export function SettingsModal({
           </>}
 
           {activeSection === "support" && <>
+          <div className={`${sectionHeader} mt-5 pb-2`}>Keyboard Shortcuts</div>
+          <div className={`${infoBox} grid grid-cols-[auto_1fr] gap-x-4 gap-y-2`}>
+            {keyboardShortcuts.map(([shortcut, description]) => (
+              <div className="contents" key={shortcut}>
+                <kbd className="whitespace-nowrap font-mono text-[10px] font-semibold text-white/78">{shortcut}</kbd>
+                <span className="text-white/52">{description}</span>
+              </div>
+            ))}
+          </div>
+
           {/* ── Diagnostics ── */}
           <div className="mt-6 flex items-center justify-between pb-2">
             <div className={sectionHeader}>Diagnostics</div>

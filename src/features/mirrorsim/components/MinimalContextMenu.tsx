@@ -6,6 +6,7 @@ import type { Capture, ContextMenuPos } from "@/features/mirrorsim/types";
 type MinimalContextMenuProps = {
   canCapture: boolean;
   canRecord: boolean;
+  chromeHidden: boolean;
   contextMenu: ContextMenuPos | null;
   isRec: boolean;
   latestSavedCapture?: Capture;
@@ -17,6 +18,7 @@ type MinimalContextMenuProps = {
   onOpenSettings: () => void;
   onRecordToggle: () => void;
   onSaveToDocuments: () => void;
+  onToggleChrome: () => void;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onZoomReset: () => void;
@@ -27,6 +29,7 @@ type MinimalContextMenuProps = {
 export function MinimalContextMenu({
   canCapture,
   canRecord,
+  chromeHidden,
   contextMenu,
   isRec,
   latestSavedCapture,
@@ -38,6 +41,7 @@ export function MinimalContextMenu({
   onOpenSettings,
   onRecordToggle,
   onSaveToDocuments,
+  onToggleChrome,
   onZoomIn,
   onZoomOut,
   onZoomReset,
@@ -179,6 +183,16 @@ export function MinimalContextMenu({
         }}
       >
         Fit to Screen
+      </button>
+      <button
+        type="button"
+        className="flex w-full items-center rounded-[5px] px-2.5 py-1.5 text-left text-xs tracking-[-0.01em] text-white transition hover:bg-white/8"
+        onClick={() => {
+          onToggleChrome();
+          onClose();
+        }}
+      >
+        {chromeHidden ? "Show Controls" : "Hide Controls"}
       </button>
       <div className="my-1 h-px bg-white/7" />
       <button

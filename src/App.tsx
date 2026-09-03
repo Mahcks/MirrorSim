@@ -31,7 +31,7 @@ import { DeviceFrame } from "@/features/mirrorsim/components/DeviceFrame";
 import { MinimalContextMenu } from "@/features/mirrorsim/components/MinimalContextMenu";
 import { MinimalView } from "@/features/mirrorsim/components/MinimalView";
 import { PairingModal } from "@/features/mirrorsim/components/PairingModal";
-import { SettingsModal } from "@/features/mirrorsim/components/SettingsModal";
+import { SettingsModal, type SettingsSection } from "@/features/mirrorsim/components/SettingsModal";
 import { startWindowDrag } from "@/features/mirrorsim/components/WindowControls";
 import { useCaptureActions } from "@/features/mirrorsim/hooks/useCaptureActions";
 import { usePreferencesState } from "@/features/mirrorsim/hooks/usePreferencesState";
@@ -102,6 +102,7 @@ export default function App() {
   const [captureNotice, setCaptureNotice] = useState<string | null>(null);
   const [diagExpanded, setDiagExpanded] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [settingsSection, setSettingsSection] = useState<SettingsSection>("general");
   const [minimalChromeHidden, setMinimalChromeHidden] = useState(false);
   const [contextMenu, setContextMenu] = useState<ContextMenuPos | null>(null);
   const [captures, setCaptures] = useState<Capture[]>([]);
@@ -332,13 +333,14 @@ export default function App() {
   const ss = session.status;
   const isIdle = ss === "idle";
   const isLive = ss === "mirroring" || ss === "recording";
-  const isConnected = isLive;
   const isRec = ss === "recording";
   const recordingBusy = isRec || localRecordingActive;
-  const isTransitioningSession = ss === "discovering" || ss === "connecting";
   const bonjourNeedsAttention = bonjourStatus.status === "missing" || bonjourStatus.status === "unknown";
   const receiverDisplayName = appPreferences.receiverDisplayName.trim() || "MirrorSim";
   const receiverTransportLabel = receiverRuntime.transport === "airplayserver" ? "AirPlay transport" : "Fixture transport";
+  const receiverBuildLabel = session.receiverId
+    ? `${session.receiverId}${session.receiverProtocolVersion ? ` v${session.receiverProtocolVersion}` : ""}`
+    : null;
   const receiverStateLabel =
     receiverRuntime.state === "idle"
       ? "Idle"
@@ -407,8 +409,6 @@ export default function App() {
     ? "Retry saving recording"
     : connectionPresentation.primaryActionLabel;
   const primarySessionActionDisabled = commandPending || runtimeInitializing;
-  const primarySessionActionTitle = connectionPresentation.primaryActionTitle;
-  const idleTelemetryHint = connectionPresentation.telemetryHint;
   const showRetryConnection = isIdle && !bonjourNeedsAttention && Boolean(receiverRuntime.lastError);
   const previewHasDrawableFrame = hasRetainedPreviewFrame
     || (videoDiag.videoWidth > 0 && videoDiag.videoHeight > 0);
@@ -439,11 +439,9 @@ export default function App() {
   });
   const zoomIndex = ZOOM_LEVELS.indexOf(zoom);
   const controlButtonClass =
-    "inline-flex h-8 w-8 items-center justify-center rounded-[5px] text-white/55 transition hover:bg-[#1a1b1e] hover:text-white disabled:cursor-default disabled:opacity-30";
-  const sideButtonClass =
-    "inline-flex h-9 w-9 items-center justify-center rounded-[8px] text-white/55 transition hover:bg-[#1a1b1e] hover:text-white disabled:cursor-default disabled:opacity-30";
+    "inline-flex h-8 w-8 items-center justify-center rounded-[5px] text-white/55 transition hover:bg-[#1a1b1e] hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cyan-300/65 disabled:cursor-default disabled:opacity-30";
   const minimalFloatingButtonClass =
-    "inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-white/65 transition hover:bg-white/8 hover:text-white disabled:cursor-default disabled:opacity-30";
+    "inline-flex h-7 w-7 cursor-pointer items-center justify-center rounded-lg text-white/65 transition hover:bg-white/8 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cyan-300/65 disabled:cursor-default disabled:opacity-30";
   const panelSurfaceClass =
     "border-white/7 bg-[#131416]";
   const previewDimClass =
@@ -476,19 +474,21 @@ export default function App() {
     if (!reconnectUiState || reconnectUiState.phase !== "scheduled") return null;
 
     const content = `Reconnect${reconnectCountdownSeconds !== null ? ` in ${reconnectCountdownSeconds}s` : " queued"}`;
+    const compactContent = reconnectCountdownSeconds !== null ? `Retry ${reconnectCountdownSeconds}s` : "Retry queued";
 
     return (
       <span
         className={cn(
-          "inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-amber-400/20 bg-amber-400/10 text-amber-200",
+          "inline-flex min-w-0 items-center gap-1 whitespace-nowrap rounded-full border border-amber-400/20 bg-amber-400/10 text-amber-200",
           compact ? "px-1.5 py-0.5 text-[10px] font-medium tracking-[-0.01em]" : "px-2 py-0.5 text-[11px] font-medium tracking-[-0.01em]",
         )}
+        title={`${content}. Cancel automatic reconnect.`}
       >
         <span className="h-1.5 w-1.5 rounded-full bg-amber-300" />
-        {content}
+        <span className="truncate">{compact ? compactContent : content}</span>
         <button
           type="button"
-          className="ml-0.5 rounded px-1 text-amber-100/70 transition hover:bg-amber-100/10 hover:text-amber-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-200"
+          className="ml-0.5 shrink-0 rounded px-1 text-amber-100/70 transition hover:bg-amber-100/10 hover:text-amber-50 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-amber-200"
           onClick={() => {
             shouldMaintainConnectionRef.current = false;
             reconnectAttemptRef.current = 0;
@@ -496,8 +496,9 @@ export default function App() {
             setReconnectUiState(null);
           }}
           aria-label="Cancel automatic reconnect"
+          title="Cancel automatic reconnect"
         >
-          Cancel
+          {compact ? "×" : "Cancel"}
         </button>
       </span>
     );
@@ -506,32 +507,39 @@ export default function App() {
   function renderTechnicalDetails() {
     return (
       <details className="group mt-3 border-t border-white/7 pt-3">
-        <summary className="cursor-pointer list-none text-[11px] font-medium text-white/40 transition group-open:text-white/65">
-          Technical details
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-2 text-[11px] font-medium text-white/50 transition group-open:text-white/75">
+          <span>Technical details</span>
+          <span className="text-sm leading-none text-white/40 transition-transform group-open:rotate-90" aria-hidden="true">›</span>
         </summary>
         <div className="mt-2 space-y-2 text-[11px]">
           <div className="flex items-center justify-between gap-3">
-            <span className="text-white/30">Receiver</span>
-            <strong className="max-w-[60%] truncate text-right font-medium text-white/80">{sessionSecondaryLabel}</strong>
+            <span className="text-white/45">Receiver name</span>
+            <strong className="max-w-[60%] truncate text-right font-medium text-white/80" title={receiverDisplayName}>{receiverDisplayName}</strong>
           </div>
+          {receiverBuildLabel && (
+            <div className="flex items-center justify-between gap-3">
+              <span className="text-white/45">Receiver build</span>
+              <strong className="max-w-[60%] truncate text-right font-medium text-white/80" title={receiverBuildLabel}>{receiverBuildLabel}</strong>
+            </div>
+          )}
           <div className="flex items-center justify-between gap-3">
             <span className="text-white/30">Transport</span>
-            <strong className="max-w-[60%] truncate text-right font-medium text-white/80">{receiverTransportLabel}</strong>
+            <strong className="max-w-[60%] truncate text-right font-medium text-white/80" title={receiverTransportLabel}>{receiverTransportLabel}</strong>
           </div>
           <div className="flex items-center justify-between gap-3">
             <span className="text-white/30">Receiver state</span>
-            <strong className="max-w-[60%] truncate text-right font-medium text-white/80">{receiverStateLabel}</strong>
+            <strong className="max-w-[60%] truncate text-right font-medium text-white/80" title={receiverStateLabel}>{receiverStateLabel}</strong>
           </div>
           {previewDeliveryLabel && (
             <div className="flex items-center justify-between gap-3">
               <span className="text-white/30">Preview path</span>
-              <strong className="max-w-[60%] truncate text-right font-medium text-white/80">{previewDeliveryLabel}</strong>
+              <strong className="max-w-[60%] truncate text-right font-medium text-white/80" title={previewDeliveryLabel}>{previewDeliveryLabel}</strong>
             </div>
           )}
           {previewStream?.mimeType && (
             <div className="flex items-center justify-between gap-3">
               <span className="text-white/30">Codec</span>
-              <strong className="max-w-[60%] truncate text-right font-medium text-white/80">{previewStream.mimeType}</strong>
+              <strong className="max-w-[60%] truncate text-right font-medium text-white/80" title={previewStream.mimeType}>{previewStream.mimeType}</strong>
             </div>
           )}
           {receiverCapabilityLabel && (
@@ -543,37 +551,37 @@ export default function App() {
           {currentDeviceTrustLabel && (
             <div className="flex items-center justify-between gap-3">
               <span className="text-white/30">Trust</span>
-              <strong className="max-w-[60%] truncate text-right font-medium text-white/80">{currentDeviceTrustLabel}</strong>
+              <strong className="max-w-[60%] truncate text-right font-medium text-white/80" title={currentDeviceTrustLabel}>{currentDeviceTrustLabel}</strong>
             </div>
           )}
           {session.currentDeviceId && (
             <div className="flex items-center justify-between gap-3">
               <span className="text-white/30">Device ID</span>
-              <strong className="max-w-[60%] truncate text-right font-medium text-white/80">{session.currentDeviceId}</strong>
+              <strong className="max-w-[60%] truncate text-right font-medium text-white/80" title={session.currentDeviceId}>{session.currentDeviceId}</strong>
             </div>
           )}
           {currentDeviceModelLabel && (
             <div className="flex items-center justify-between gap-3">
               <span className="text-white/30">Model</span>
-              <strong className="max-w-[60%] truncate text-right font-medium text-white/80">{currentDeviceModelLabel}</strong>
+              <strong className="max-w-[60%] truncate text-right font-medium text-white/80" title={currentDeviceModelLabel}>{currentDeviceModelLabel}</strong>
             </div>
           )}
           {currentDeviceOsLabel && (
             <div className="flex items-center justify-between gap-3">
               <span className="text-white/30">OS</span>
-              <strong className="max-w-[60%] truncate text-right font-medium text-white/80">{currentDeviceOsLabel}</strong>
+              <strong className="max-w-[60%] truncate text-right font-medium text-white/80" title={currentDeviceOsLabel}>{currentDeviceOsLabel}</strong>
             </div>
           )}
           {session.currentDeviceSourceVersion && (
             <div className="flex items-center justify-between gap-3">
               <span className="text-white/30">AirPlay stack</span>
-              <strong className="max-w-[60%] truncate text-right font-medium text-white/80">{session.currentDeviceSourceVersion}</strong>
+              <strong className="max-w-[60%] truncate text-right font-medium text-white/80" title={session.currentDeviceSourceVersion}>{session.currentDeviceSourceVersion}</strong>
             </div>
           )}
           {(pairingNeedsAttention || connectionPresentation.pairingInProgress) && (
             <div className="flex items-center justify-between gap-3">
               <span className="text-white/30">Pairing</span>
-              <strong className="max-w-[60%] truncate text-right font-medium text-white/80">{pairing.phase}</strong>
+              <strong className="max-w-[60%] truncate text-right font-medium text-white/80" title={pairing.phase}>{pairing.phase}</strong>
             </div>
           )}
           {receiverCapabilityLabel && (
@@ -849,6 +857,8 @@ export default function App() {
       // window shortcuts from mutating the app behind an aria-modal surface.
       if (modalVisibility.pairingOpen || modalVisibility.settingsOpen) return;
 
+      if (e.repeat) return;
+
       const key = e.key.toLowerCase();
 
       if (key === "escape") {
@@ -867,7 +877,7 @@ export default function App() {
         return;
       }
 
-      if (key === "f1") {
+      if (key === "f1" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
         e.preventDefault();
         setDiagExpanded((value) => !value);
         if (appMode === "minimal") {
@@ -876,16 +886,21 @@ export default function App() {
         return;
       }
 
-      if (!e.metaKey && !e.ctrlKey) {
+      if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
         if (key === "f") {
           e.preventDefault();
           void toggleFullscreen();
+        } else if (key === "m") {
+          e.preventDefault();
+          toggleAudio();
         } else if (key === "h" && appMode === "minimal") {
           e.preventDefault();
           setMinimalChromeHidden((value) => !value);
         }
         return;
       }
+
+      if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
 
       switch (key) {
         case "s":
@@ -903,6 +918,10 @@ export default function App() {
         case "m":
           e.preventDefault();
           void (appMode === "console" ? goMinimal() : goConsole());
+          break;
+        case ",":
+          e.preventDefault();
+          openSettings("general");
           break;
       }
     };
@@ -1190,11 +1209,20 @@ export default function App() {
     await runSessionCommand("stop_session");
   }
 
-  function openScreenshotSettings() {
+  function toggleSettings() {
     if (modalVisibility.pairingOpen) {
       return;
     }
+    setSettingsSection("general");
     setSettingsOpen((value) => !value);
+  }
+
+  function openSettings(section: SettingsSection) {
+    if (modalVisibility.pairingOpen) {
+      return;
+    }
+    setSettingsSection(section);
+    setSettingsOpen(true);
   }
 
   async function checkForUpdatesManually() {
@@ -1481,6 +1509,7 @@ export default function App() {
     <SettingsModal
       open={modalVisibility.settingsOpen}
       embedded={embedded}
+      initialSection={settingsSection}
       appPreferences={appPreferences}
       screenshotSettings={screenshotSettings}
       recordingSettings={recordingSettings}
@@ -1593,6 +1622,11 @@ export default function App() {
     ["Phone orientation", receiverRuntime.videoGeometry ? `${receiverRuntime.videoGeometry.orientation} · source ${receiverRuntime.videoGeometry.sourceWidth}×${receiverRuntime.videoGeometry.sourceHeight} · video ${receiverRuntime.videoGeometry.outputWidth}×${receiverRuntime.videoGeometry.outputHeight}` : "not reported"],
     ["Last error", receiverRuntime.lastError ?? surfaceError ?? commandError ?? "—"],
   ];
+  const previewResolutionLabel = videoDiag.videoWidth > 0 && videoDiag.videoHeight > 0
+    ? `${videoDiag.videoWidth}×${videoDiag.videoHeight}`
+    : previewStream
+      ? `${previewStream.codedWidth}×${previewStream.codedHeight}`
+      : "—";
 
   const consoleDeviceFrame = (
     <DeviceFrame
@@ -1610,7 +1644,8 @@ export default function App() {
       bonjourNeedsAttention={bonjourNeedsAttention}
       sessionHeadline={sessionHeadline}
       sessionSupportingText={sessionSupportingText}
-      showPhoneSteps={connectionPresentation.showPhoneSteps}
+      compactIdlePresentation
+      showPhoneSteps={false}
       phoneSteps={connectionPresentation.phoneSteps}
       primarySessionActionLabel={primarySessionActionLabel}
       primarySessionActionDisabled={primarySessionActionDisabled}
@@ -1680,7 +1715,6 @@ export default function App() {
         <ConsoleView
           panelSurfaceClass={panelSurfaceClass}
           controlButtonClass={controlButtonClass}
-          sideButtonClass={sideButtonClass}
           bonjourToneClass={bonjourToneClass}
           bonjourStatus={bonjourStatus}
           bonjourNeedsAttention={bonjourNeedsAttention}
@@ -1697,16 +1731,17 @@ export default function App() {
           deviceFrame={consoleDeviceFrame}
           diagExpanded={diagExpanded}
           diagnosticsItems={diagnosticsItems}
-          idleTelemetryHint={idleTelemetryHint}
-          isConnected={isConnected}
           isLive={isLive}
           isRec={recordingBusy}
-          isTransitioningSession={isTransitioningSession}
+          phoneSteps={connectionPresentation.phoneSteps}
+          showPhoneSteps={connectionPresentation.showPhoneSteps}
+          sessionTone={connectionPresentation.tone}
           onAdjustZoom={adjustZoom}
           onCapture={() => void doCapture()}
           onToggleAudio={toggleAudio}
           onGoMinimal={() => void goMinimal()}
-          onOpenSettings={openScreenshotSettings}
+          onOpenSettings={toggleSettings}
+          onOpenDevicesSettings={() => openSettings("devices")}
           onPrimary={doPrimary}
           onRecordToggle={() => void doRecordToggle()}
           onRefreshBonjourStatus={() => void refreshBonjourStatus().catch((error) => setCommandError(fmtError(error)))}
@@ -1722,9 +1757,9 @@ export default function App() {
           previewLatencyMs={preview.latencyMs}
           previewBitrateKbps={preview.bitrateKbps}
           previewPresetLabel={previewPreset.label}
+          previewResolutionLabel={previewResolutionLabel}
           primarySessionActionDisabled={primarySessionActionDisabled}
           primarySessionActionLabel={primarySessionActionLabel}
-          primarySessionActionTitle={primarySessionActionTitle}
           recElapsed={recElapsed}
           reconnectBadge={renderReconnectBadge()}
           sessionHeadline={sessionHeadline}
@@ -1760,6 +1795,7 @@ export default function App() {
           <MinimalContextMenu
             canCapture={canCapture}
             canRecord={canRecord}
+            chromeHidden={minimalChromeHidden}
             contextMenu={contextMenu}
             isRec={recordingBusy}
             latestSavedCapture={latestSavedCapture}
@@ -1768,9 +1804,10 @@ export default function App() {
             onCopyToClipboard={() => void doCapture({ copyToClipboard: true, saveToDisk: false })}
             onGoConsole={() => void goConsole()}
             onOpenInExplorer={() => void revealCaptureInExplorer(latestSavedCapture).catch((error) => setCommandError(fmtError(error)))}
-            onOpenSettings={openScreenshotSettings}
+            onOpenSettings={() => openSettings("capture")}
             onRecordToggle={() => void doRecordToggle()}
             onSaveToDocuments={() => void doCapture({ saveToDisk: true, copyToClipboard: false, saveLocation: "documents" })}
+            onToggleChrome={() => setMinimalChromeHidden((value) => !value)}
             onZoomIn={() => adjustZoom(1)}
             onZoomOut={() => adjustZoom(-1)}
             onZoomReset={() => setZoom(1)}
@@ -1789,7 +1826,7 @@ export default function App() {
           void fitMinimalWindow(orientation);
         }}
         onGoConsole={() => void goConsole()}
-        onOpenSettings={openScreenshotSettings}
+        onOpenSettings={toggleSettings}
         onRecordToggle={() => void doRecordToggle()}
         onRotate={() => {
           setOrientation((value) => {

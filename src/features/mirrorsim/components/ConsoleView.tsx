@@ -12,7 +12,6 @@ import { WindowControls } from "./WindowControls";
 type ConsoleViewProps = {
   panelSurfaceClass: string;
   controlButtonClass: string;
-  sideButtonClass: string;
   bonjourToneClass: string;
   bonjourStatus: BonjourStatusSnapshot;
   bonjourNeedsAttention: boolean;
@@ -29,16 +28,17 @@ type ConsoleViewProps = {
   deviceFrame: ReactNode;
   diagExpanded: boolean;
   diagnosticsItems: Array<[string, string]>;
-  idleTelemetryHint: string;
-  isConnected: boolean;
   isLive: boolean;
   isRec: boolean;
-  isTransitioningSession: boolean;
+  phoneSteps: [string, string, string];
+  showPhoneSteps: boolean;
+  sessionTone: "idle" | "active" | "live" | "warning";
   onAdjustZoom: (delta: 1 | -1) => void;
   onCapture: () => void;
   onToggleAudio: () => void;
   onGoMinimal: () => void;
   onOpenSettings: () => void;
+  onOpenDevicesSettings: () => void;
   onPrimary: () => void;
   onRecordToggle: () => void;
   onRefreshBonjourStatus: () => void;
@@ -54,9 +54,9 @@ type ConsoleViewProps = {
   previewLatencyMs: number;
   previewBitrateKbps: number;
   previewPresetLabel: string;
+  previewResolutionLabel: string;
   primarySessionActionDisabled: boolean;
   primarySessionActionLabel: string;
-  primarySessionActionTitle: string;
   recElapsed: number;
   reconnectBadge: ReactNode;
   sessionHeadline: string;
@@ -76,7 +76,6 @@ type ConsoleViewProps = {
 export function ConsoleView({
   panelSurfaceClass,
   controlButtonClass,
-  sideButtonClass,
   bonjourToneClass,
   bonjourStatus,
   bonjourNeedsAttention,
@@ -93,16 +92,17 @@ export function ConsoleView({
   deviceFrame,
   diagExpanded,
   diagnosticsItems,
-  idleTelemetryHint,
-  isConnected,
   isLive,
   isRec,
-  isTransitioningSession,
+  phoneSteps,
+  showPhoneSteps,
+  sessionTone,
   onAdjustZoom,
   onCapture,
   onToggleAudio,
   onGoMinimal,
   onOpenSettings,
+  onOpenDevicesSettings,
   onPrimary,
   onRecordToggle,
   onRefreshBonjourStatus,
@@ -118,9 +118,9 @@ export function ConsoleView({
   previewLatencyMs,
   previewBitrateKbps,
   previewPresetLabel,
+  previewResolutionLabel,
   primarySessionActionDisabled,
   primarySessionActionLabel,
-  primarySessionActionTitle,
   recElapsed,
   reconnectBadge,
   sessionHeadline,
@@ -139,6 +139,21 @@ export function ConsoleView({
   const previewStageRef = useRef<HTMLDivElement | null>(null);
   const previewFrameRef = useRef<HTMLDivElement | null>(null);
   const [fitScale, setFitScale] = useState(1);
+  const sessionDotClass = sessionTone === "live"
+    ? "bg-emerald-400"
+    : sessionTone === "warning"
+      ? "bg-red-400"
+      : sessionTone === "active"
+        ? "bg-cyan-300"
+        : "bg-white/35";
+  const screenshotTooltip = canCapture
+    ? "Screenshot (Ctrl+S)"
+    : "Screenshot available when iPhone video is ready";
+  const recordingTooltip = isRec
+    ? "Stop recording (Ctrl+R)"
+    : canRecord
+      ? "Start recording (Ctrl+R)"
+      : "Recording available when iPhone video is ready";
 
   useLayoutEffect(() => {
     const stage = previewStageRef.current;
@@ -160,24 +175,40 @@ export function ConsoleView({
   }, [orientation]);
 
   return (
-    <div className="grid h-screen overflow-hidden bg-[#0e0f11] text-white grid-rows-[36px_1fr_48px_36px]">
-      <div className={cn("grid grid-cols-[auto_1fr_auto] items-center gap-2 border-b px-2.5", panelSurfaceClass)}>
-        <WindowControls />
-        <div className="flex h-full items-center justify-center" onMouseDown={(event) => void onStartWindowDrag(event)}>
+    <div
+      className={cn(
+        "grid h-screen overflow-hidden bg-[#0e0f11] text-white",
+        isLive ? "grid-rows-[36px_1fr_48px_36px]" : "grid-rows-[36px_1fr_48px]",
+      )}
+    >
+      <div
+        className={cn("relative z-50 grid cursor-grab grid-cols-[1fr_auto_1fr] items-center gap-2 overflow-visible border-b px-2.5 active:cursor-grabbing", panelSurfaceClass)}
+        onMouseDown={(event) => void onStartWindowDrag(event)}
+      >
+        <div className="justify-self-start">
+          <WindowControls />
+        </div>
+        <div
+          className="flex h-full items-center justify-center"
+          onMouseDown={(event) => {
+            if ((event.target as HTMLElement).closest("button")) event.stopPropagation();
+          }}
+        >
           <div className="flex items-center gap-2">
             <span className="select-none text-[13px] font-semibold tracking-[-0.015em] text-white/90">MirrorSim</span>
             {reconnectBadge}
           </div>
         </div>
-        <div className="flex items-center justify-end gap-1.5">
+        <div className="flex items-center justify-end">
+          <div className="flex cursor-default items-center gap-1.5" onMouseDown={(event) => event.stopPropagation()}>
           {isRec && (
             <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-red-500/25 bg-red-500/15 px-2 py-0.5 text-[11px] font-medium tracking-[-0.01em] text-red-300">
               ● REC {fmtDuration(recElapsed)}
             </span>
           )}
           {isLive && !isRec && (
-            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-red-500/25 bg-red-500/15 px-2 py-0.5 text-[11px] font-medium tracking-[-0.01em] text-red-300">
-              ● Live
+            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-emerald-400/20 bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium tracking-[-0.01em] text-emerald-300">
+              <span className="h-1.5 w-1.5 rounded-full bg-emerald-400" aria-hidden="true" /> Mirroring
             </span>
           )}
           {isLive && (
@@ -187,53 +218,20 @@ export function ConsoleView({
           )}
           <button
             type="button"
-            className="inline-flex h-7 w-7 items-center justify-center text-cyan-300 transition hover:text-white"
+            className="inline-flex h-7 w-7 items-center justify-center text-white/55 transition hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cyan-300/65"
             onClick={onGoMinimal}
-            title="Switch to phone view (Ctrl+M)"
+            data-tooltip="Switch to phone view (Ctrl+M)"
+            data-tooltip-align="end"
+            aria-label="Switch to phone view"
+            aria-keyshortcuts="Control+M"
           >
             <Icon name="phone" size={14} />
           </button>
+          </div>
         </div>
       </div>
 
-      <div className="grid min-h-0 grid-cols-[52px_1fr_252px] overflow-hidden">
-        <aside className={cn("flex flex-col items-center border-r py-2.5", panelSurfaceClass)}>
-          <div className="flex flex-1 flex-col items-center gap-0.5">
-            <button
-              type="button"
-              className={cn(sideButtonClass, isConnected && "bg-emerald-500/10 text-emerald-400")}
-              onClick={onPrimary}
-              disabled={primarySessionActionDisabled}
-              title={primarySessionActionTitle}
-            >
-              <Icon name="phone" />
-            </button>
-            <button
-              type="button"
-              className={sideButtonClass}
-              onClick={onCapture}
-              disabled={!canCapture || commandPending}
-              title="Screenshot (Ctrl+S)"
-            >
-              <Icon name="camera" />
-            </button>
-            <button
-              type="button"
-              className={cn(sideButtonClass, isRec && "bg-red-500/15 text-red-300")}
-              onClick={onRecordToggle}
-              disabled={!canRecord || commandPending}
-              title="Record (Ctrl+R)"
-            >
-              <Icon name="record" />
-            </button>
-          </div>
-          <div className="flex flex-col items-center gap-0.5">
-            <button type="button" className={sideButtonClass} onClick={onRotate} title="Rotate device">
-              <Icon name="rotate" />
-            </button>
-          </div>
-        </aside>
-
+      <div className="grid min-h-0 grid-cols-[minmax(0,1fr)_252px] overflow-hidden">
         <div
           ref={previewStageRef}
           className="relative flex items-center justify-center overflow-hidden bg-[#0e0f11]"
@@ -251,9 +249,9 @@ export function ConsoleView({
           </div>
         </div>
 
-        <aside className={cn("flex min-h-0 flex-col overflow-hidden border-l", panelSurfaceClass)}>
+        <aside className={cn("min-h-0 overflow-y-auto border-l", panelSurfaceClass)}>
           <div className="flex flex-col gap-2 border-b border-white/7 p-3.5">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/25">Session</div>
+            <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/45">Session</div>
             {bonjourNeedsAttention && (
               <div className={cn("rounded-lg border p-2.5", bonjourToneClass)}>
                 <div className="text-[11px] font-medium">
@@ -272,19 +270,14 @@ export function ConsoleView({
               </div>
             )}
             {updateBanner}
-            {(captureNotice || commandError) && (
+            {commandError && (
               <div
-                role={commandError ? "alert" : "status"}
-                aria-live={commandError ? "assertive" : "polite"}
-                className={cn(
-                  "rounded-lg border p-2.5 text-[11px] leading-4",
-                  commandError
-                    ? "border-red-400/20 bg-red-500/10 text-red-100"
-                    : "border-emerald-300/20 bg-emerald-500/10 text-emerald-100",
-                )}
+                role="alert"
+                aria-live="assertive"
+                className="rounded-lg border border-red-400/20 bg-red-500/10 p-2.5 text-[11px] leading-4 text-red-100"
               >
-                <div className="font-medium">{commandError ? "Action failed" : "Capture status"}</div>
-                <div className="mt-1 break-all opacity-80">{commandError ?? captureNotice}</div>
+                <div className="font-medium">Action failed</div>
+                <div className="mt-1 break-all opacity-80">{commandError}</div>
               </div>
             )}
             <div className="flex items-start gap-2.5">
@@ -293,13 +286,28 @@ export function ConsoleView({
               </div>
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2">
-                  <div className="truncate text-[15px] font-semibold tracking-tight text-white/90">{sessionHeadline}</div>
-                  <div className={cn("h-1.5 w-1.5 shrink-0 rounded-full", isLive ? "bg-emerald-400" : isTransitioningSession ? "bg-amber-300" : "bg-white/18")} />
+                  <div className="truncate text-[15px] font-semibold tracking-tight text-white/90" title={sessionHeadline}>{sessionHeadline}</div>
+                  <div className={cn("h-1.5 w-1.5 shrink-0 rounded-full", sessionDotClass)} />
                 </div>
-                <div className="mt-1 text-[11px] text-white/35">{sessionSecondaryLabel}</div>
-                <p className="mt-2 text-[11px] leading-5 text-white/45">{sessionSupportingText}</p>
+                <div className="mt-1 text-[11px] text-white/55">{sessionSecondaryLabel}</div>
+                <p className="mt-2 text-[11px] leading-5 text-white/58">{sessionSupportingText}</p>
               </div>
             </div>
+            {showPhoneSteps && (
+              <div className="mt-1 rounded-xl border border-white/8 bg-black/12 px-3 py-2.5">
+                <div className="text-[9px] font-semibold uppercase tracking-[0.1em] text-white/45">On your iPhone</div>
+                <ol className="mt-1.5 divide-y divide-white/7">
+                  {phoneSteps.map((step, index) => (
+                    <li key={step} className="flex min-h-8 items-center gap-2.5 py-1.5">
+                      <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-cyan-200/15 bg-cyan-300/[0.065] text-[9px] font-semibold tabular-nums text-cyan-100/75">
+                        {index + 1}
+                      </span>
+                      <span className="text-[11px] font-medium text-white/72">{step}</span>
+                    </li>
+                  ))}
+                </ol>
+              </div>
+            )}
             <div className="mt-3 flex flex-wrap gap-2">
               <button
                 type="button"
@@ -337,15 +345,16 @@ export function ConsoleView({
                     "inline-flex items-center rounded-xl border border-white/7 bg-[#1a1b1e] px-3 py-1.5 text-[11px] font-medium text-white/55 transition hover:border-white/12 hover:text-white",
                     settingsOpen && "border-cyan-300/20 bg-cyan-400/10 text-cyan-200",
                   )}
-                  onClick={onOpenSettings}
-                  aria-pressed={settingsOpen}
+                  onClick={onOpenDevicesSettings}
+                  aria-haspopup="dialog"
+                  aria-expanded={settingsOpen}
                 >
                   {trustedDevicesCount > 0 ? `Trusted Devices (${trustedDevicesCount})` : "Trusted Devices"}
                 </button>
               )}
             </div>
             {currentDeviceVisible && (
-              <div className="mt-2 text-[11px] text-white/38">
+              <div className="mt-2 text-[11px] text-white/50">
                 {currentDeviceTrusted
                   ? "This connected iPhone is trusted on this PC."
                   : "Trust this iPhone to keep a remembered relationship on this PC."}
@@ -354,11 +363,24 @@ export function ConsoleView({
             {technicalDetails}
           </div>
 
-          <div className="flex min-h-0 flex-1 flex-col gap-2 border-b border-white/7 p-3.5">
-            <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/25">Captures</div>
-            <div className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+          <div className="flex flex-col gap-2 border-b border-white/7 p-3.5">
+            <div className="text-[10px] font-semibold uppercase tracking-[0.08em] text-white/45">Captures</div>
+            {captureNotice && (
+              <div
+                role="status"
+                aria-live="polite"
+                className="rounded-lg border border-emerald-300/20 bg-emerald-500/10 p-2.5 text-[11px] leading-4 text-emerald-100"
+              >
+                <div className="font-medium">Capture status</div>
+                <div className="mt-1 break-all opacity-80">{captureNotice}</div>
+              </div>
+            )}
+            <div className="flex flex-col">
               {captures.length === 0 ? (
-                <div className="py-1 text-[11px] text-white/25">No captures yet</div>
+                <div className="flex items-start gap-2 py-1 text-[11px] leading-4 text-white/48">
+                  <Icon name="camera" size={13} />
+                  <span>Screenshots and recordings from this session will appear here.</span>
+                </div>
               ) : (
                 [...captures].reverse().map((capture) => (
                   <div key={capture.id} className="flex items-center gap-2 border-b border-white/7 py-2 last:border-b-0">
@@ -373,9 +395,9 @@ export function ConsoleView({
                       <Icon name={capture.type === "screenshot" ? "camera" : "record"} size={11} />
                     </div>
                     <div className="flex min-w-0 flex-1 flex-col gap-0.5">
-                      <span className="truncate text-[11px] text-white/90">{capture.name}</span>
+                      <span className="truncate text-[11px] text-white/90" title={capture.name}>{capture.name}</span>
                       {capture.duration !== undefined && (
-                        <span className="text-[10px] text-white/25">{fmtDuration(capture.duration)}</span>
+                        <span className="text-[10px] text-white/45">{fmtDuration(capture.duration)}</span>
                       )}
                     </div>
                     {capture.filePath && (
@@ -393,11 +415,13 @@ export function ConsoleView({
             </div>
           </div>
 
-          <div className="mt-auto">
+          <div>
             <button
               type="button"
-              className="flex w-full items-center gap-1.5 px-3.5 py-2.5 text-left text-[11px] font-medium text-white/25 transition hover:text-white/55"
+              className="flex w-full items-center gap-1.5 px-3.5 py-2.5 text-left text-[11px] font-medium text-white/48 transition hover:text-white/75"
               onClick={onToggleDiagnostics}
+              aria-expanded={diagExpanded}
+              aria-keyshortcuts="F1"
             >
               <Icon name={diagExpanded ? "chevron-down" : "chevron-right"} size={13} />
               Diagnostics
@@ -406,8 +430,8 @@ export function ConsoleView({
               <div className="flex max-h-55 flex-col gap-1.5 overflow-y-auto px-3.5 pb-3">
                 {diagnosticsItems.map(([label, value]) => (
                   <div key={label} className="flex items-center justify-between gap-3 text-[11px]">
-                    <span className="text-white/25">{label}</span>
-                    <strong className="max-w-[60%] truncate text-right font-medium text-white/90">{value}</strong>
+                    <span className="text-white/48">{label}</span>
+                    <strong className="max-w-[60%] truncate text-right font-medium text-white/90" title={value}>{value}</strong>
                   </div>
                 ))}
               </div>
@@ -416,14 +440,17 @@ export function ConsoleView({
         </aside>
       </div>
 
-      <div className={cn("flex items-center justify-between gap-1 border-y px-3", panelSurfaceClass)}>
+      <div className={cn("relative z-50 flex items-center justify-between gap-1 overflow-visible border-y px-3", panelSurfaceClass)}>
         <div className="flex items-center gap-px">
           <button
             type="button"
             className={cn(controlButtonClass, isRec && "bg-red-500/15 text-red-300")}
             onClick={onRecordToggle}
             disabled={!canRecord || commandPending}
-            title="Toggle recording (Ctrl+R)"
+            data-tooltip={recordingTooltip}
+            data-tooltip-side="top"
+            aria-label={isRec ? "Stop recording" : "Start recording"}
+            aria-keyshortcuts="Control+R"
           >
             <Icon name="record" size={15} />
           </button>
@@ -432,7 +459,10 @@ export function ConsoleView({
             className={controlButtonClass}
             onClick={onCapture}
             disabled={!canCapture || commandPending}
-            title="Screenshot (Ctrl+S)"
+            data-tooltip={screenshotTooltip}
+            data-tooltip-side="top"
+            aria-label="Take screenshot"
+            aria-keyshortcuts="Control+S"
           >
             <Icon name="camera" size={15} />
           </button>
@@ -441,13 +471,16 @@ export function ConsoleView({
             className={controlButtonClass}
             onClick={onToggleAudio}
             disabled={!audioAvailable}
-            title={!audioAvailable ? "Audio is unavailable in this receiver" : audioMuted ? "Unmute iPhone audio" : "Mute iPhone audio"}
+            data-tooltip={!audioAvailable ? "Audio unavailable" : audioMuted ? "Unmute iPhone audio (M)" : "Mute iPhone audio (M)"}
+            data-tooltip-side="top"
+            aria-label={!audioAvailable ? "iPhone audio unavailable" : "Mute iPhone audio"}
+            aria-keyshortcuts="M"
             aria-pressed={audioMuted}
           >
             <Icon name={audioMuted ? "volume-off" : "volume"} size={15} />
           </button>
           <div className="mx-1.5 h-4 w-px bg-white/7" />
-          <button type="button" className={controlButtonClass} onClick={onToggleFullscreen} title="Fullscreen (Ctrl+F)">
+          <button type="button" className={controlButtonClass} onClick={onToggleFullscreen} data-tooltip="Fullscreen (F or Ctrl+F)" data-tooltip-side="top" aria-label="Toggle fullscreen" aria-keyshortcuts="F Control+F">
             <Icon name="fullscreen" size={15} />
           </button>
           <button
@@ -455,7 +488,9 @@ export function ConsoleView({
             className={controlButtonClass}
             onClick={() => onAdjustZoom(-1)}
             disabled={zoomIndex === 0}
-            title="Zoom Out"
+            data-tooltip="Zoom out"
+            data-tooltip-side="top"
+            aria-label="Zoom out"
           >
             <Icon name="zoom-out" size={15} />
           </button>
@@ -465,12 +500,14 @@ export function ConsoleView({
             className={controlButtonClass}
             onClick={() => onAdjustZoom(1)}
             disabled={zoomIndex === zoomMaxIndex}
-            title="Zoom In"
+            data-tooltip="Zoom in"
+            data-tooltip-side="top"
+            aria-label="Zoom in"
           >
             <Icon name="zoom-in" size={15} />
           </button>
           <div className="mx-1.5 h-4 w-px bg-white/7" />
-          <button type="button" className={controlButtonClass} onClick={onRotate} title="Rotate device">
+          <button type="button" className={controlButtonClass} onClick={onRotate} data-tooltip="Rotate device" data-tooltip-side="top" aria-label="Rotate device">
             <Icon name="rotate" size={15} />
           </button>
         </div>
@@ -478,59 +515,46 @@ export function ConsoleView({
           <button
             type="button"
             className={cn(controlButtonClass, settingsOpen && "bg-cyan-400/12 text-cyan-200 hover:bg-cyan-400/18 hover:text-cyan-100")}
-            title={settingsOpen ? "Close Preferences" : "Open Preferences"}
+            data-tooltip={settingsOpen ? "Close Preferences" : "Open Preferences"}
+            data-tooltip-side="top"
+            data-tooltip-align="end"
             onClick={onOpenSettings}
-            aria-pressed={settingsOpen}
+            aria-label={settingsOpen ? "Close Preferences" : "Open Preferences"}
+            aria-haspopup="dialog"
+            aria-expanded={settingsOpen}
           >
             <Icon name="settings" size={15} />
           </button>
         </div>
       </div>
 
-      <div className="flex items-center gap-0 bg-[#0e0f11] px-4">
-        {isLive ? (
-          <>
+      {isLive && (
+        <div className="flex items-center gap-0 bg-[#0e0f11] px-4">
             <div className="flex items-center gap-2 whitespace-nowrap">
-              <span className="text-[11px] tracking-[-0.01em] text-white/25">Latency</span>
+              <span className="text-[11px] tracking-[-0.01em] text-white/48">Latency</span>
               <strong className="min-w-12 text-right text-[11px] font-semibold tracking-[-0.02em] tabular-nums text-white/90">{`${previewLatencyMs} ms`}</strong>
             </div>
             <div className="mx-3.5 h-3 w-px bg-white/7" />
             <div className="flex items-center gap-2 whitespace-nowrap">
-              <span className="text-[11px] tracking-[-0.01em] text-white/25">Frame rate</span>
+              <span className="text-[11px] tracking-[-0.01em] text-white/48">Frame rate</span>
               <strong className="min-w-11.5 text-right text-[11px] font-semibold tracking-[-0.02em] tabular-nums text-white/90">{`${previewFps} fps`}</strong>
             </div>
             <div className="mx-3.5 h-3 w-px bg-white/7" />
             <div className="flex items-center gap-2 whitespace-nowrap">
-              <span className="text-[11px] tracking-[-0.01em] text-white/25">Bitrate</span>
+              <span className="text-[11px] tracking-[-0.01em] text-white/48">Bitrate</span>
               <strong className="min-w-16 text-right text-[11px] font-semibold tracking-[-0.02em] tabular-nums text-white/90">
                 {`${(previewBitrateKbps / 1000).toFixed(1)} Mbps`}
               </strong>
             </div>
             <div className="mx-3.5 h-3 w-px bg-white/7" />
             <div className="flex items-center gap-2 whitespace-nowrap">
-              <span className="text-[11px] tracking-[-0.01em] text-white/25">Resolution</span>
+              <span className="text-[11px] tracking-[-0.01em] text-white/48">Source</span>
               <strong className="min-w-14.5 text-right text-[11px] font-semibold tracking-[-0.02em] tabular-nums text-white/90">
-                {orientation === "portrait" ? "393×852" : "852×393"}
+                {previewResolutionLabel}
               </strong>
             </div>
-          </>
-        ) : (
-          <div className="flex w-full items-center justify-between gap-4 text-[11px] text-white/35">
-            <span className="truncate">{idleTelemetryHint}</span>
-            <button
-              type="button"
-              className={cn(
-                "shrink-0 rounded-full border border-white/8 bg-white/5 px-2.5 py-1 text-[10px] font-medium text-white/65 transition hover:border-white/14 hover:bg-white/10 hover:text-white",
-                settingsOpen && "border-cyan-300/20 bg-cyan-400/10 text-cyan-200",
-              )}
-              onClick={onOpenSettings}
-              aria-pressed={settingsOpen}
-            >
-              {settingsOpen ? "Close Preferences" : "Preferences"}
-            </button>
-          </div>
-        )}
-      </div>
+        </div>
+      )}
       {settingsModal}
     </div>
   );
