@@ -143,8 +143,12 @@ Preferences let you choose whether screenshots save to disk, copy to clipboard, 
 
 ## Keyboard Shortcuts
 
+These are the defaults. In-app shortcuts can be changed under **Preferences >
+Support > Keyboard Shortcuts** and reset at any time.
+
 | Shortcut | Action |
 | --- | --- |
+| `M` | Mute or unmute iPhone audio |
 | `Ctrl+S` | Take screenshot |
 | `Ctrl+R` | Toggle recording |
 | `Ctrl+F` or `F` | Toggle fullscreen |
@@ -152,6 +156,7 @@ Preferences let you choose whether screenshots save to disk, copy to clipboard, 
 | Double-click the device | Toggle fullscreen |
 | `F1` | Toggle diagnostics, switching to Console mode if needed |
 | `H` | Hide or show the Minimal mode toolbar |
+| `Ctrl+,` | Open Preferences |
 | `Esc` | Close the active dialog or context menu, or leave fullscreen |
 
 ---

@@ -9,6 +9,7 @@ import {
   PREFERENCES_STORE_PATH,
 } from "./constants";
 import type { RecordingSettings, ScreenshotSettings, SessionState, StoredPreferences } from "./types";
+import { sanitizeKeyboardShortcuts } from "./keyboardShortcuts";
 
 let preferencesStorePromise: ReturnType<typeof loadStore> | null = null;
 
@@ -198,6 +199,7 @@ export function mergeStoredPreferences(stored: StoredPreferences | null) {
       audioVolume: numberInRangeOr(app?.audioVolume, 0, 1, defaultAppPreferences.audioVolume),
       followIphoneVolume: booleanOr(app?.followIphoneVolume, defaultAppPreferences.followIphoneVolume),
       audioChannelMode: enumOr(app?.audioChannelMode, ["stereo", "mono"], defaultAppPreferences.audioChannelMode),
+      keyboardShortcuts: sanitizeKeyboardShortcuts(app?.keyboardShortcuts),
       receiverDisplayName: stringOr(app?.receiverDisplayName, defaultAppPreferences.receiverDisplayName),
       lastMode: enumOr(app?.lastMode, ["console", "minimal"], defaultAppPreferences.lastMode),
       lastOrientation: enumOr(app?.lastOrientation, ["portrait", "landscape"], defaultAppPreferences.lastOrientation),

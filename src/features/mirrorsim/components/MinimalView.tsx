@@ -1,8 +1,9 @@
 import type { MouseEvent, ReactNode, RefObject } from "react";
 
 import { cn } from "@/lib/utils";
-import type { Orientation } from "@/features/mirrorsim/types";
+import type { KeyboardShortcutMap, Orientation } from "@/features/mirrorsim/types";
 import { MINIMAL_TITLEBAR_HEIGHT, MINIMAL_WINDOW_SIZE, type ZoomLevel } from "@/features/mirrorsim/constants";
+import { formatKeyboardShortcuts, keyboardShortcutsToAria } from "@/features/mirrorsim/keyboardShortcuts";
 
 import { Icon } from "./Icon";
 import { WindowControls } from "./WindowControls";
@@ -12,6 +13,7 @@ type MinimalViewProps = {
   canRecord: boolean;
   audioAvailable: boolean;
   audioMuted: boolean;
+  keyboardShortcuts: KeyboardShortcutMap;
   captureNotice: string | null;
   commandError: string | null;
   commandPending: boolean;
@@ -46,6 +48,7 @@ export function MinimalView({
   canRecord,
   audioAvailable,
   audioMuted,
+  keyboardShortcuts,
   captureNotice,
   commandError,
   commandPending,
@@ -74,6 +77,8 @@ export function MinimalView({
   zoom,
   orientation,
 }: MinimalViewProps) {
+  const shortcutLabel = (action: keyof KeyboardShortcutMap) => formatKeyboardShortcuts(keyboardShortcuts[action]);
+  const shortcutAria = (action: keyof KeyboardShortcutMap) => keyboardShortcutsToAria(keyboardShortcuts[action]);
   const scaledDeviceSize = {
     width: Math.ceil(shellWidth * zoom),
     height: Math.ceil((MINIMAL_WINDOW_SIZE[orientation].height - MINIMAL_TITLEBAR_HEIGHT) * zoom),
@@ -118,9 +123,9 @@ export function MinimalView({
                 className={minimalFloatingButtonClass}
                 onClick={onCapture}
                 disabled={!canCapture || commandPending}
-                data-tooltip={canCapture ? "Screenshot (Ctrl+S)" : "Screenshot available when iPhone video is ready"}
+                data-tooltip={canCapture ? `Screenshot (${shortcutLabel("takeScreenshot")})` : "Screenshot available when iPhone video is ready"}
                 aria-label="Take screenshot"
-                aria-keyshortcuts="Control+S"
+                aria-keyshortcuts={shortcutAria("takeScreenshot")}
               >
                 <Icon name="camera" size={14} />
               </button>
@@ -129,9 +134,9 @@ export function MinimalView({
                 className={`${minimalFloatingButtonClass}${isRec ? " bg-red-500/15 text-red-300 hover:bg-red-500/20" : ""}`}
                 onClick={onRecordToggle}
                 disabled={!canRecord || commandPending}
-                data-tooltip={isRec ? "Stop recording (Ctrl+R)" : canRecord ? "Start recording (Ctrl+R)" : "Recording available when iPhone video is ready"}
+                data-tooltip={isRec ? `Stop recording (${shortcutLabel("toggleRecording")})` : canRecord ? `Start recording (${shortcutLabel("toggleRecording")})` : "Recording available when iPhone video is ready"}
                 aria-label={isRec ? "Stop recording" : "Start recording"}
-                aria-keyshortcuts="Control+R"
+                aria-keyshortcuts={shortcutAria("toggleRecording")}
               >
                 <Icon name="record" size={14} />
               </button>
@@ -140,9 +145,9 @@ export function MinimalView({
                 className={minimalFloatingButtonClass}
                 onClick={onToggleAudio}
                 disabled={!audioAvailable}
-                data-tooltip={!audioAvailable ? "Audio unavailable" : audioMuted ? "Unmute iPhone audio (M)" : "Mute iPhone audio (M)"}
+                data-tooltip={!audioAvailable ? "Audio unavailable" : audioMuted ? `Unmute iPhone audio (${shortcutLabel("toggleAudio")})` : `Mute iPhone audio (${shortcutLabel("toggleAudio")})`}
                 aria-label={!audioAvailable ? "iPhone audio unavailable" : "Mute iPhone audio"}
-                aria-keyshortcuts="M"
+                aria-keyshortcuts={shortcutAria("toggleAudio")}
                 aria-pressed={audioMuted}
               >
                 <Icon name={audioMuted ? "volume-off" : "volume"} size={14} />
@@ -154,8 +159,9 @@ export function MinimalView({
                 type="button"
                 className={cn(minimalFloatingButtonClass, settingsOpen && "bg-cyan-400/12 text-cyan-200 hover:bg-cyan-400/18 hover:text-cyan-100")}
                 onClick={onOpenSettings}
-                data-tooltip={settingsOpen ? "Close Preferences" : "Open Preferences"}
+                data-tooltip={settingsOpen ? "Close Preferences" : `Open Preferences (${shortcutLabel("openPreferences")})`}
                 aria-label={settingsOpen ? "Close Preferences" : "Open Preferences"}
+                aria-keyshortcuts={shortcutAria("openPreferences")}
                 aria-haspopup="dialog"
                 aria-expanded={settingsOpen}
               >
@@ -175,10 +181,10 @@ export function MinimalView({
                   type="button"
                   className="inline-flex h-7 w-7 cursor-pointer items-center justify-center text-cyan-300 transition hover:text-white"
                   onClick={onGoConsole}
-                  data-tooltip="Switch to Console (Ctrl+M)"
+                  data-tooltip={`Switch to Console (${shortcutLabel("toggleView")})`}
                   data-tooltip-align="end"
                   aria-label="Switch to Console"
-                  aria-keyshortcuts="Control+M"
+                  aria-keyshortcuts={shortcutAria("toggleView")}
                 >
                   <Icon name="console" size={12} />
                 </button>

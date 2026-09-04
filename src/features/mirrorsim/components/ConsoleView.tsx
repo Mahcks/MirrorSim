@@ -3,7 +3,8 @@ import { useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } fr
 import { cn } from "@/lib/utils";
 import type { ZoomLevel } from "@/features/mirrorsim/constants";
 import { fmtDuration } from "@/features/mirrorsim/helpers";
-import type { Capture, Orientation } from "@/features/mirrorsim/types";
+import { formatKeyboardShortcuts, keyboardShortcutsToAria } from "@/features/mirrorsim/keyboardShortcuts";
+import type { Capture, KeyboardShortcutMap, Orientation } from "@/features/mirrorsim/types";
 import type { BonjourStatusSnapshot } from "@/receiverContract";
 
 import { Icon } from "./Icon";
@@ -21,6 +22,7 @@ type ConsoleViewProps = {
   canRecord: boolean;
   audioAvailable: boolean;
   audioMuted: boolean;
+  keyboardShortcuts: KeyboardShortcutMap;
   commandPending: boolean;
   commandError: string | null;
   currentDeviceTrusted: boolean;
@@ -85,6 +87,7 @@ export function ConsoleView({
   canRecord,
   audioAvailable,
   audioMuted,
+  keyboardShortcuts,
   commandPending,
   commandError,
   currentDeviceTrusted,
@@ -136,6 +139,8 @@ export function ConsoleView({
   zoomIndex,
   zoomMaxIndex,
 }: ConsoleViewProps) {
+  const shortcutLabel = (action: keyof KeyboardShortcutMap) => formatKeyboardShortcuts(keyboardShortcuts[action]);
+  const shortcutAria = (action: keyof KeyboardShortcutMap) => keyboardShortcutsToAria(keyboardShortcuts[action]);
   const previewStageRef = useRef<HTMLDivElement | null>(null);
   const previewFrameRef = useRef<HTMLDivElement | null>(null);
   const [fitScale, setFitScale] = useState(1);
@@ -147,12 +152,12 @@ export function ConsoleView({
         ? "bg-cyan-300"
         : "bg-white/35";
   const screenshotTooltip = canCapture
-    ? "Screenshot (Ctrl+S)"
+    ? `Screenshot (${shortcutLabel("takeScreenshot")})`
     : "Screenshot available when iPhone video is ready";
   const recordingTooltip = isRec
-    ? "Stop recording (Ctrl+R)"
+    ? `Stop recording (${shortcutLabel("toggleRecording")})`
     : canRecord
-      ? "Start recording (Ctrl+R)"
+      ? `Start recording (${shortcutLabel("toggleRecording")})`
       : "Recording available when iPhone video is ready";
 
   useLayoutEffect(() => {
@@ -220,10 +225,10 @@ export function ConsoleView({
             type="button"
             className="inline-flex h-7 w-7 items-center justify-center text-white/55 transition hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-cyan-300/65"
             onClick={onGoMinimal}
-            data-tooltip="Switch to phone view (Ctrl+M)"
+            data-tooltip={`Switch to phone view (${shortcutLabel("toggleView")})`}
             data-tooltip-align="end"
             aria-label="Switch to phone view"
-            aria-keyshortcuts="Control+M"
+            aria-keyshortcuts={shortcutAria("toggleView")}
           >
             <Icon name="phone" size={14} />
           </button>
@@ -421,7 +426,8 @@ export function ConsoleView({
               className="flex w-full items-center gap-1.5 px-3.5 py-2.5 text-left text-[11px] font-medium text-white/48 transition hover:text-white/75"
               onClick={onToggleDiagnostics}
               aria-expanded={diagExpanded}
-              aria-keyshortcuts="F1"
+              aria-keyshortcuts={shortcutAria("toggleDiagnostics")}
+              data-tooltip={`Toggle diagnostics (${shortcutLabel("toggleDiagnostics")})`}
             >
               <Icon name={diagExpanded ? "chevron-down" : "chevron-right"} size={13} />
               Diagnostics
@@ -450,7 +456,7 @@ export function ConsoleView({
             data-tooltip={recordingTooltip}
             data-tooltip-side="top"
             aria-label={isRec ? "Stop recording" : "Start recording"}
-            aria-keyshortcuts="Control+R"
+            aria-keyshortcuts={shortcutAria("toggleRecording")}
           >
             <Icon name="record" size={15} />
           </button>
@@ -462,7 +468,7 @@ export function ConsoleView({
             data-tooltip={screenshotTooltip}
             data-tooltip-side="top"
             aria-label="Take screenshot"
-            aria-keyshortcuts="Control+S"
+            aria-keyshortcuts={shortcutAria("takeScreenshot")}
           >
             <Icon name="camera" size={15} />
           </button>
@@ -471,16 +477,16 @@ export function ConsoleView({
             className={controlButtonClass}
             onClick={onToggleAudio}
             disabled={!audioAvailable}
-            data-tooltip={!audioAvailable ? "Audio unavailable" : audioMuted ? "Unmute iPhone audio (M)" : "Mute iPhone audio (M)"}
+            data-tooltip={!audioAvailable ? "Audio unavailable" : audioMuted ? `Unmute iPhone audio (${shortcutLabel("toggleAudio")})` : `Mute iPhone audio (${shortcutLabel("toggleAudio")})`}
             data-tooltip-side="top"
             aria-label={!audioAvailable ? "iPhone audio unavailable" : "Mute iPhone audio"}
-            aria-keyshortcuts="M"
+            aria-keyshortcuts={shortcutAria("toggleAudio")}
             aria-pressed={audioMuted}
           >
             <Icon name={audioMuted ? "volume-off" : "volume"} size={15} />
           </button>
           <div className="mx-1.5 h-4 w-px bg-white/7" />
-          <button type="button" className={controlButtonClass} onClick={onToggleFullscreen} data-tooltip="Fullscreen (F or Ctrl+F)" data-tooltip-side="top" aria-label="Toggle fullscreen" aria-keyshortcuts="F Control+F">
+          <button type="button" className={controlButtonClass} onClick={onToggleFullscreen} data-tooltip={`Fullscreen (${shortcutLabel("toggleFullscreen")})`} data-tooltip-side="top" aria-label="Toggle fullscreen" aria-keyshortcuts={shortcutAria("toggleFullscreen")}>
             <Icon name="fullscreen" size={15} />
           </button>
           <button

@@ -16,6 +16,7 @@ import {
   formatAppleDeviceModel,
   fmtError,
 } from "@/features/mirrorsim/helpers";
+import { keyboardShortcutMatches } from "@/features/mirrorsim/keyboardShortcuts";
 import { ConsoleView } from "@/features/mirrorsim/components/ConsoleView";
 import {
   getConnectionPresentation,
@@ -877,7 +878,9 @@ export default function App() {
         return;
       }
 
-      if (key === "f1" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey) {
+      const shortcuts = appPreferences.keyboardShortcuts;
+
+      if (keyboardShortcutMatches(e, shortcuts.toggleDiagnostics)) {
         e.preventDefault();
         setDiagExpanded((value) => !value);
         if (appMode === "minimal") {
@@ -886,43 +889,47 @@ export default function App() {
         return;
       }
 
-      if (!e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey) {
-        if (key === "f") {
-          e.preventDefault();
-          void toggleFullscreen();
-        } else if (key === "m") {
-          e.preventDefault();
-          toggleAudio();
-        } else if (key === "h" && appMode === "minimal") {
+      if (keyboardShortcutMatches(e, shortcuts.toggleFullscreen)) {
+        e.preventDefault();
+        void toggleFullscreen();
+        return;
+      }
+
+      if (keyboardShortcutMatches(e, shortcuts.toggleAudio)) {
+        e.preventDefault();
+        toggleAudio();
+        return;
+      }
+
+      if (keyboardShortcutMatches(e, shortcuts.toggleMinimalChrome)) {
+        if (appMode === "minimal") {
           e.preventDefault();
           setMinimalChromeHidden((value) => !value);
         }
         return;
       }
 
-      if (!e.ctrlKey || e.metaKey || e.altKey || e.shiftKey) return;
+      if (keyboardShortcutMatches(e, shortcuts.takeScreenshot)) {
+        e.preventDefault();
+        void doCapture();
+        return;
+      }
 
-      switch (key) {
-        case "s":
-          e.preventDefault();
-          void doCapture();
-          break;
-        case "r":
-          e.preventDefault();
-          void doRecordToggle();
-          break;
-        case "f":
-          e.preventDefault();
-          void toggleFullscreen();
-          break;
-        case "m":
-          e.preventDefault();
-          void (appMode === "console" ? goMinimal() : goConsole());
-          break;
-        case ",":
-          e.preventDefault();
-          openSettings("general");
-          break;
+      if (keyboardShortcutMatches(e, shortcuts.toggleRecording)) {
+        e.preventDefault();
+        void doRecordToggle();
+        return;
+      }
+
+      if (keyboardShortcutMatches(e, shortcuts.toggleView)) {
+        e.preventDefault();
+        void (appMode === "console" ? goMinimal() : goConsole());
+        return;
+      }
+
+      if (keyboardShortcutMatches(e, shortcuts.openPreferences)) {
+        e.preventDefault();
+        openSettings("general");
       }
     };
     window.addEventListener("keydown", onKey);
@@ -1724,6 +1731,7 @@ export default function App() {
           canRecord={canRecord}
           audioAvailable={audioAvailable}
           audioMuted={appPreferences.audioMuted}
+          keyboardShortcuts={appPreferences.keyboardShortcuts}
           commandPending={commandPending}
           commandError={commandError}
           currentDeviceTrusted={session.currentDeviceTrusted}
@@ -1788,6 +1796,7 @@ export default function App() {
         canRecord={canRecord}
         audioAvailable={audioAvailable}
         audioMuted={appPreferences.audioMuted}
+        keyboardShortcuts={appPreferences.keyboardShortcuts}
         captureNotice={captureNotice}
         commandError={commandError}
         commandPending={commandPending}

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 
 import type {
   AudioChannelMode,
@@ -6,6 +6,7 @@ import type {
   AppPreferences,
   ConnectionHistoryEntry,
   DiagnosticsExport,
+  KeyboardShortcutAction,
   PreviewQualityPreset,
   ReceiverAccessMode,
   RecordingSettings,
@@ -15,6 +16,13 @@ import type {
   TrustedDevice,
 } from "@/features/mirrorsim/types";
 import { formatAirPlayVolume } from "@/features/mirrorsim/audioVolume";
+import {
+  cloneDefaultKeyboardShortcuts,
+  findKeyboardShortcutConflict,
+  formatKeyboardShortcuts,
+  keyboardEventToShortcut,
+  keyboardShortcutActions,
+} from "@/features/mirrorsim/keyboardShortcuts";
 import type { BonjourStatusSnapshot, ReceiverRuntimeSnapshot } from "@/receiverContract";
 import { useModalFocus } from "@/features/mirrorsim/hooks/useModalFocus";
 
@@ -73,18 +81,6 @@ const settingsSections: Array<{ id: SettingsSection; label: string }> = [
   { id: "devices", label: "Devices" },
   { id: "support", label: "Support" },
 ];
-
-const keyboardShortcuts = [
-  ["M", "Mute or unmute iPhone audio"],
-  ["Ctrl + S", "Take a screenshot"],
-  ["Ctrl + R", "Start or stop recording"],
-  ["Ctrl + M", "Switch between Minimal and Console"],
-  ["F / Ctrl + F", "Enter or exit fullscreen"],
-  ["H", "Hide or show Minimal controls"],
-  ["Ctrl + ,", "Open Preferences"],
-  ["F1", "Open Console diagnostics"],
-  ["Esc", "Close a menu or exit fullscreen"],
-] as const;
 
 function Toggle({
   checked,
@@ -175,6 +171,8 @@ export function SettingsModal({
   const [nicknameDrafts, setNicknameDrafts] = useState<Record<string, string>>({});
   const [blockReasonDrafts, setBlockReasonDrafts] = useState<Record<string, string>>({});
   const [pendingConfirmation, setPendingConfirmation] = useState<string | null>(null);
+  const [capturingShortcutAction, setCapturingShortcutAction] = useState<KeyboardShortcutAction | null>(null);
+  const [shortcutError, setShortcutError] = useState<string | null>(null);
   const closeButtonRef = useRef<HTMLButtonElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const dialogRef = useModalFocus(open, onClose, closeButtonRef);
@@ -196,6 +194,9 @@ export function SettingsModal({
   useEffect(() => {
     if (open) {
       setActiveSection(initialSection);
+    } else {
+      setCapturingShortcutAction(null);
+      setShortcutError(null);
     }
   }, [initialSection, open]);
 
@@ -339,6 +340,43 @@ export function SettingsModal({
     } else {
       setPendingConfirmation(key);
     }
+  }
+
+  function beginShortcutCapture(action: KeyboardShortcutAction) {
+    setCapturingShortcutAction(action);
+    setShortcutError(null);
+  }
+
+  function captureShortcut(action: KeyboardShortcutAction, event: ReactKeyboardEvent<HTMLButtonElement>) {
+    event.preventDefault();
+    event.stopPropagation();
+
+    if (event.key === "Escape") {
+      setCapturingShortcutAction(null);
+      setShortcutError(null);
+      return;
+    }
+    if (["Alt", "Control", "Meta", "Shift"].includes(event.key)) return;
+
+    const binding = keyboardEventToShortcut(event.nativeEvent);
+    if (!binding) {
+      setShortcutError("Use a letter, number, F-key, or a Ctrl/Alt/Shift key combination. The Windows key and unmodified navigation keys are reserved.");
+      return;
+    }
+
+    const conflictingAction = findKeyboardShortcutConflict(appPreferences.keyboardShortcuts, action, binding);
+    if (conflictingAction) {
+      const conflictLabel = keyboardShortcutActions.find(({ id }) => id === conflictingAction)?.label ?? "another action";
+      setShortcutError(`${formatKeyboardShortcuts([binding])} is already assigned to ${conflictLabel}.`);
+      return;
+    }
+
+    setAppPreference("keyboardShortcuts", {
+      ...appPreferences.keyboardShortcuts,
+      [action]: [binding],
+    });
+    setCapturingShortcutAction(null);
+    setShortcutError(null);
   }
 
   return (
@@ -983,15 +1021,50 @@ export function SettingsModal({
           </>}
 
           {activeSection === "support" && <>
-          <div className={`${sectionHeader} mt-5 pb-2`}>Keyboard Shortcuts</div>
-          <div className={`${infoBox} grid grid-cols-[auto_1fr] gap-x-4 gap-y-2`}>
-            {keyboardShortcuts.map(([shortcut, description]) => (
-              <div className="contents" key={shortcut}>
-                <kbd className="whitespace-nowrap font-mono text-[10px] font-semibold text-white/78">{shortcut}</kbd>
-                <span className="text-white/52">{description}</span>
-              </div>
-            ))}
+          <div className="mt-5 flex items-center justify-between pb-2">
+            <div className={sectionHeader}>Keyboard Shortcuts</div>
+            <button
+              type="button"
+              className={btnSm}
+              onClick={() => {
+                setAppPreference("keyboardShortcuts", cloneDefaultKeyboardShortcuts());
+                setCapturingShortcutAction(null);
+                setShortcutError(null);
+              }}
+            >
+              Reset defaults
+            </button>
           </div>
+          <div className={`${infoBox} divide-y divide-white/7 p-0`}>
+            {keyboardShortcutActions.map(({ id, label, description }) => {
+              const capturing = capturingShortcutAction === id;
+              return (
+                <div className="flex items-center justify-between gap-3 px-3 py-2.5" key={id}>
+                  <div className="min-w-0">
+                    <div className="text-[11px] font-medium text-white/72">{label}</div>
+                    <div className="mt-0.5 text-[10px] leading-4 text-white/38">{description}</div>
+                  </div>
+                  <button
+                    type="button"
+                    className={`${btnSm} min-w-24 shrink-0 font-mono ${capturing ? "border-cyan-300/40 bg-cyan-400/10 text-cyan-100 ring-2 ring-cyan-400/20" : ""}`}
+                    aria-label={`Change shortcut for ${label}`}
+                    aria-pressed={capturing}
+                    onClick={() => beginShortcutCapture(id)}
+                    onKeyDown={(event) => {
+                      if (capturing) captureShortcut(id, event);
+                    }}
+                    onBlur={() => {
+                      if (capturing) setCapturingShortcutAction(null);
+                    }}
+                  >
+                    {capturing ? "Press keys…" : formatKeyboardShortcuts(appPreferences.keyboardShortcuts[id])}
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+          {shortcutError && <p role="alert" className="mt-2 text-[10px] leading-4 text-amber-200/75">{shortcutError}</p>}
+          <p className="mt-2 text-[10px] leading-4 text-white/35">Shortcuts work while MirrorSim is focused. Select a shortcut, then press the replacement. Press Esc to cancel. Esc always closes menus or exits fullscreen.</p>
 
           {/* ── Diagnostics ── */}
           <div className="mt-6 flex items-center justify-between pb-2">

@@ -163,6 +163,18 @@ export type RecordingSettings = {
   includeAudio: boolean;
 };
 
+export type KeyboardShortcutAction =
+  | "toggleAudio"
+  | "takeScreenshot"
+  | "toggleRecording"
+  | "toggleView"
+  | "toggleFullscreen"
+  | "toggleMinimalChrome"
+  | "openPreferences"
+  | "toggleDiagnostics";
+
+export type KeyboardShortcutMap = Record<KeyboardShortcutAction, string[]>;
+
 export type AppPreferences = {
   launchMode: AppMode;
   previewQualityPreset: PreviewQualityPreset;
@@ -181,6 +193,7 @@ export type AppPreferences = {
   audioVolume: number;
   followIphoneVolume: boolean;
   audioChannelMode: AudioChannelMode;
+  keyboardShortcuts: KeyboardShortcutMap;
   receiverDisplayName: string;
   lastMode: AppMode;
   lastOrientation: Orientation;

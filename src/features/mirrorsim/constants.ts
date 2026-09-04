@@ -7,6 +7,7 @@ import type {
   RecordingSettings,
   ScreenshotSettings,
 } from "./types";
+import { cloneDefaultKeyboardShortcuts } from "./keyboardShortcuts";
 
 export const ZOOM_LEVELS = [0.5, 0.75, 1, 1.5, 2] as const;
 export type ZoomLevel = (typeof ZOOM_LEVELS)[number];
@@ -108,6 +109,7 @@ export const defaultAppPreferences: AppPreferences = {
   audioVolume: 0.8,
   followIphoneVolume: true,
   audioChannelMode: "stereo",
+  keyboardShortcuts: cloneDefaultKeyboardShortcuts(),
   receiverDisplayName: "MirrorSim",
   lastMode: "minimal",
   lastOrientation: "portrait",
