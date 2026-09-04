@@ -8,11 +8,15 @@ $ErrorActionPreference = 'Stop'
 $RuntimeDir = [System.IO.Path]::GetFullPath($RuntimeDir)
 $requiredFiles = @(
   'airplay2dll.dll',
-  'avcodec-58.dll',
-  'avutil-56.dll',
+  'avcodec-62.dll',
+  'avutil-60.dll',
   'MirrorSimAdapter.exe',
-  'msys-2.0.dll',
-  'swscale-5.dll'
+  'swscale-9.dll'
+)
+$allowedDocumentationFiles = @(
+  'LICENSE',
+  'README.md',
+  'THIRD_PARTY_NOTICES.md'
 )
 
 if (-not (Test-Path -LiteralPath $RuntimeDir -PathType Container)) {
@@ -20,7 +24,11 @@ if (-not (Test-Path -LiteralPath $RuntimeDir -PathType Container)) {
 }
 
 $actualFiles = @(Get-ChildItem -LiteralPath $RuntimeDir -File | ForEach-Object Name | Sort-Object)
-$unexpectedFiles = @($actualFiles | Where-Object { $_ -notin $requiredFiles -and $_ -ne 'README.md' })
+$unexpectedFiles = @(
+  $actualFiles | Where-Object {
+    $_ -notin $requiredFiles -and $_ -notin $allowedDocumentationFiles
+  }
+)
 $missingFiles = @($requiredFiles | Where-Object { $_ -notin $actualFiles })
 if ($missingFiles.Count -gt 0 -or $unexpectedFiles.Count -gt 0) {
   throw "AirPlay runtime inventory mismatch. Missing: $($missingFiles -join ', '). Unexpected: $($unexpectedFiles -join ', ')."

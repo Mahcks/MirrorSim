@@ -18,14 +18,15 @@ receivers/AirPlayServer/
 
 ## Exact runtime inventory
 
-Release validation allows exactly these native files (plus this README):
+Release validation requires exactly these native files. Published runtime
+archives may additionally carry `LICENSE`, `README.md`,
+`THIRD_PARTY_NOTICES.md`, and license subdirectories:
 
 - `MirrorSimAdapter.exe`
 - `airplay2dll.dll`
-- `avcodec-58.dll`
-- `avutil-56.dll`
-- `msys-2.0.dll`
-- `swscale-5.dll`
+- `avcodec-62.dll`
+- `avutil-60.dll`
+- `swscale-9.dll`
 
 Every native file must be an x64 Windows PE image, and the adapter must complete the protocol `0.8.0` startup/shutdown smoke test. This folder is bundled into release artifacts through `src-tauri/tauri.conf.json`, so shipped builds can run without asking users to install a separate AirPlay receiver package or Bonjour.
 

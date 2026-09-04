@@ -2,18 +2,18 @@
 
 ## Status
 
-MirrorSim is evaluating eligibility for the free SignPath Foundation
-open-source code-signing program. Until the dependency review and application
-are accepted and the release workflow is integrated, MirrorSim's Windows
-installer is not Authenticode-signed and Windows SmartScreen may show a warning.
+MirrorSim is applying for the free SignPath Foundation open-source code-signing
+program. Until the application is accepted and the release workflow is
+integrated, MirrorSim's Windows installer is not Authenticode-signed and Windows
+SmartScreen may show a warning.
 
-The bundled receiver contains components under MIT, BSD, zlib, GNU LGPL, GNU
-GPL, and the Fraunhofer FDK AAC codec license. The FDK AAC license is not listed
-in the OSI approved-license registry. SignPath's published terms require
-OSI-approved licensing for every component. MirrorSim has disclosed the bundled
-receiver and requested a written eligibility determination from SignPath. It
-will replace or isolate an ineligible component before requesting production
-signatures if SignPath requires that change.
+SignPath confirmed that every component included in or required by the signed
+distribution must use an OSI-approved license. AirPlayServer v0.5.0 therefore
+removes Fraunhofer FDK AAC completely and uses a minimal, dynamically linked
+LGPL FFmpeg 8.1.2 build for AAC-ELD and H.264 decoding. The bundled receiver now
+contains components under OSI-approved MIT, BSD, zlib, GNU LGPL, and GNU GPL
+licenses. Exact source, build configuration, checksums, and notices are linked
+from `THIRD_PARTY_NOTICES.md`.
 
 If accepted, the signing provider will be disclosed as follows:
 
