@@ -14,7 +14,7 @@ body:
     attributes:
       label: MirrorSim version
       description: Find this in Preferences > Support or the GitHub release name.
-      placeholder: 0.1.6
+      placeholder: 0.2.0
     validations:
       required: true
 
