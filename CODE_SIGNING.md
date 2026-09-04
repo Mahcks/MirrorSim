@@ -7,12 +7,13 @@ open-source code-signing program. Until the dependency review and application
 are accepted and the release workflow is integrated, MirrorSim's Windows
 installer is not Authenticode-signed and Windows SmartScreen may show a warning.
 
-The bundled receiver currently uses Fraunhofer FDK AAC under its own codec
-license, which is not listed in the OSI approved-license registry. SignPath's
-published terms require OSI-approved licensing for every component. MirrorSim
-will disclose this dependency and obtain a written eligibility determination,
-or replace/isolate it with an eligible implementation, before requesting
-production signatures.
+The bundled receiver contains components under MIT, BSD, zlib, GNU LGPL, GNU
+GPL, and the Fraunhofer FDK AAC codec license. The FDK AAC license is not listed
+in the OSI approved-license registry. SignPath's published terms require
+OSI-approved licensing for every component. MirrorSim has disclosed the bundled
+receiver and requested a written eligibility determination from SignPath. It
+will replace or isolate an ineligible component before requesting production
+signatures if SignPath requires that change.
 
 If accepted, the signing provider will be disclosed as follows:
 
