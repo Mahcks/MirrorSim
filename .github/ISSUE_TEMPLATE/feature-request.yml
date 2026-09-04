@@ -1,0 +1,73 @@
+name: Feature request
+description: Suggest an improvement or new use case for MirrorSim
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Describe the problem or workflow first. Concrete use cases help determine whether a feature belongs in MirrorSim, the bundled receiver, or documentation.
+
+  - type: textarea
+    id: use-case
+    attributes:
+      label: Problem or use case
+      description: What are you trying to accomplish, and what prevents it today?
+      placeholder: I use MirrorSim for ... and currently have to ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed improvement
+      description: Explain the behavior you would like without assuming a particular implementation.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Product area
+      options:
+        - Connection and discovery
+        - Video and orientation
+        - Audio
+        - Screenshots and recording
+        - Minimal mode
+        - Console mode and diagnostics
+        - Preferences and accessibility
+        - Installation and updates
+        - Receiver runtime
+        - Documentation
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Describe any workaround or competing tool you currently use.
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Add mockups, examples, or related links. Remove personal information before uploading media.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Final checks
+      options:
+        - label: I searched existing issues for the same request.
+          required: true
+        - label: This request is about MirrorSim rather than bypassing protected or DRM-restricted content.
+          required: true
+

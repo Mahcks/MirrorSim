@@ -220,6 +220,13 @@ Tauri 2, Rust, React, TypeScript, Tailwind CSS, and a bundled native AirPlay rec
 
 Want to build MirrorSim from source, work on a fix, or cut a release? See [CONTRIBUTING.md](CONTRIBUTING.md) for local dev setup, the AirPlay runtime workflow, and release/build instructions.
 
+For support and project policies:
+
+- Use the [bug report form](https://github.com/Mahcks/MirrorSim/issues/new?template=bug-report.yml) for reproducible problems and attach a reviewed diagnostics export when it is safe to share.
+- Use the [feature request form](https://github.com/Mahcks/MirrorSim/issues/new?template=feature-request.yml) for proposed improvements and new workflows.
+- Read the [privacy statement](PRIVACY.md) for details about local media processing, network activity, diagnostics, and retained application data.
+- Follow the [security policy](SECURITY.md) to report suspected vulnerabilities privately.
+
 ---
 
 ## Credits

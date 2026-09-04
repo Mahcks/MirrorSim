@@ -1,0 +1,132 @@
+name: Bug report
+description: Report a reproducible problem with MirrorSim
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping improve MirrorSim. Search existing issues first and do not attach private pairing material or sensitive screen content.
+
+  - type: input
+    id: mirrorsim-version
+    attributes:
+      label: MirrorSim version
+      description: Find this in Preferences > Support or the GitHub release name.
+      placeholder: 0.1.5
+    validations:
+      required: true
+
+  - type: dropdown
+    id: installation-method
+    attributes:
+      label: Installation method
+      options:
+        - GitHub installer (.exe)
+        - MSI package
+        - Portable zip
+        - WinGet
+        - Development build
+        - Other
+    validations:
+      required: true
+
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      placeholder: Windows 11 24H2, build 26100
+    validations:
+      required: true
+
+  - type: input
+    id: iphone-ios
+    attributes:
+      label: iPhone and iOS version
+      description: Include the iPhone model when the issue involves mirroring, pairing, audio, or orientation.
+      placeholder: iPhone 15 Pro, iOS 18.6
+    validations:
+      required: false
+
+  - type: input
+    id: receiver-runtime
+    attributes:
+      label: Receiver runtime and protocol
+      description: Copy the receiver version and protocol shown in Preferences > Support.
+      placeholder: AirPlayServer 0.4.1, protocol 0.8.0
+    validations:
+      required: false
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the problem, including what was visible in MirrorSim and on the iPhone.
+      placeholder: Tell us what failed and whether the connection, audio, or video remained active.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Include the smallest reliable sequence that triggers the problem.
+      placeholder: |
+        1. Start listening in MirrorSim
+        2. Connect from iPhone Control Center
+        3. Open ...
+        4. Observe ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      placeholder: What did you expect MirrorSim to do?
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: Reproduction frequency
+      options:
+        - Every time
+        - Most times
+        - Sometimes
+        - Once
+        - Unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Attach an exported mirrorsim_diagnostics_*.json file when safe. Exports redact stable identifiers by default, but review the file before sharing it publicly.
+      placeholder: Drag the diagnostics file here, or explain why it is unavailable.
+    validations:
+      required: false
+
+  - type: textarea
+    id: screenshots
+    attributes:
+      label: Screenshots or recordings
+      description: Attach media only after checking that it contains no private notifications, account details, or personal content.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Final checks
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: I tested the latest stable release or explained why I could not.
+          required: true
+        - label: I reviewed attached diagnostics and media for sensitive information.
+          required: true
+

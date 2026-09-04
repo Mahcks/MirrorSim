@@ -1,0 +1,9 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Troubleshooting guide
+    url: https://github.com/Mahcks/MirrorSim#troubleshooting
+    about: Check connection, preview, capture, and audio troubleshooting before opening an issue.
+  - name: Report a security vulnerability
+    url: https://github.com/Mahcks/MirrorSim/security/advisories/new
+    about: Report suspected security problems privately instead of creating a public issue.
+

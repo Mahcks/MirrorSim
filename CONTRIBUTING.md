@@ -177,6 +177,8 @@ Before publishing, the workflow verifies that the Git tag matches the versions i
 
 ## Before you open a PR
 
+- Report suspected vulnerabilities privately according to [SECURITY.md](SECURITY.md) instead of opening a public issue or pull request with sensitive details.
+
 - Run `bun run check` — it runs the build, formatting, Clippy, tests, and Bun dependency audit.
 - Run `cargo audit --file src-tauri/Cargo.lock` and `cargo audit --file receivers/mirror-receiver/Cargo.lock` when `cargo-audit` is installed. CI and release validation always run these Rust advisory checks.
 - The CI workflow (`.github/workflows/ci.yml`) runs on pull requests and on pushes to `main`; make sure your branch passes it.
