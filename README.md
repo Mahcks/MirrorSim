@@ -101,6 +101,17 @@ MirrorSim ships in two formats:
 2. Extract it to a folder you control.
 3. Run `MirrorSim.exe`.
 
+## Code signing policy
+
+MirrorSim is evaluating eligibility for free open-source Authenticode signing
+through SignPath Foundation. The current installers remain unsigned until the
+dependency review, application, and release-workflow integration are approved. See the full
+[code signing policy](CODE_SIGNING.md), including build provenance, signing
+roles, bundled runtime handling, privacy, and verification details.
+
+If approved: **Free code signing provided by SignPath.io, certificate by
+SignPath Foundation.**
+
 ---
 
 ## Use MirrorSim
@@ -231,6 +242,7 @@ For support and project policies:
 - Use the [feature request form](https://github.com/Mahcks/MirrorSim/issues/new?template=feature-request.yml) for proposed improvements and new workflows.
 - Read the [privacy statement](PRIVACY.md) for details about local media processing, network activity, diagnostics, and retained application data.
 - Follow the [security policy](SECURITY.md) to report suspected vulnerabilities privately.
+- Review the [code signing policy](CODE_SIGNING.md) for release provenance and Authenticode status.
 
 ---
 

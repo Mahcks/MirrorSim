@@ -65,4 +65,4 @@ Choose one of the attached Windows builds:
 - `MirrorSim_*_x64_en-US.msi` — MSI package for managed or advanced installations.
 - `MirrorSim-portable-*.zip` — portable build with no installation required.
 
-Windows may show a SmartScreen warning because the binaries are updater-signed but are not yet backed by a commercial Windows code-signing certificate. SHA-256 hashes are included in `checksums.txt`, and the GitHub release includes updater artifacts and build-provenance attestations.
+Windows may show a SmartScreen warning because the binaries are updater-signed but are not yet Windows Authenticode-signed. SHA-256 hashes are included in `checksums.txt`, and the GitHub release includes updater artifacts and build-provenance attestations. See MirrorSim's [code signing policy](https://github.com/Mahcks/MirrorSim/blob/main/CODE_SIGNING.md) for current status, release provenance, and verification details.
