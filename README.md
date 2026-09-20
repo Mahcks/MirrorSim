@@ -6,7 +6,9 @@
 [![Downloads](https://img.shields.io/github/downloads/Mahcks/MirrorSim/total?style=flat-square)](https://github.com/Mahcks/MirrorSim/releases/latest)
 ![Platform](https://img.shields.io/badge/platform-Windows%20x64-0078D6?style=flat-square&logo=windows&logoColor=white)
 
-MirrorSim mirrors an iPhone over AirPlay into a clean, presentation-ready device-frame window on Windows — no cable, no clutter, no generic receiver UI in your screenshots. Point your iPhone at it from Control Center and you get a focused, floating device frame ready for demos, QA, screen recordings, and walkthroughs.
+MirrorSim mirrors your iPhone screen **with live audio** over AirPlay into a clean device-frame window on Windows. It is free and open source, with no watermark, subscription, or account required. Record video with iPhone audio, take screenshots, or use the floating window for demos and walkthroughs — no cable or separate iPhone app needed.
+
+**Audio playback and recording are supported. Bonjour for Windows is not required:** MirrorSim includes its own AirPlay receiver and network discovery.
 
 <p align="center">
   <img src="docs/images/demo.gif" alt="MirrorSim starting its AirPlay receiver and mirroring an iPhone in Minimal mode" width="360">
@@ -50,6 +52,7 @@ Screen mirroring an iPhone on Windows usually means QuickTime on a Mac you don't
 ## Highlights
 
 - Live iPhone screen mirroring over Wi-Fi
+- Live iPhone audio playback with mute, master volume, iPhone volume following, and stereo or mono output
 - Minimal floating device-frame mode for demos and recordings
 - Console mode with connection state, diagnostics, capture history, and controls
 - Receiver-driven portrait and landscape framing with a manual override that is not fooled by apps publishing a separate landscape video surface
@@ -58,6 +61,9 @@ Screen mirroring an iPhone on Windows usually means QuickTime on a Mac you don't
 - Adjustable preview quality and live-edge catch-up presets
 - Trusted-device preferences and receiver access controls
 - Built-in mDNS discovery that follows active network interfaces without requiring Bonjour for Windows
+- Optional always-on-top Minimal window, fullscreen, and customizable keyboard shortcuts
+- In-app update checks and downloads, plus local diagnostics export for troubleshooting
+- Local video and audio processing with no advertising, analytics, or cloud upload of mirrored content
 
 ---
 
@@ -75,7 +81,7 @@ MirrorSim bundles its AirPlay receiver runtime in release builds. You do not nee
 
 ### Unsigned beta builds
 
-MirrorSim is currently shipping as an unsigned early beta while the project is still getting its first public releases out. Windows SmartScreen may warn on first launch.
+MirrorSim is currently distributed as an unsigned beta. Windows SmartScreen may warn on first launch. See the [code signing policy](CODE_SIGNING.md) for signing status.
 
 To run the official GitHub release build:
 
@@ -103,14 +109,20 @@ MirrorSim ships in two formats:
 
 ## Code signing policy
 
-MirrorSim is evaluating eligibility for free open-source Authenticode signing
+MirrorSim is applying for free open-source Authenticode signing
 through SignPath Foundation. The current installers remain unsigned until the
-dependency review, application, and release-workflow integration are approved. See the full
+application is accepted and the release workflow is integrated. See the full
 [code signing policy](CODE_SIGNING.md), including build provenance, signing
 roles, bundled runtime handling, privacy, and verification details.
 
 If approved: **Free code signing provided by SignPath.io, certificate by
 SignPath Foundation.**
+
+### Updates
+
+Use **Preferences > Support > Check for updates** to check GitHub for a newer release. When an update is downloaded, finish the current mirroring or pairing session before choosing **Restart to update**. You can also download releases manually from [GitHub Releases](https://github.com/Mahcks/MirrorSim/releases/latest).
+
+Update artifacts have verification signatures. These are separate from Windows code signing and do not remove SmartScreen warnings.
 
 ---
 
@@ -148,7 +160,27 @@ Default filenames:
 - Screenshots: `mirrorsim_screenshot_YYYYMMDD_HHMMSS.png`
 - Recordings: `mirrorsim_recording_YYYYMMDD_HHMMSS.webm`
 
-Preferences let you choose whether screenshots save to disk, copy to clipboard, or both. You can also change the screenshot and recording folders and independently include the device frame in each export type. The Audio section can follow the iPhone volume buttons, apply a separate MirrorSim master level, switch to mono compatibility, and include or omit full-level iPhone audio in new recordings. Playback controls never change Windows system volume or reduce recorded audio.
+Preferences let you choose whether screenshots save to disk, copy to clipboard, or both. Screenshot and recording settings have separate folders, filename prefixes, timestamp options, and device-frame options. Captures omit the device frame by default; recordings include iPhone audio by default.
+
+## Audio
+
+MirrorSim plays the audio received from your iPhone through your PC and can include it in `.webm` recordings. Open **Preferences > Audio** to configure:
+
+- **Play iPhone audio**: enable or mute local playback; `M` also toggles mute.
+- **Follow iPhone volume buttons**: use the iPhone's volume level for playback.
+- **MirrorSim master volume**: adjust the app's playback level independently of Windows system volume.
+- **Audio channel output**: choose Stereo or Mono compatibility.
+- **Include iPhone audio in recordings**: include or omit audio in new recordings.
+
+Playback is enabled by default, with iPhone volume following, an 80% master level, and stereo output. Muting playback or lowering its volume does not mute or lower recorded audio: recordings use the full-level received iPhone audio when recording audio is enabled.
+
+## Preferences and device access
+
+- Choose the default view, remember the last view and orientation, follow iPhone rotation, or keep the Minimal window always on top.
+- Change the Screen Mirroring receiver name and preview quality, or enable a solid window background.
+- Under **Connection**, enable listening when MirrorSim opens, configure automatic reconnection, or refresh discovery after network changes.
+- Choose whether to ask each time a new iPhone connects, remember approved iPhones, or allow only known iPhones. Manage saved devices with nicknames and blocking controls.
+- Under **Support**, customize shortcuts, export diagnostics, check for updates, and open project or issue links.
 
 ---
 
@@ -178,18 +210,18 @@ Preview presets tune the desktop playback surface. They do not change the iPhone
 
 | Preset | Best for | Behavior |
 | --- | --- | --- |
-| Good quality | Demos and review | Smooth scaling with a slightly steadier preview |
+| High quality | Demos and review | Smooth scaling with a slightly steadier preview |
 | Balanced | Everyday use | A practical balance between clarity and latency |
-| Fast speed | Lowest latency | More aggressive live-edge catch-up and pixelated scaling |
+| Fast | Lowest latency | More aggressive live-edge catch-up and pixelated scaling |
 
 ---
 
 ## Current Limitations
 
-MirrorSim is focused on screen mirroring.
+MirrorSim supports screen mirroring with audio playback and recording. The remaining limitations include:
 
-- Apple DRM-protected video cannot be decrypted because iOS replaces protected pixels before they reach the receiver; unprotected player controls and audio may continue normally. MirrorSim separately reports an explicit sender-paused picture, and only suggests protected playback after multiple advancing, uniformly near-black frames arrive with audible audio. This is deliberately conservative because AirPlay exposes no trustworthy per-title DRM flag. Return to normal Screen Mirroring or use the streaming service's Windows app for protected playback.
-- Automatic rotation requires the bundled protocol `0.8.0` receiver. MirrorSim follows the reported source-screen shape while ignoring separate media-output dimensions, and Rotate remains available as a temporary override.
+- DRM-protected video may appear black while player controls and audio continue. MirrorSim cannot decrypt protected video, and its protected-playback warning is an estimate rather than a definitive DRM check. Return to normal Screen Mirroring or use the streaming service's Windows app for protected playback.
+- Automatic rotation depends on orientation information from the bundled receiver. MirrorSim follows the iPhone screen shape rather than a separate video player's dimensions; Rotate remains available as a temporary override.
 - Built-in mDNS removes the Bonjour dependency and follows interface changes, but guest Wi-Fi isolation, VPNs, and Windows Firewall rules can still block local AirPlay traffic.
 - MirrorSim preserves ordinary interrupted mirror-data sessions for up to two minutes. An explicitly paused sender remains available while iOS keeps the AirPlay control session alive, but iOS can still terminate that session during longer sleep or network changes.
 
@@ -210,7 +242,7 @@ MirrorSim advertises AirPlay directly with its built-in mDNS service and can ope
 
 - Open Console mode and expand diagnostics.
 - Watch `Buffer`, `Rate`, `Dropped`, `Queued`, `Init`, `Appended`, and `Last error`.
-- Try the **Fast speed** preset for lower latency.
+- Try the **Fast** preview quality setting for lower latency.
 - Disconnect and reconnect the iPhone from Control Center if iOS resumes from sleep in a bad state.
 - Restart MirrorSim if the native receiver runtime has been left running from an older dev build.
 
