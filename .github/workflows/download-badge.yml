@@ -1,0 +1,55 @@
+name: Download badge
+
+# Counts installer, MSI and portable downloads across all releases (excluding
+# updater metadata such as latest.json and .sig files, which every installed
+# copy fetches) and publishes a Shields endpoint file to the `badges` branch.
+
+on:
+  schedule:
+    - cron: "41 6 * * *"
+  release:
+    types: [published]
+  push:
+    branches: [main]
+    paths: [.github/workflows/download-badge.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: download-badge
+  cancel-in-progress: true
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Count installer downloads
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          total=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            --jq '.[].assets[] | select(.name | test("(setup\\.exe|\\.msi|portable.*\\.zip)$")) | .download_count' \
+            | awk '{ s += $1 } END { print s + 0 }')
+          message=$(awk -v n="$total" 'BEGIN {
+            if (n >= 1000000) printf "%.1fM", n / 1000000;
+            else if (n >= 1000) printf "%.1fk", n / 1000;
+            else printf "%d", n }' | sed 's/\.0\([kM]\)$/\1/')
+          echo "Installer downloads: $total ($message)"
+          mkdir -p out
+          printf '{"schemaVersion":1,"label":"downloads","message":"%s","color":"blue"}\n' "$message" > out/downloads.json
+
+      - name: Publish to badges branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          cd out
+          git init -q -b badges
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add downloads.json
+          git commit -q -m "Update download badge"
+          git push -q --force "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" badges

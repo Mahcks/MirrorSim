@@ -3,7 +3,7 @@
 [![Latest release](https://img.shields.io/github/v/release/Mahcks/MirrorSim?include_prereleases&sort=semver&label=release&style=flat-square)](https://github.com/Mahcks/MirrorSim/releases/latest)
 [![CI](https://img.shields.io/github/actions/workflow/status/Mahcks/MirrorSim/ci.yml?branch=main&label=CI&style=flat-square)](https://github.com/Mahcks/MirrorSim/actions)
 [![License](https://img.shields.io/github/license/Mahcks/MirrorSim?style=flat-square)](LICENSE)
-[![Downloads](https://img.shields.io/github/downloads/Mahcks/MirrorSim/total?style=flat-square)](https://github.com/Mahcks/MirrorSim/releases/latest)
+[![Downloads](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2FMahcks%2FMirrorSim%2Fbadges%2Fdownloads.json&style=flat-square)](https://github.com/Mahcks/MirrorSim/releases/latest)
 ![Platform](https://img.shields.io/badge/platform-Windows%20x64-0078D6?style=flat-square&logo=windows&logoColor=white)
 
 MirrorSim mirrors your iPhone screen **with live audio** over AirPlay into a clean device-frame window on Windows. It is free and open source, with no watermark, subscription, or account required. Record video with iPhone audio, take screenshots, or use the floating window for demos and walkthroughs — no cable or separate iPhone app needed.
