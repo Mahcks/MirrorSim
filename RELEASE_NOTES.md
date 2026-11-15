@@ -1,59 +1,44 @@
-# v0.2.0
+# v0.2.1
 
-v0.2.0 makes MirrorSim easier to control and moves the Windows distribution to
-a fully OSI-approved receiver stack. It adds customizable keyboard shortcuts,
-refreshes the Rust dependencies, and preserves the stable mirroring, audio,
-capture, recording, orientation, trust, and update experience from v0.1.5.
+v0.2.1 fixes a receiver startup failure on some Windows PCs, removes a
+misaligned camera cutout from the preview and captures, and resolves security
+advisories in MirrorSim's dependencies.
 
-## Customizable controls
+## Fixes
 
-- Adds a keyboard-shortcut editor under **Preferences > Support**.
-- Supports custom bindings for audio mute, screenshots, recording, view mode,
-  fullscreen, Minimal controls, Preferences, and diagnostics.
-- Detects conflicting assignments before saving and provides a one-click reset
-  to the default bindings.
-- Updates in-app shortcut hints to reflect the active bindings.
+- **Receiver startup on Windows (#5).** If Windows blocks the receiver's usual
+  network ports (socket error 10013 or a port already in use), MirrorSim now
+  starts on a free port and advertises that port to your iPhone instead of
+  failing with "fgServerStart returned null". Startup errors now name the port
+  and Windows error.
+- **Dynamic Island alignment (#10).** MirrorSim no longer draws its own
+  fixed-size island over the mirrored screen or framed screenshots and
+  recordings. The island you see is the one iOS sends, so it always lines up.
+  iOS hides the island when it has nothing to show and in landscape apps, so it
+  can fade in and out, just like on Apple's own AirPlay receivers.
+- **Video recovery.** When the video stream loses continuity, the preview now
+  waits for the next full frame and resumes on its own instead of asking you to
+  reconnect Screen Mirroring.
 
-## Open receiver media stack
+## Diagnostics
 
-- Replaces Fraunhofer FDK AAC with FFmpeg 8.1.2's LGPL AAC-ELD decoder.
-- Preserves iPhone audio, stereo playback, mute, recording audio, and
-  phone-volume following with the new decoder.
-- Removes the obsolete MSYS2 runtime dependency from the shipped receiver.
-- Pins the immutable AirPlayServer v0.5.0 runtime and its published SHA-256
-  checksum.
-- Ships a smaller FFmpeg build containing only the AAC and H.264 decoders and
-  the required `libavcodec`, `libavutil`, and `libswscale` libraries.
+- Adds a bounded diagnostics history that records receiver and stream health
+  (not video or audio) and is included in **Preferences > Support** exports.
+  See [PRIVACY.md](https://github.com/Mahcks/MirrorSim/blob/main/PRIVACY.md)
+  for exactly what is kept and how to delete it.
 
-## Distribution and project readiness
+## Security and dependencies
 
-- Adds WinGet package metadata and the public policies required for community
-  support, privacy, security reporting, and release provenance.
-- Documents the Authenticode signing process while the SignPath Foundation
-  application is under review.
-- Refreshes the desktop and receiver Rust dependency sets after full build,
-  lint, test, and audit validation.
-
-## Licensing and provenance
-
-- The receiver distribution contains components under OSI-approved MIT, BSD,
-  zlib, LGPL, and GPL licenses.
-- AirPlayServer's release workflow rejects any return of the removed FDK source
-  tree and verifies that FFmpeg was built with GPL, nonfree, and version-3
-  components disabled.
-- AirPlayServer v0.5.0 publishes the exact FFmpeg 8.1.2 source archive, source
-  checksum, build configuration, runtime checksum, and GitHub build-provenance
-  attestations.
-- MirrorSim's packaged notices describe the receiver files actually included in
-  the release.
+- Updates Vite, rustls, rustls-webpki, webpki-root-certs, tokio and the Tauri
+  updater (which moves Tauri to 2.12 and the build toolchain to Rust 1.90) to
+  resolve published security advisories. Frontend and Rust audits are clean.
+- Pins the AirPlayServer v0.5.1 runtime and its published SHA-256 checksum.
 
 ## Compatibility
 
-The receiver keeps adapter protocol `0.8.0` and its existing `pcm-audio`,
-`sender-volume`, `video-geometry`, `video-sender-state`, and `external-dnssd`
-capabilities. Existing trusted-device records and application settings are
-preserved when updating from v0.1.5. MirrorSim remains a Windows x64
-application.
+The receiver keeps adapter protocol `0.8.0`; the free-port fallback is an
+optional capability that MirrorSim turns on. Trusted devices and settings are
+preserved when updating from v0.2.0.
 
 ## Install
 
