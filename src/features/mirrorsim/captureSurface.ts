@@ -113,31 +113,7 @@ export function createCaptureSurface(
       roundedRect(context, bezel / 2, bezel / 2, canvas.width - bezel, canvas.height - bezel, outerRadius);
       context.stroke();
 
-      context.fillStyle = "#000";
-      if (orientation === "portrait") {
-        const islandWidth = Math.round(118 * scale);
-        const islandHeight = Math.round(33 * scale);
-        roundedRect(
-          context,
-          (canvas.width - islandWidth) / 2,
-          bezel + Math.round(7 * scale),
-          islandWidth,
-          islandHeight,
-          islandHeight / 2,
-        );
-      } else {
-        const islandWidth = Math.round(33 * scale);
-        const islandHeight = Math.round(118 * scale);
-        roundedRect(
-          context,
-          canvas.width - bezel - islandWidth - Math.round(7 * scale),
-          (canvas.height - islandHeight) / 2,
-          islandWidth,
-          islandHeight,
-          islandWidth / 2,
-        );
-      }
-      context.fill();
+      // Preserve the sender's pixels, including any screen cutout it supplies.
     },
   };
 }

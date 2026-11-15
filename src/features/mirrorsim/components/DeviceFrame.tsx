@@ -111,14 +111,7 @@ export function DeviceFrame({
             orientation === "portrait" ? "rounded-[45px]" : "rounded-[33px]",
           )}
         />
-        <div
-          className={cn(
-            "absolute z-10 rounded-full bg-black shadow-[inset_0_1px_0_rgba(255,255,255,0.04),0_1px_6px_rgba(0,0,0,0.4)]",
-            orientation === "portrait"
-              ? "left-1/2 top-3 h-8.25 w-29.5 -translate-x-1/2"
-              : "right-3 top-1/2 h-29.5 w-8.25 -translate-y-1/2",
-          )}
-        />
+        {/* The sender owns screen cutouts; a synthetic island can cover live content. */}
         <div className={screenFrameClass}>
           <div className="absolute inset-0 rounded-inherit bg-black">
             {!isLive && (
