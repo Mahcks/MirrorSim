@@ -1021,18 +1021,40 @@ function attachWebCodecsPreviewStream(
     if (disposed) {
       return;
     }
-    if (preparation.needsRandomAccess) {
-      throw new Error(
-        "The live decoder needs a fresh keyframe. Turn Screen Mirroring off and back on on the iPhone.",
-      );
-    }
     let clientGeneration = preparation.clientGeneration;
     let invalidationRecoveryCount = 0;
     let presentationStartedAt = performance.now();
     let decoderBackpressureStartedAt: number | null = null;
+    let keyframeRecoveryStartedAt: number | null = null;
+    const waitForRecoveryKeyframe = () => {
+      if (keyframeRecoveryStartedAt !== null) return;
+      keyframeRecoveryStartedAt = performance.now();
+      activeDecoder.reset();
+      activeDecoder.configure(decoderConfig);
+      waitingForKeyframe = true;
+      readyReported = false;
+      lastSampleIndex = null;
+      decoderBackpressureStartedAt = null;
+      patchDiagnostics({
+        decoderClientRecoveryCount: diagnostics.decoderClientRecoveryCount + 1,
+        decoderQueueSize: 0,
+        lastMediaEvent: "webcodecs:waiting-for-keyframe",
+        lastMediaEventAtMs: performance.now(),
+        lastMediaError: "Video continuity was interrupted; waiting for a fresh keyframe.",
+      }, true);
+      onStatusChange?.("loading");
+    };
+    if (preparation.needsRandomAccess) waitForRecoveryKeyframe();
 
     while (!disposed && activeDecoder.state !== "closed") {
-      if (!firstFrameDrawn && diagnostics.mediaAppendCount > 0 && performance.now() - presentationStartedAt > 5_000) {
+      if (keyframeRecoveryStartedAt !== null) {
+        if (document.visibilityState === "hidden") {
+          keyframeRecoveryStartedAt = performance.now();
+        } else if (performance.now() - keyframeRecoveryStartedAt > 30_000) {
+          throw new Error("No recovery keyframe arrived within 30 seconds. Retry the preview or reconnect Screen Mirroring.");
+        }
+      }
+      if (!waitingForKeyframe && !readyReported && diagnostics.mediaAppendCount > 0 && performance.now() - presentationStartedAt > 5_000) {
         throw new Error("The live decoder received video but could not produce a frame. Reconnect Screen Mirroring and try again.");
       }
       if (activeDecoder.decodeQueueSize > 8) {
@@ -1088,11 +1110,6 @@ function attachWebCodecsPreviewStream(
         if (disposed) {
           return;
         }
-        if (preparation.needsRandomAccess) {
-          throw new Error(
-            "The live preview changed after its recovery frame expired. Turn Screen Mirroring off and back on on the iPhone.",
-          );
-        }
         clientGeneration = preparation.clientGeneration;
         activeDecoder.reset();
         activeDecoder.configure(decoderConfig);
@@ -1105,21 +1122,25 @@ function attachWebCodecsPreviewStream(
           lastMediaEventAtMs: performance.now(),
           lastMediaError: null,
         }, true);
+        if (preparation.needsRandomAccess) waitForRecoveryKeyframe();
         continue;
       }
       if (accessUnit.needsRandomAccess) {
-        throw new Error(
-          "The live decoder lost video continuity. Turn Screen Mirroring off and back on on the iPhone.",
-        );
+        waitForRecoveryKeyframe();
+        await delay(16, abortController.signal);
+        continue;
+      }
+      if (waitingForKeyframe && !accessUnit.keyframe) {
+        await delay(16, abortController.signal);
+        continue;
       }
 
       const discontinuity = lastSampleIndex !== null && accessUnit.sequenceNumber !== lastSampleIndex + 1;
       lastSampleIndex = accessUnit.sequenceNumber;
       if (discontinuity) {
         if (!accessUnit.keyframe) {
-          throw new Error(
-            "The live decoder lost video continuity before a new keyframe arrived. Turn Screen Mirroring off and back on on the iPhone.",
-          );
+          waitForRecoveryKeyframe();
+          continue;
         }
         activeDecoder.reset();
         activeDecoder.configure(decoderConfig);
@@ -1133,11 +1154,10 @@ function attachWebCodecsPreviewStream(
         }, true);
         onStatusChange?.("loading");
       }
-      if (waitingForKeyframe && !accessUnit.keyframe) {
-        continue;
-      }
       if (accessUnit.keyframe) {
+        if (waitingForKeyframe) presentationStartedAt = performance.now();
         waitingForKeyframe = false;
+        keyframeRecoveryStartedAt = null;
       }
 
       activeDecoder.decode(new EncodedVideoChunkCtor({

@@ -132,6 +132,7 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
     surfaceStatus: "loading" as MockPreviewStreamStatus,
     surfaceError: null as string | null,
     documentVisible: true,
+    video: videoDiag,
   });
   const previewClientDiagnosticContextRef = useRef<PreviewClientDiagnosticContext>({
     videoAvailabilityNotice: null,
@@ -389,8 +390,9 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
       surfaceStatus,
       surfaceError,
       documentVisible,
+      video: videoDiag,
     };
-  }, [documentVisible, previewClientDiag, surfaceError, surfaceStatus]);
+  }, [documentVisible, previewClientDiag, surfaceError, surfaceStatus, videoDiag]);
 
   useEffect(() => {
     if (!isLive) {
@@ -415,6 +417,12 @@ export function usePreviewRuntime({ previewPreset, setCommandError }: UsePreview
           videoAvailabilityNotice: context.videoAvailabilityNotice,
           senderPaused: context.senderPaused,
           lastPixelProbeAgeMs: ageMs(latest.diagnostics.lastPixelProbeAtMs),
+          lastDecodedFrameAgeMs: ageMs(latest.diagnostics.lastDecodedFrameAtMs),
+          lastAppendAgeMs: ageMs(latest.diagnostics.lastAppendAtMs),
+          currentTime: latest.video.currentTime,
+          bufferLeadMs: Math.max(0, latest.video.bufferedEnd - latest.video.currentTime) * 1000,
+          playbackRate: latest.video.playbackRate,
+          droppedVideoFrames: latest.video.droppedVideoFrames,
           lastAudioReceivedAgeMs: ageMs(context.lastAudioReceivedAtMs),
           lastAudibleAudioAgeMs: ageMs(context.lastAudibleAudioAtMs),
           reportedAt: Date.now(),

@@ -64,6 +64,8 @@ type SettingsModalProps = {
   onRefreshBonjourStatus: () => void;
   onOpenWindowsFirewall: () => void;
   onExportDiagnostics: () => void;
+  onMarkDiagnosticIncident: () => void;
+  diagnosticIncidentNotice: string | null;
   onCheckForUpdates: () => void;
   onOpenProject: () => void;
   onOpenIssues: () => void;
@@ -161,6 +163,8 @@ export function SettingsModal({
   onRefreshBonjourStatus,
   onOpenWindowsFirewall,
   onExportDiagnostics,
+  onMarkDiagnosticIncident,
+  diagnosticIncidentNotice,
   onCheckForUpdates,
   onOpenProject,
   onOpenIssues,
@@ -1069,6 +1073,9 @@ export function SettingsModal({
           {/* ── Diagnostics ── */}
           <div className="mt-6 flex items-center justify-between pb-2">
             <div className={sectionHeader}>Diagnostics</div>
+            <button type="button" className={btnSm} onClick={onMarkDiagnosticIncident} disabled={commandPending}>
+              Mark problem now
+            </button>
             <button type="button" className={btnSm} onClick={onExportDiagnostics} disabled={commandPending}>
               Export
             </button>
@@ -1078,6 +1085,8 @@ export function SettingsModal({
               Last export: {lastDiagnosticsExport.fileName} — {lastDiagnosticsExport.entryCount} entries at {formatTimestamp(lastDiagnosticsExport.exportedAt)}.
             </p>
           )}
+          {diagnosticIncidentNotice && <p role="status" className="mb-2 text-[11px] leading-4 text-white/60">{diagnosticIncidentNotice}</p>}
+          <p className="mb-2 text-[11px] leading-4 text-white/38">Session history and detected interruptions are saved locally. If the preview slows down, mark the problem, then export after about 30 seconds to include what happened afterward.</p>
           <p className="mb-3 text-[10px] leading-4 text-white/32">Exported diagnostics redact device IDs, trust keys, session IDs, and pairing challenge IDs by default. Review the file before sharing it.</p>
           {historyPreview.length > 0 ? (
             <div className="space-y-1.5">

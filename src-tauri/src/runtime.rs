@@ -1,4 +1,7 @@
-use crate::discovery::{receiver_hardware_address_hex, stop_discovery, DiscoveryRuntime};
+use crate::discovery::{
+    receiver_hardware_address_hex, reset_discovery_listener, set_discovery_ports,
+    set_discovery_protocol, stop_discovery, DiscoveryRuntime,
+};
 use crate::history::{append_history_entry, now_unix_timestamp};
 use crate::models::{
     AppUpdateInfo, CommandResult, ConnectionHistoryEntry, PairingPhase, PairingSnapshot,
@@ -332,6 +335,10 @@ pub(crate) struct SidecarRuntime {
 }
 
 impl SidecarRuntime {
+    pub(crate) fn process_id(&self) -> u32 {
+        self.child.id()
+    }
+
     fn send_command(&mut self, command: serde_json::Value) -> CommandResult<()> {
         serde_json::to_writer(&mut self.stdin, &command).map_err(|error| error.to_string())?;
         self.stdin
@@ -589,6 +596,7 @@ pub(crate) fn emit_runtime_error(
     let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics) = {
         let mut guard = store.lock().map_err(|error| error.to_string())?;
 
+        crate::diagnostics::mark_incident(&mut guard, &format!("receiver-error: {message}"));
         guard.snapshot.status = SessionStatus::Idle;
         guard.active_session_id = None;
         guard.native_pairing_approved_for_session = false;
@@ -627,6 +635,7 @@ fn emit_runtime_warning_preserving_session(
 ) -> CommandResult<()> {
     let (receiver_runtime, preview_diagnostics) = {
         let mut guard = store.lock().map_err(|error| error.to_string())?;
+        crate::diagnostics::mark_incident(&mut guard, &format!("receiver-warning: {message}"));
         guard.receiver_runtime.last_error = Some(message);
         sync_preview_diagnostics(&mut guard);
         (
@@ -743,6 +752,23 @@ fn handle_sidecar_event(
         let mut emit_preview_diagnostics = true;
 
         match event {
+            SidecarEvent::ReceiverListening {
+                session_id,
+                raop_port,
+                airplay_port,
+            } => {
+                if guard.active_session_id.as_deref() != Some(session_id.as_str()) {
+                    return Ok(());
+                }
+                if let Err(error) = set_discovery_ports(discovery, raop_port, airplay_port) {
+                    drop(guard);
+                    stop_discovery(discovery);
+                    stop_sidecar_runtime(sidecar);
+                    return emit_runtime_error(app, store, error, false);
+                }
+                set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Ready);
+                guard.receiver_runtime.last_error = None;
+            }
             SidecarEvent::ReceiverReady {
                 receiver_id,
                 protocol_version,
@@ -765,12 +791,23 @@ fn handle_sidecar_event(
                     emit_preview = true;
                     emit_preview_stream = true;
                 } else {
+                    let dynamic_ports = capabilities
+                        .iter()
+                        .any(|capability| capability == "dynamic-listening-ports");
+                    set_discovery_protocol(discovery, dynamic_ports)?;
                     guard.receiver_runtime.transport = ReceiverTransport::Airplayserver;
                     guard.snapshot.receiver_id = Some(receiver_id.clone());
                     guard.snapshot.receiver_protocol_version = Some(protocol_version.clone());
                     guard.snapshot.receiver_capabilities = capabilities.clone();
                     emit_snapshot = true;
-                    set_receiver_runtime_state(&mut guard, ReceiverRuntimeState::Ready);
+                    set_receiver_runtime_state(
+                        &mut guard,
+                        if dynamic_ports {
+                            ReceiverRuntimeState::Priming
+                        } else {
+                            ReceiverRuntimeState::Ready
+                        },
+                    );
                     guard.receiver_runtime.last_error = None;
                 }
             }
@@ -1173,6 +1210,9 @@ fn handle_sidecar_event(
 
                 let previous_status = guard.snapshot.status;
                 let waiting_for_local_approval = guard.pending_local_session_approval;
+                guard.flight_recorder.last_video_at = Some(Instant::now());
+                guard.flight_recorder.video_received =
+                    guard.flight_recorder.video_received.saturating_add(1);
                 let previous_sample_index = guard.preview_diagnostics.last_access_unit_index;
                 let sample_index_restarted =
                     media_timeline_restarted(previous_sample_index, sample_index);
@@ -1330,6 +1370,9 @@ fn handle_sidecar_event(
                 }
                 let payload_base64 = validated_audio_payload
                     .ok_or_else(|| String::from("receiver audio payload was unavailable"))?;
+                guard.flight_recorder.last_audio_at = Some(Instant::now());
+                guard.flight_recorder.audio_received =
+                    guard.flight_recorder.audio_received.saturating_add(1);
                 queue_preview_audio_frame(
                     &mut guard,
                     PreviewAudioFramePayload {
@@ -1429,6 +1472,12 @@ fn handle_sidecar_event(
                     return Ok(());
                 }
                 let disconnected_device_name = guard.snapshot.device_name.clone();
+                if reason != "session_stopped" {
+                    crate::diagnostics::mark_incident(
+                        &mut guard,
+                        &format!("stream-discontinuity: {reason}"),
+                    );
+                }
                 let disconnected_device_id = guard.snapshot.current_device_id.clone();
                 let disconnected_device_model = guard.snapshot.current_device_model.clone();
                 let disconnected_device_os_name = guard.snapshot.current_device_os_name.clone();
@@ -1974,6 +2023,11 @@ fn spawn_sidecar_stdout_loop(
             }
         }
 
+        if sidecar_generation_is_current(&sidecar, sidecar_generation) {
+            if let Ok(mut guard) = store.lock() {
+                crate::diagnostics::mark_incident(&mut guard, "receiver-output-closed");
+            }
+        }
         let restart_plan = if let Ok(mut guard) = sidecar.lock() {
             if guard
                 .as_ref()
@@ -2144,6 +2198,7 @@ fn launch_sidecar_runtime(
     let executable = resolve_sidecar_path(app, &spec.launch.executable)?;
     let working_directory = resolve_sidecar_path(app, &spec.launch.working_directory)?;
     let hardware_address = receiver_hardware_address_hex(app)?;
+    reset_discovery_listener(discovery);
 
     #[cfg(windows)]
     let sidecar_job = SidecarJob::create()?;
@@ -2153,6 +2208,7 @@ fn launch_sidecar_runtime(
         .args(&spec.launch.args)
         .current_dir(working_directory)
         .env("MIRRORSIM_EXTERNAL_DNSSD", "1")
+        .env("MIRRORSIM_DYNAMIC_PORTS", "1")
         .env("MIRRORSIM_HARDWARE_ADDRESS", hardware_address)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

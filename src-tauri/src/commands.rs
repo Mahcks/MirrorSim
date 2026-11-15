@@ -100,7 +100,7 @@ fn collect_diagnostic_secrets(value: &Value, secrets: &mut Vec<String>) {
     }
 }
 
-fn redact_diagnostics(value: &mut Value) {
+pub(crate) fn redact_diagnostics(value: &mut Value) {
     let mut secrets = Vec::new();
     collect_diagnostic_secrets(value, &mut secrets);
     secrets.sort_by_key(|secret| std::cmp::Reverse(secret.len()));
@@ -460,6 +460,9 @@ fn stop_session_inner(
     let (snapshot, preview, preview_stream, receiver_runtime, preview_diagnostics) = {
         let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
         mark_session_stopped(&mut guard);
+        // Clear any advertisement created by a startup acknowledgement that
+        // arrived while the stop command was being delivered.
+        stop_discovery(&state.discovery);
         (
             guard.snapshot.clone(),
             guard.preview.clone(),
@@ -606,6 +609,14 @@ pub(crate) fn report_preview_client_diagnostics(
         "receivedAt": now_unix_timestamp(),
         "snapshot": diagnostics,
     }));
+    guard.flight_recorder.last_client_report_at = Some(std::time::Instant::now());
+    Ok(())
+}
+
+#[tauri::command]
+pub(crate) fn mark_diagnostic_incident(state: State<'_, AppState>) -> CommandResult<()> {
+    let mut guard = state.inner.lock().map_err(|error| error.to_string())?;
+    crate::diagnostics::mark_incident(&mut guard, "user-marked-problem");
     Ok(())
 }
 
@@ -895,7 +906,13 @@ pub(crate) fn start_session(
             prepare_live_transport(&mut guard, stream_id.clone());
             set_receiver_runtime_state(&mut guard, crate::models::ReceiverRuntimeState::Priming);
 
-            if sidecar_was_running {
+            if sidecar_was_running
+                && !guard
+                    .snapshot
+                    .receiver_capabilities
+                    .iter()
+                    .any(|capability| capability == "dynamic-listening-ports")
+            {
                 set_receiver_runtime_state(&mut guard, crate::models::ReceiverRuntimeState::Ready);
             }
         }
@@ -1761,6 +1778,7 @@ pub(crate) fn export_diagnostics_report(
         preview_diagnostics,
         preview_client_diagnostics,
         sidecar_logs,
+        flight_recorder,
     ) = {
         let guard = state.inner.lock().map_err(|error| error.to_string())?;
         (
@@ -1770,6 +1788,7 @@ pub(crate) fn export_diagnostics_report(
             guard.preview_diagnostics.clone(),
             guard.preview_client_diagnostics.clone(),
             guard.sidecar_logs.iter().cloned().collect::<Vec<_>>(),
+            guard.flight_recorder.clone(),
         )
     };
     let sidecar_spec = ReceiverSidecarSpec::direct_receiver_boundary();
@@ -1797,6 +1816,7 @@ pub(crate) fn export_diagnostics_report(
         "trustedDevices": trusted_devices,
         "history": history,
         "sidecarLogs": sidecar_logs,
+        "flightRecorder": flight_recorder.report(),
     });
     redact_diagnostics(&mut report);
 

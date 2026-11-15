@@ -110,6 +110,7 @@ export default function App() {
   const [trustedDevices, setTrustedDevices] = useState<TrustedDevice[]>([]);
   const [connectionHistory, setConnectionHistory] = useState<ConnectionHistoryEntry[]>([]);
   const [lastDiagnosticsExport, setLastDiagnosticsExport] = useState<DiagnosticsExport | null>(null);
+  const [diagnosticIncidentNotice, setDiagnosticIncidentNotice] = useState<string | null>(null);
   const [availableUpdate, setAvailableUpdate] = useState<AppUpdateInfo | null>(null);
   const [updateState, setUpdateState] = useState<AppUpdateState>("idle");
   const [updateError, setUpdateError] = useState<string | null>(null);
@@ -1109,6 +1110,19 @@ export default function App() {
     }
   }
 
+  async function markDiagnosticIncident() {
+    setCommandPending(true);
+    setCommandError(null);
+    try {
+      await invoke("mark_diagnostic_incident");
+      setDiagnosticIncidentNotice(`Problem marked at ${new Date().toLocaleTimeString()}. Export in about 30 seconds to include the aftermath.`);
+    } catch (error) {
+      setCommandError(fmtError(error));
+    } finally {
+      setCommandPending(false);
+    }
+  }
+
   async function exportDiagnostics() {
     setCommandPending(true);
     setCommandError(null);
@@ -1551,6 +1565,8 @@ export default function App() {
       onRefreshBonjourStatus={() => void refreshBonjourStatus().catch((error) => setCommandError(fmtError(error)))}
       onOpenWindowsFirewall={() => void invoke("open_windows_firewall").catch((error) => setCommandError(fmtError(error)))}
       onExportDiagnostics={() => void exportDiagnostics()}
+      onMarkDiagnosticIncident={() => void markDiagnosticIncident()}
+      diagnosticIncidentNotice={diagnosticIncidentNotice}
       onCheckForUpdates={() => void checkForUpdatesManually()}
       onOpenProject={() => void openUrl(projectPageUrl).catch((error) => setCommandError(fmtError(error)))}
       onOpenIssues={() => void openUrl(issuesPageUrl).catch((error) => setCommandError(fmtError(error)))}

@@ -13,6 +13,7 @@ const MAX_CLOSED_PAIRING_CHALLENGES: usize = 32;
 pub(crate) const MAX_QUEUED_AUDIO_FRAMES: usize = 96;
 
 pub(crate) struct SessionStore {
+    pub(crate) flight_recorder: crate::diagnostics::FlightRecorder,
     pub(crate) sequence: u64,
     pub(crate) connection_attempt_generation: u64,
     pub(crate) connection_attempt_has_video: bool,
@@ -46,6 +47,7 @@ impl Default for SessionStore {
             preview_stream_from_blueprint(&remux_blueprint, ReceiverTransport::Fixture, 0);
 
         Self {
+            flight_recorder: crate::diagnostics::FlightRecorder::default(),
             sequence: 0,
             connection_attempt_generation: 0,
             connection_attempt_has_video: false,
@@ -353,6 +355,9 @@ pub(crate) fn reset_fixture_transport(store: &mut SessionStore) {
 }
 
 pub(crate) fn prepare_live_transport(store: &mut SessionStore, stream_id: String) {
+    store.flight_recorder.last_video_at = None;
+    store.flight_recorder.last_audio_at = None;
+    store.flight_recorder.last_client_report_at = None;
     store.live_preview_buffer.reset();
     store.preview_audio_frames.clear();
     store.remux_blueprint = RemuxBlueprint::live_preview(stream_id.clone());

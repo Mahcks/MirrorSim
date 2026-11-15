@@ -1,6 +1,6 @@
 # MirrorSim Privacy Statement
 
-Last updated: September 3, 2026
+Last updated: September 20, 2026
 
 MirrorSim is designed to process mirrored iPhone video and audio locally on the
 Windows PC running the application. MirrorSim does not require an account, does
@@ -39,6 +39,20 @@ terms apply to those interactions.
 
 ## Diagnostics and personal information
 
+While the receiver is in use, MirrorSim samples operational counters about every
+two seconds. A bounded flight recorder retains up to 3,600 samples and four
+incidents, including recent receiver logs around detected interruptions or a
+manually marked problem. Samples include media arrival ages, queue and decoder
+counters, and Windows process memory, CPU time, and handle counts. They do not
+include mirrored video frames or audio payloads.
+
+Redacted checkpoints are saved locally in the application data directory as
+`flight-recorder.json` and a backup. Checkpoints retain the current run and the
+previous saved run, with a maximum size of 32 MiB per file. They are written
+approximately every 30 seconds and at incident boundaries; abrupt termination
+can lose the most recent unsaved observations. Diagnostics exports include this
+history. Delete both checkpoint files while MirrorSim is closed to remove it.
+
 Exported diagnostics redact stable device identifiers, trust keys, session IDs,
 and pairing challenge IDs by default. Diagnostics can still contain timestamps,
 device-provided names, network errors, file paths, or other contextual details.
@@ -66,4 +80,3 @@ Material changes to this statement will be committed to the public repository.
 For general privacy questions, open a
 [GitHub issue](https://github.com/Mahcks/MirrorSim/issues). Do not include
 sensitive or security-related information in a public issue.
-

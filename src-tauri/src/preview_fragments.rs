@@ -1514,6 +1514,47 @@ mod tests {
     }
 
     #[test]
+    fn accelerated_long_session_crosses_32_bit_microseconds_without_growth_or_timestamp_wrap() {
+        let mut buffer = LivePreviewBuffer::new();
+        let (generation, _, _) = buffer.prepare_decoder_stream();
+        let mut final_timestamp = 0;
+        // 75 minutes at 60fps, executed without real-time sleeps or a phone.
+        for index in 0..270_000_u32 {
+            let keyframe = index % 600 == 0;
+            let payload = if keyframe {
+                avcc_sample()
+            } else {
+                avcc_non_idr_sample()
+            };
+            buffer
+                .push_access_unit(
+                    index,
+                    payload,
+                    keyframe,
+                    index as u64 * 16_667,
+                    index as u64 * 16_667,
+                    16_667,
+                )
+                .unwrap();
+            let unit = buffer
+                .take_next_decoder_access_unit_for_client(generation)
+                .unwrap();
+            assert_eq!(unit.sequence_number, index);
+            assert_eq!(
+                unit.descriptor.timing.decode_timestamp,
+                index as u64 * 16_667
+            );
+            final_timestamp = unit.descriptor.timing.decode_timestamp;
+            assert!(buffer.decoder_access_units.is_empty());
+            assert!(buffer.latest_decoder_gop.len() <= 600);
+            assert!(buffer.emitted_segments.is_empty());
+            assert!(buffer.pending_samples.is_empty());
+        }
+        assert!(final_timestamp > u32::MAX as u64);
+        assert!(!buffer.decoder_random_access_lost());
+    }
+
+    #[test]
     fn decoder_sequence_ignores_metadata_only_source_callbacks() {
         let mut buffer = LivePreviewBuffer::new();
         buffer

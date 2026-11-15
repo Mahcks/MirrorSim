@@ -16,6 +16,8 @@ static NEXT_TEMP_FILE_ID: AtomicU64 = AtomicU64::new(1);
 fn sync_file(path: &Path) -> CommandResult<()> {
     OpenOptions::new()
         .read(true)
+        // Windows FlushFileBuffers (used by sync_all) requires write access.
+        .write(true)
         .open(path)
         .and_then(|file| file.sync_all())
         .map_err(|error| error.to_string())

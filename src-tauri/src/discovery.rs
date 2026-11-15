@@ -16,6 +16,9 @@ pub(crate) struct DiscoveryRuntime {
     fullnames: Vec<String>,
     receiver_name: Option<String>,
     last_error: Option<String>,
+    pending: Option<(String, [u8; 6])>,
+    ports: Option<(u16, u16)>,
+    dynamic_ports: Option<bool>,
 }
 
 impl DiscoveryRuntime {
@@ -35,10 +38,19 @@ impl DiscoveryRuntime {
 
     fn stop(&mut self) {
         self.unregister();
+        self.pending = None;
+        if self.dynamic_ports != Some(false) {
+            self.ports = None;
+        }
         self.last_error = None;
     }
 
     fn start(&mut self, receiver_name: &str, hardware_address: [u8; 6]) -> CommandResult<()> {
+        self.pending = Some((receiver_name.to_string(), hardware_address));
+        if self.ports.is_none() {
+            // Do not advertise until the receiver has bound its listening sockets.
+            return Ok(());
+        }
         if self.receiver_name.as_deref() == Some(receiver_name) && self.fullnames.len() == 2 {
             self.last_error = None;
             return Ok(());
@@ -67,6 +79,7 @@ impl DiscoveryRuntime {
     }
 
     fn register(&mut self, receiver_name: &str, hardware_address: [u8; 6]) -> CommandResult<()> {
+        let (raop_port, airplay_port) = self.ports.ok_or("receiver ports are not ready")?;
         let daemon = match self.daemon.as_ref() {
             Some(daemon) => daemon,
             None => {
@@ -116,7 +129,7 @@ impl DiscoveryRuntime {
             &raop_instance,
             &host_name,
             "",
-            RAOP_PORT,
+            raop_port,
             &raop_properties[..],
         )
         .map_err(|error| format!("could not configure AirPlay audio discovery: {error}"))?
@@ -126,7 +139,7 @@ impl DiscoveryRuntime {
             receiver_name,
             &host_name,
             "",
-            AIRPLAY_PORT,
+            airplay_port,
             &airplay_properties[..],
         )
         .map_err(|error| format!("could not configure AirPlay screen discovery: {error}"))?
@@ -250,6 +263,47 @@ pub(crate) fn stop_discovery(runtime: &Arc<Mutex<DiscoveryRuntime>>) {
     }
 }
 
+pub(crate) fn reset_discovery_listener(runtime: &Arc<Mutex<DiscoveryRuntime>>) {
+    if let Ok(mut runtime) = runtime.lock() {
+        runtime.unregister();
+        runtime.ports = None;
+        runtime.dynamic_ports = None;
+    }
+}
+
+pub(crate) fn set_discovery_protocol(
+    runtime: &Arc<Mutex<DiscoveryRuntime>>,
+    dynamic_ports: bool,
+) -> CommandResult<()> {
+    runtime
+        .lock()
+        .map_err(|error| error.to_string())?
+        .dynamic_ports = Some(dynamic_ports);
+    if !dynamic_ports {
+        set_discovery_ports(runtime, RAOP_PORT, AIRPLAY_PORT)?;
+    }
+    Ok(())
+}
+
+pub(crate) fn set_discovery_ports(
+    runtime: &Arc<Mutex<DiscoveryRuntime>>,
+    raop_port: u16,
+    airplay_port: u16,
+) -> CommandResult<()> {
+    if raop_port == 0 || airplay_port == 0 || raop_port == airplay_port {
+        return Err(String::from("receiver reported invalid listening ports"));
+    }
+    let mut runtime = runtime.lock().map_err(|error| error.to_string())?;
+    if runtime.ports != Some((raop_port, airplay_port)) {
+        runtime.unregister();
+    }
+    runtime.ports = Some((raop_port, airplay_port));
+    if let Some((name, address)) = runtime.pending.clone() {
+        runtime.start(&name, address)?;
+    }
+    Ok(())
+}
+
 pub(crate) fn receiver_hardware_address_hex(app: &AppHandle) -> CommandResult<String> {
     Ok(compact_hardware_address(receiver_hardware_address(app)?))
 }
@@ -357,6 +411,7 @@ mod tests {
     #[test]
     fn discovery_status_tracks_stopped_ready_and_stopped_again() {
         let mut runtime = DiscoveryRuntime::default();
+        runtime.ports.replace((5001, 7001));
         assert_eq!(runtime.status().status, BonjourStatusKind::Stopped);
         runtime
             .start(
@@ -381,6 +436,7 @@ mod tests {
     #[test]
     fn built_in_discovery_registers_both_airplay_services() {
         let mut runtime = DiscoveryRuntime::default();
+        runtime.ports.replace((5001, 7001));
         runtime
             .start(
                 "MirrorSim Discovery Test",
@@ -393,5 +449,49 @@ mod tests {
             Some("MirrorSim Discovery Test")
         );
         runtime.stop();
+    }
+
+    #[test]
+    fn discovery_waits_for_bound_ports_and_forgets_them_on_stop() {
+        use super::{set_discovery_ports, set_discovery_protocol};
+        use std::sync::{Arc, Mutex};
+        let runtime = Arc::new(Mutex::new(DiscoveryRuntime::default()));
+        set_discovery_protocol(&runtime, true).unwrap();
+        runtime
+            .lock()
+            .unwrap()
+            .start("MirrorSim Dynamic Test", [2, 1, 2, 3, 4, 5])
+            .unwrap();
+        assert!(runtime.lock().unwrap().fullnames.is_empty());
+        assert!(set_discovery_ports(&runtime, 0, 7001).is_err());
+        assert!(set_discovery_ports(&runtime, 5001, 5001).is_err());
+        set_discovery_ports(&runtime, 51001, 51002).unwrap();
+        assert_eq!(runtime.lock().unwrap().ports, Some((51001, 51002)));
+        assert_eq!(runtime.lock().unwrap().fullnames.len(), 2);
+        runtime.lock().unwrap().stop();
+        assert!(runtime.lock().unwrap().ports.is_none());
+        // A late acknowledgement after stop must never resurrect advertisement.
+        set_discovery_ports(&runtime, 51003, 51004).unwrap();
+        assert!(runtime.lock().unwrap().fullnames.is_empty());
+    }
+
+    #[test]
+    fn legacy_receiver_and_crash_restart_keep_discovery_compatible() {
+        use super::{reset_discovery_listener, set_discovery_ports, set_discovery_protocol};
+        use std::sync::{Arc, Mutex};
+        let runtime = Arc::new(Mutex::new(DiscoveryRuntime::default()));
+        runtime
+            .lock()
+            .unwrap()
+            .start("MirrorSim Legacy Test", [2, 1, 2, 3, 4, 6])
+            .unwrap();
+        set_discovery_protocol(&runtime, false).unwrap();
+        assert_eq!(runtime.lock().unwrap().ports, Some((5001, 7001)));
+        assert_eq!(runtime.lock().unwrap().fullnames.len(), 2);
+        reset_discovery_listener(&runtime);
+        assert!(runtime.lock().unwrap().fullnames.is_empty());
+        set_discovery_protocol(&runtime, true).unwrap();
+        set_discovery_ports(&runtime, 51005, 51006).unwrap();
+        assert_eq!(runtime.lock().unwrap().fullnames.len(), 2);
     }
 }

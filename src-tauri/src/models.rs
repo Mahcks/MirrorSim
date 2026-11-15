@@ -287,6 +287,11 @@ pub(crate) struct RemuxBlueprintSnapshot {
 #[derive(Deserialize)]
 #[serde(tag = "name", rename_all = "snake_case")]
 pub(crate) enum SidecarEvent {
+    ReceiverListening {
+        session_id: String,
+        raop_port: u16,
+        airplay_port: u16,
+    },
     ReceiverReady {
         receiver_id: String,
         protocol_version: String,

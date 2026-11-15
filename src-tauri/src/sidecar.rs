@@ -110,6 +110,11 @@ impl ReceiverSidecarSpec {
             ],
             events: vec![
                 SidecarEventSpec {
+                    name: String::from("receiver_listening"),
+                    payload_shape: String::from("{ sessionId, raopPort, airplayPort }"),
+                    description: String::from("Confirms bound TCP ports before discovery when dynamic-listening-ports is advertised."),
+                },
+                SidecarEventSpec {
                     name: String::from("receiver_ready"),
                     payload_shape: String::from("{ receiverId, protocolVersion, capabilities[] }"),
                     description: String::from("Announces that the sidecar is booted and ready to accept session commands."),
