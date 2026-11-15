@@ -133,7 +133,7 @@ Local-runtime packaging fails if a sibling AirPlayServer build is not available 
 
 ### Rust toolchain
 
-Release packaging, CI, and the checked-in Rust toolchain all use Rust `1.88.0-x86_64-pc-windows-msvc`.
+Release packaging, CI, and the checked-in Rust toolchain all use Rust `1.90.0-x86_64-pc-windows-msvc`.
 
 ### Updater signing
 

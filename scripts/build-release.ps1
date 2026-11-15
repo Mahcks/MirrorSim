@@ -8,7 +8,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $repoRoot = [System.IO.Path]::GetFullPath((Join-Path $PSScriptRoot '..'))
-$releaseRustToolchain = '1.88.0-x86_64-pc-windows-msvc'
+$releaseRustToolchain = '1.90.0-x86_64-pc-windows-msvc'
 $packageJsonPath = Join-Path $repoRoot 'package.json'
 $packageJson = Get-Content -Raw $packageJsonPath | ConvertFrom-Json
 $version = $packageJson.version
