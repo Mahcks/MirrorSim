@@ -43,11 +43,25 @@ type UseCaptureActionsArgs = {
   videoEl: HTMLVideoElement | null;
   orientation: Orientation;
   recordingAudioTrack: MediaStreamTrack | null;
+  ensureRecordingAudio: () => Promise<boolean>;
 };
 
 type RecordingWriteSession = SavedCaptureFile & {
   recordingId: number;
 };
+
+const EMPTY_RECORDING_BACKEND_ERROR = "recording did not produce any media data";
+
+class EmptyRecordingError extends Error {
+  constructor() {
+    super("The recording captured no video, so there was nothing to save. Try recording again.");
+    this.name = "EmptyRecordingError";
+  }
+}
+
+function isEmptyRecordingError(error: unknown) {
+  return String(error instanceof Error ? error.message : error).includes(EMPTY_RECORDING_BACKEND_ERROR);
+}
 
 export function useCaptureActions({
   appPreferences,
@@ -67,6 +81,7 @@ export function useCaptureActions({
   videoEl,
   orientation,
   recordingAudioTrack,
+  ensureRecordingAudio,
 }: UseCaptureActionsArgs) {
   const [recElapsed, setRecElapsed] = useState(0);
   const [localRecordingActive, setLocalRecordingActive] = useState(false);
@@ -279,7 +294,9 @@ export function useCaptureActions({
       recordingRenderCleanupRef.current = null;
       throw new Error("The preview surface cannot be captured for recording here.");
     }
-    const includeRecordingAudio = recordingSettings.includeAudio && recordingAudioTrack !== null;
+    const includeRecordingAudio = recordingSettings.includeAudio
+      && recordingAudioTrack !== null
+      && await ensureRecordingAudio();
     if (includeRecordingAudio) {
       previewCaptureStream.addTrack(recordingAudioTrack.clone());
     }
@@ -322,7 +339,9 @@ export function useCaptureActions({
             chunkBase64: uint8ArrayToBase64(bytes),
           });
         }).catch((error) => {
-          recordingWriteErrorRef.current = error;
+          console.error("[MirrorSim capture] recording chunk write failed", { size: chunk.size, error });
+          // Keep the first failure: later chunks fail as a consequence of it.
+          recordingWriteErrorRef.current ??= error;
         });
       }
     });
@@ -374,9 +393,24 @@ export function useCaptureActions({
     if (!writeSession) {
       throw new Error("Recording file session is not active.");
     }
-    const savedRecording = await invoke<SavedCaptureFile>("finish_recording_save", {
-      recordingId: writeSession.recordingId,
-    });
+    let savedRecording: SavedCaptureFile;
+    try {
+      savedRecording = await invoke<SavedCaptureFile>("finish_recording_save", {
+        recordingId: writeSession.recordingId,
+      });
+    } catch (error) {
+      if (!isEmptyRecordingError(error)) {
+        throw error;
+      }
+      // The backend already discarded the empty file; nothing is left to retry.
+      releaseLocalRecording();
+      throw new EmptyRecordingError();
+    }
+    releaseLocalRecording();
+    return savedRecording;
+  }
+
+  function releaseLocalRecording() {
     recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
     recordingRenderCleanupRef.current?.();
     recordingRenderCleanupRef.current = null;
@@ -385,7 +419,6 @@ export function useCaptureActions({
     recordingWriteSessionRef.current = null;
     recordingElapsedRef.current = 0;
     setLocalRecordingActive(false);
-    return savedRecording;
   }
 
   async function abortUnstartedRecording() {
@@ -616,8 +649,13 @@ export function useCaptureActions({
           settings: recordingSettings,
           error,
         });
-        setCaptureNotice(`Recording could not be saved yet: ${message}`);
-        setCommandError(`${message} Retry saving the recording. Its temporary file was not deleted.`);
+        if (error instanceof EmptyRecordingError) {
+          setCaptureNotice(`Recording failed: ${message}`);
+          setCommandError(message);
+        } else {
+          setCaptureNotice(`Recording could not be saved yet: ${message}`);
+          setCommandError(`${message} Retry saving the recording. Its temporary file was not deleted.`);
+        }
       } finally {
         recordingTransitionRef.current = false;
         setCommandPending(false);

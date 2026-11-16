@@ -1167,6 +1167,18 @@ pub(crate) fn save_screenshot(
     })
 }
 
+const EMPTY_RECORDING_ERROR: &str = "recording did not produce any media data";
+
+fn discard_empty_recording(guard: &mut Option<RecordingFileRuntime>) {
+    if guard.as_ref().map(|value| value.bytes_written) != Some(0) {
+        return;
+    }
+    if let Some(recording) = guard.take() {
+        drop(recording.file);
+        let _ = fs::remove_file(&recording.temporary_path);
+    }
+}
+
 #[tauri::command]
 pub(crate) fn begin_recording_save(
     app: AppHandle,
@@ -1181,6 +1193,9 @@ pub(crate) fn begin_recording_save(
         .recording_file
         .lock()
         .map_err(|error| error.to_string())?;
+    // A session with no data can be left behind when the UI reloads mid-recording;
+    // replace it. A session holding data stays protected until it is saved.
+    discard_empty_recording(&mut guard);
     if guard.is_some() {
         return Err(String::from("a recording file is already open"));
     }
@@ -1228,7 +1243,16 @@ pub(crate) fn append_recording_chunk(
         .filter(|recording| recording.recording_id == recording_id)
         .ok_or_else(|| String::from("recording file is not active"))?;
     if recording.bytes_written == 0 && !bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
-        return Err(String::from("recording stream is missing its WebM header"));
+        let prefix: Vec<String> = bytes
+            .iter()
+            .take(8)
+            .map(|byte| format!("{byte:02X}"))
+            .collect();
+        return Err(format!(
+            "recording stream is missing its WebM header (first chunk: {} bytes, starts with {})",
+            bytes.len(),
+            prefix.join(" ")
+        ));
     }
     recording
         .file
@@ -1253,7 +1277,10 @@ pub(crate) fn finish_recording_save(
         return Err(String::from("recording file is not active"));
     }
     if guard.as_ref().map(|value| value.bytes_written) == Some(0) {
-        return Err(String::from("recording did not produce any media data"));
+        // An empty recording has nothing worth retrying, so release it now
+        // instead of blocking every later recording.
+        discard_empty_recording(&mut guard);
+        return Err(String::from(EMPTY_RECORDING_ERROR));
     }
     guard
         .as_mut()

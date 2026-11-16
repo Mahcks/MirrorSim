@@ -98,6 +98,14 @@ export function usePreviewAudio({
     }
   }, [ensureGraph]);
 
+  // A suspended AudioContext gives the recording track no samples, and the
+  // WebM muxer then holds back every video frame, so only record audio when
+  // the context is actually running.
+  const ensureRecordingAudio = useCallback(async () => {
+    await primeAudio();
+    return graphRef.current?.context.state === "running";
+  }, [primeAudio]);
+
   useEffect(() => {
     const graph = graphRef.current;
     if (!graph) return;
@@ -226,6 +234,7 @@ export function usePreviewAudio({
     lastAudioReceivedAtMs,
     lastAudibleAudioAtMs,
     primeAudio,
+    ensureRecordingAudio,
     recordingAudioTrack,
   };
 }

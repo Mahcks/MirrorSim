@@ -206,6 +206,7 @@ export default function App() {
     lastAudioReceivedAtMs,
     lastAudibleAudioAtMs,
     primeAudio,
+    ensureRecordingAudio,
     recordingAudioTrack,
   } = usePreviewAudio({
     available: audioAvailable,
@@ -287,6 +288,7 @@ export default function App() {
     videoEl,
     orientation,
     recordingAudioTrack,
+    ensureRecordingAudio,
   });
 
   const localRecordingActiveRef = useRef(localRecordingActive);
