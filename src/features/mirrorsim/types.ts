@@ -153,7 +153,10 @@ export type ScreenshotSettings = {
   includeDeviceFrame: boolean;
 };
 
+export type RecordingFormat = "mp4" | "webm";
+
 export type RecordingSettings = {
+  format: RecordingFormat;
   saveLocation: ScreenshotSaveLocation;
   customSavePath: string;
   fileNamePrefix: string;

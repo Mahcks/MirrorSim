@@ -36,13 +36,14 @@ describe("capture filenames", () => {
     ).toBe("demo-shot--_20260901_130405.png");
   });
 
-  test("uses the webm extension for recordings", () => {
-    expect(
-      buildRecordingFileName(
-        { ...defaultRecordingSettings, fileNamePrefix: "walkthrough", includeTimestamp: false },
-        timestamp,
-      ),
-    ).toBe("walkthrough.webm");
+  test("uses the recorded container's extension", () => {
+    const settings = { ...defaultRecordingSettings, fileNamePrefix: "walkthrough", includeTimestamp: false };
+    expect(buildRecordingFileName(settings, timestamp, "mp4")).toBe("walkthrough.mp4");
+    expect(buildRecordingFileName(settings, timestamp, "webm")).toBe("walkthrough.webm");
+  });
+
+  test("records MP4 by default", () => {
+    expect(defaultRecordingSettings.format).toBe("mp4");
   });
 });
 

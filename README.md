@@ -41,7 +41,7 @@ Screen mirroring an iPhone on Windows usually means QuickTime on a Mac you don't
 
 - **QA and bug repro on real hardware** — reproduce and capture issues on an actual iPhone, not a simulator, with diagnostics (buffer, rate, dropped/queued frames, last error) visible right in Console mode.
 - **Product and marketing screenshots** — a clean device frame with no receiver chrome, ready to drop straight into a deck, store listing, or blog post.
-- **App walkthroughs and tutorials** — record `.webm` walkthroughs of your app running on real iOS, not an emulator skin.
+- **App walkthroughs and tutorials** — record MP4 walkthroughs of your app running on real iOS, not an emulator skin.
 - **Live client and stakeholder demos** — Minimal mode gives you a floating, presentation-ready overlay you can screen-share without exposing the rest of your desktop.
 - **Conference and presentation mirroring** — mirror to the room without a Lightning-to-HDMI dongle or a cable snaking to the podium.
 - **Remote support and pairing sessions** — see exactly what a teammate or user sees on their device in real time, over Wi-Fi.
@@ -57,7 +57,7 @@ Screen mirroring an iPhone on Windows usually means QuickTime on a Mac you don't
 - Console mode with connection state, diagnostics, capture history, and controls
 - Receiver-driven portrait and landscape framing with a manual override that is not fooled by apps publishing a separate landscape video surface
 - Screenshots to disk and/or clipboard, with an optional presentation-ready device frame
-- Local `.webm` screen recordings with iPhone audio and an optional device frame
+- Local MP4 or WebM screen recordings with iPhone audio and an optional device frame
 - Adjustable preview quality and live-edge catch-up presets
 - Trusted-device preferences and receiver access controls
 - Built-in mDNS discovery that follows active network interfaces without requiring Bonjour for Windows
@@ -158,13 +158,13 @@ Pictures/MirrorSim/
 Default filenames:
 
 - Screenshots: `mirrorsim_screenshot_YYYYMMDD_HHMMSS.png`
-- Recordings: `mirrorsim_recording_YYYYMMDD_HHMMSS.webm`
+- Recordings: `mirrorsim_recording_YYYYMMDD_HHMMSS.mp4` (or `.webm` if you pick WebM in **Preferences > Capture**)
 
 Preferences let you choose whether screenshots save to disk, copy to clipboard, or both. Screenshot and recording settings have separate folders, filename prefixes, timestamp options, and device-frame options. Captures omit the device frame by default; recordings include iPhone audio by default.
 
 ## Audio
 
-MirrorSim plays the audio received from your iPhone through your PC and can include it in `.webm` recordings. Open **Preferences > Audio** to configure:
+MirrorSim plays the audio received from your iPhone through your PC and can include it in recordings. Open **Preferences > Audio** to configure:
 
 - **Play iPhone audio**: enable or mute local playback; `M` also toggles mute.
 - **Follow iPhone volume buttons**: use the iPhone's volume level for playback.

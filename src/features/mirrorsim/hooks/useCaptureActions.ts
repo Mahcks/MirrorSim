@@ -21,7 +21,12 @@ import type {
   ScreenshotSettings,
   SessionSnapshot,
 } from "@/features/mirrorsim/types";
-import { getRecordingFailureRecovery } from "@/features/mirrorsim/recordingFlow";
+import {
+  getRecordingFailureRecovery,
+  recordingVideoBitsPerSecond,
+  resolveRecordingFormat,
+  type ResolvedRecordingFormat,
+} from "@/features/mirrorsim/recordingFlow";
 import { createCaptureSurface } from "@/features/mirrorsim/captureSurface";
 import { getRetainedPreviewFrame } from "@/mockPreviewStream";
 
@@ -229,21 +234,7 @@ export function useCaptureActions({
     setCommandError(null);
   }
 
-  function getRecordingMimeType(hasAudio: boolean) {
-    const candidates = hasAudio
-      ? ["video/webm;codecs=vp9,opus", "video/webm;codecs=vp8,opus", "video/webm"]
-      : ["video/webm;codecs=vp9", "video/webm;codecs=vp8", "video/webm"];
-
-    for (const candidate of candidates) {
-      if (typeof MediaRecorder !== "undefined" && MediaRecorder.isTypeSupported(candidate)) {
-        return candidate;
-      }
-    }
-
-    return "";
-  }
-
-  async function startLocalRecording(fileName: string) {
+  async function startLocalRecording(startedAt: Date): Promise<ResolvedRecordingFormat> {
     if (!videoEl) {
       throw new Error("Live preview is not ready for recording yet.");
     }
@@ -265,6 +256,8 @@ export function useCaptureActions({
       captureStream?: (frameRate?: number) => MediaStream;
     }) | undefined;
     let previewCaptureStream: MediaStream | null = null;
+    let recordedWidth = sourceWidth;
+    let recordedHeight = sourceHeight;
     if (recordingSettings.includeDeviceFrame) {
       const { canvas, draw } = createCaptureSurface(
         previewSource,
@@ -275,6 +268,8 @@ export function useCaptureActions({
       );
       const framedCanvas = canvas as HTMLCanvasElement & { captureStream?: (frameRate?: number) => MediaStream };
       previewCaptureStream = framedCanvas.captureStream?.(30) ?? null;
+      recordedWidth = canvas.width;
+      recordedHeight = canvas.height;
       let animationFrameId = 0;
       const renderFrame = () => {
         draw();
@@ -301,16 +296,29 @@ export function useCaptureActions({
       previewCaptureStream.addTrack(recordingAudioTrack.clone());
     }
 
-    const mimeType = getRecordingMimeType(includeRecordingAudio);
-    const mediaRecorder = mimeType
-      ? new MediaRecorder(previewCaptureStream, { mimeType })
-      : new MediaRecorder(previewCaptureStream);
+    const resolved = resolveRecordingFormat(
+      recordingSettings.format,
+      includeRecordingAudio,
+      (mimeType) => MediaRecorder.isTypeSupported(mimeType),
+    );
+    if (!resolved) {
+      previewCaptureStream.getTracks().forEach((track) => track.stop());
+      recordingRenderCleanupRef.current?.();
+      recordingRenderCleanupRef.current = null;
+      throw new Error("This system cannot encode MP4 or WebM recordings.");
+    }
+    const mediaRecorder = new MediaRecorder(previewCaptureStream, {
+      mimeType: resolved.mimeType,
+      videoBitsPerSecond: recordingVideoBitsPerSecond(recordedWidth, recordedHeight),
+    });
+    const fileName = buildRecordingFileName(recordingSettings, startedAt, resolved.format);
 
     let writeSession: RecordingWriteSession;
     try {
       writeSession = await invoke<RecordingWriteSession>("begin_recording_save", {
         request: {
           fileName,
+          format: resolved.format,
           location: recordingSettings.saveLocation,
           customDirectory:
             recordingSettings.saveLocation === "custom" ? recordingSettings.customSavePath.trim() || null : null,
@@ -350,6 +358,7 @@ export function useCaptureActions({
     mediaRecorderRef.current = mediaRecorder;
     recordingStreamRef.current = previewCaptureStream;
     setLocalRecordingActive(true);
+    return resolved;
   }
 
   async function stopLocalRecording(): Promise<SavedCaptureFile> {
@@ -673,11 +682,14 @@ export function useCaptureActions({
         customSavePath: recordingSettings.customSavePath,
         fileNamePrefix: recordingSettings.fileNamePrefix,
       });
-      const fileName = buildRecordingFileName(recordingSettings, new Date());
-      await startLocalRecording(fileName);
+      const resolved = await startLocalRecording(new Date());
       try {
         setSession(await invoke<SessionSnapshot>("start_recording"));
-        setCaptureNotice("Recording started");
+        setCaptureNotice(
+          resolved.fellBack
+            ? `Recording started as ${resolved.format.toUpperCase()} because ${recordingSettings.format.toUpperCase()} is not available on this system`
+            : "Recording started",
+        );
       } catch (error) {
         // A local MediaRecorder is already producing data. Finalize that short
         // clip instead of deleting it when the backend state transition fails.

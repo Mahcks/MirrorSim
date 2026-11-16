@@ -8,7 +8,7 @@ import {
   PREFERENCES_STORAGE_KEY,
   PREFERENCES_STORE_PATH,
 } from "./constants";
-import type { RecordingSettings, ScreenshotSettings, SessionState, StoredPreferences } from "./types";
+import type { RecordingFormat, RecordingSettings, ScreenshotSettings, SessionState, StoredPreferences } from "./types";
 import { sanitizeKeyboardShortcuts } from "./keyboardShortcuts";
 
 let preferencesStorePromise: ReturnType<typeof loadStore> | null = null;
@@ -133,9 +133,9 @@ export function buildScreenshotFileName(settings: ScreenshotSettings, now: Date)
   return settings.includeTimestamp ? `${prefix}_${fmtFilenameDate(now)}.png` : `${prefix}.png`;
 }
 
-export function buildRecordingFileName(settings: RecordingSettings, now: Date): string {
+export function buildRecordingFileName(settings: RecordingSettings, now: Date, format: RecordingFormat): string {
   const prefix = sanitizeFilenamePart(settings.fileNamePrefix);
-  return settings.includeTimestamp ? `${prefix}_${fmtFilenameDate(now)}.webm` : `${prefix}.webm`;
+  return settings.includeTimestamp ? `${prefix}_${fmtFilenameDate(now)}.${format}` : `${prefix}.${format}`;
 }
 
 export function uint8ArrayToBase64(bytes: Uint8Array): string {
@@ -173,6 +173,7 @@ export function mergeStoredPreferences(stored: StoredPreferences | null) {
       includeDeviceFrame: booleanOr(screenshots?.includeDeviceFrame, defaultScreenshotSettings.includeDeviceFrame),
     },
     recordings: {
+      format: enumOr(recordings?.format, ["mp4", "webm"], defaultRecordingSettings.format),
       saveLocation: enumOr(recordings?.saveLocation, ["pictures", "documents", "downloads", "custom"], defaultRecordingSettings.saveLocation),
       customSavePath: stringOr(recordings?.customSavePath, defaultRecordingSettings.customSavePath),
       fileNamePrefix: stringOr(recordings?.fileNamePrefix, defaultRecordingSettings.fileNamePrefix),

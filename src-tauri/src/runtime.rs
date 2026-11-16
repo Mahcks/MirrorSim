@@ -7,7 +7,8 @@ use crate::models::{
     AppUpdateInfo, CommandResult, ConnectionHistoryEntry, PairingPhase, PairingSnapshot,
     PreviewAudioFramePayload, PreviewDiagnosticsSnapshot, PreviewStreamDescriptor,
     PreviewTelemetry, ReceiverRuntimeSnapshot, ReceiverRuntimeState, ReceiverTransport,
-    ScreenshotSaveLocation, SessionSnapshot, SessionStatus, SidecarEvent, VideoGeometrySnapshot,
+    RecordingFormat, ScreenshotSaveLocation, SessionSnapshot, SessionStatus, SidecarEvent,
+    VideoGeometrySnapshot,
 };
 use crate::preview_fragments::normalize_preview_sample_duration;
 use crate::sidecar::ReceiverSidecarSpec;
@@ -389,6 +390,7 @@ pub(crate) struct RecordingFileRuntime {
     pub(crate) temporary_path: PathBuf,
     pub(crate) file: File,
     pub(crate) bytes_written: u64,
+    pub(crate) format: RecordingFormat,
 }
 
 impl Default for AppState {

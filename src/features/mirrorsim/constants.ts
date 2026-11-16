@@ -82,6 +82,7 @@ export const defaultScreenshotSettings: ScreenshotSettings = {
 };
 
 export const defaultRecordingSettings: RecordingSettings = {
+  format: "mp4",
   saveLocation: "pictures",
   customSavePath: "",
   fileNamePrefix: "mirrorsim_recording",

@@ -9,6 +9,7 @@ import type {
   KeyboardShortcutAction,
   PreviewQualityPreset,
   ReceiverAccessMode,
+  RecordingFormat,
   RecordingSettings,
   ScreenshotSaveLocation,
   ScreenshotSettings,
@@ -724,6 +725,19 @@ export function SettingsModal({
           {/* ── Recordings ── */}
           <div className={`${sectionHeader} mt-6 pb-2`}>Recordings</div>
           <div className="divide-y divide-white/7">
+            <div className="py-3">
+              <div className={fieldLabel}>Format</div>
+              <select
+                aria-label="Recording format"
+                className={fieldInput}
+                value={recordingSettings.format}
+                onChange={(event) => setRecordingSetting("format", event.target.value as RecordingFormat)}
+              >
+                <option value="mp4">MP4 (H.264): plays in editors, phones, and social apps</option>
+                <option value="webm">WebM (VP9): smaller files, fewer apps open it</option>
+              </select>
+              <p className={fieldNote}>If MP4 is not available on this PC, MirrorSim records WebM instead and tells you.</p>
+            </div>
             <div className="py-3">
               <div className={fieldLabel}>Save to</div>
               <select

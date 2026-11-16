@@ -303,10 +303,11 @@ fn create_unique_capture_file(path: &Path) -> CommandResult<(fs::File, PathBuf)>
 fn create_unique_recording_temp_file(
     directory: &Path,
     recording_id: u64,
+    extension: &str,
 ) -> CommandResult<(fs::File, PathBuf)> {
     for attempt in 1..=MAX_CAPTURE_NAME_ATTEMPTS {
         let file_name = format!(
-            ".mirrorsim-recording-{}-{recording_id}-{attempt}.webm.part",
+            ".mirrorsim-recording-{}-{recording_id}-{attempt}.{extension}.part",
             std::process::id()
         );
         let temporary_path = directory.join(file_name);
@@ -1188,7 +1189,8 @@ pub(crate) fn begin_recording_save(
     let directory =
         resolve_capture_directory(&app, request.location, request.custom_directory.as_deref())?;
     fs::create_dir_all(&directory).map_err(|error| error.to_string())?;
-    let final_path = validated_capture_path(&directory, &request.file_name, "webm")?;
+    let format = request.format;
+    let final_path = validated_capture_path(&directory, &request.file_name, format.extension())?;
     let mut guard = state
         .recording_file
         .lock()
@@ -1201,7 +1203,8 @@ pub(crate) fn begin_recording_save(
     }
 
     let recording_id = state.next_recording_id.fetch_add(1, Ordering::Relaxed);
-    let (file, temporary_path) = create_unique_recording_temp_file(&directory, recording_id)?;
+    let (file, temporary_path) =
+        create_unique_recording_temp_file(&directory, recording_id, format.extension())?;
     *guard = Some(RecordingFileRuntime {
         recording_id,
         file_name: request.file_name.clone(),
@@ -1209,6 +1212,7 @@ pub(crate) fn begin_recording_save(
         temporary_path,
         file,
         bytes_written: 0,
+        format,
     });
 
     Ok(RecordingWriteSession {
@@ -1242,14 +1246,15 @@ pub(crate) fn append_recording_chunk(
         .as_mut()
         .filter(|recording| recording.recording_id == recording_id)
         .ok_or_else(|| String::from("recording file is not active"))?;
-    if recording.bytes_written == 0 && !bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]) {
+    if recording.bytes_written == 0 && !recording.format.has_container_header(&bytes) {
         let prefix: Vec<String> = bytes
             .iter()
             .take(8)
             .map(|byte| format!("{byte:02X}"))
             .collect();
         return Err(format!(
-            "recording stream is missing its WebM header (first chunk: {} bytes, starts with {})",
+            "recording stream is missing its {} header (first chunk: {} bytes, starts with {})",
+            recording.format.extension().to_uppercase(),
             bytes.len(),
             prefix.join(" ")
         ));
@@ -1298,6 +1303,7 @@ pub(crate) fn finish_recording_save(
         temporary_path,
         file,
         bytes_written,
+        format,
     } = recording;
     drop(file);
     let final_path = match persist_recording_without_overwrite(&temporary_path, &final_path) {
@@ -1312,6 +1318,7 @@ pub(crate) fn finish_recording_save(
                     temporary_path,
                     file,
                     bytes_written,
+                    format,
                 });
                 return Err(format!(
                         "could not finalize the recording: {persist_error}. The temporary recording is retained at '{recovery_path}' and finalization can be retried."

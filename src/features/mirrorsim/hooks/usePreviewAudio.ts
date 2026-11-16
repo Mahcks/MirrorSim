@@ -13,6 +13,28 @@ type AudioGraph = {
   recordingDestination: MediaStreamAudioDestinationNode;
 };
 
+// Windows' AAC encoder (used for MP4 recordings) drops digitally silent input
+// instead of encoding it. The MP4 then has no gap where the silence was, so
+// every later sound plays early and the audio track ends short. Mixing noise of
+// two 16-bit steps (about -84 dBFS, inaudible) into the recording path keeps the
+// encoder producing frames; one step was enough in testing, two leaves a margin.
+const RECORDING_NOISE_FLOOR_AMPLITUDE = 2 / 32768;
+
+function connectRecordingNoiseFloor(context: AudioContext, destination: AudioNode) {
+  const noise = context.createBuffer(2, context.sampleRate, context.sampleRate);
+  for (let channel = 0; channel < noise.numberOfChannels; channel += 1) {
+    const samples = noise.getChannelData(channel);
+    for (let index = 0; index < samples.length; index += 1) {
+      samples[index] = (Math.random() * 2 - 1) * RECORDING_NOISE_FLOOR_AMPLITUDE;
+    }
+  }
+  const source = context.createBufferSource();
+  source.buffer = noise;
+  source.loop = true;
+  source.connect(destination);
+  source.start();
+}
+
 type UsePreviewAudioArgs = {
   available: boolean;
   isLive: boolean;
@@ -76,6 +98,7 @@ export function usePreviewAudio({
     recordingGain.connect(recordingDestination);
     playbackGain.gain.value = initialPlaybackGainRef.current;
     recordingGain.gain.value = 1;
+    connectRecordingNoiseFloor(context, recordingDestination);
 
     const graph = { context, playbackGain, recordingGain, recordingDestination };
     graphRef.current = graph;

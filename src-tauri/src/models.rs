@@ -399,12 +399,40 @@ pub(crate) struct SaveScreenshotRequest {
     pub(crate) custom_directory: Option<String>,
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum RecordingFormat {
+    #[default]
+    Webm,
+    Mp4,
+}
+
+impl RecordingFormat {
+    pub(crate) fn extension(self) -> &'static str {
+        match self {
+            Self::Webm => "webm",
+            Self::Mp4 => "mp4",
+        }
+    }
+
+    /// Whether `bytes` begin the way this container's first chunk must:
+    /// an EBML header for WebM, an `ftyp` box for MP4.
+    pub(crate) fn has_container_header(self, bytes: &[u8]) -> bool {
+        match self {
+            Self::Webm => bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]),
+            Self::Mp4 => bytes.get(4..8) == Some(b"ftyp".as_slice()),
+        }
+    }
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct BeginRecordingRequest {
     pub(crate) file_name: String,
     pub(crate) location: ScreenshotSaveLocation,
     pub(crate) custom_directory: Option<String>,
+    #[serde(default)]
+    pub(crate) format: RecordingFormat,
 }
 
 #[derive(Serialize)]
@@ -417,7 +445,31 @@ pub(crate) struct RecordingWriteSession {
 
 #[cfg(test)]
 mod tests {
-    use super::SidecarEvent;
+    use super::{BeginRecordingRequest, RecordingFormat, SidecarEvent};
+
+    #[test]
+    fn recording_formats_recognize_their_container_headers() {
+        let webm = [0x1A, 0x45, 0xDF, 0xA3, 0x9F, 0x42];
+        let mp4 = [
+            0x00, 0x00, 0x00, 0x1C, b'f', b't', b'y', b'p', b'i', b's', b'o', b'm',
+        ];
+        assert!(RecordingFormat::Webm.has_container_header(&webm));
+        assert!(!RecordingFormat::Webm.has_container_header(&mp4));
+        assert!(RecordingFormat::Mp4.has_container_header(&mp4));
+        assert!(!RecordingFormat::Mp4.has_container_header(&webm));
+        assert!(!RecordingFormat::Mp4.has_container_header(&[0x00, 0x00]));
+    }
+
+    #[test]
+    fn recording_requests_default_to_webm_and_accept_mp4() {
+        let legacy: BeginRecordingRequest =
+            serde_json::from_str(r#"{"fileName":"a.webm","location":"pictures"}"#).unwrap();
+        assert_eq!(legacy.format, RecordingFormat::Webm);
+        let mp4: BeginRecordingRequest =
+            serde_json::from_str(r#"{"fileName":"a.mp4","location":"pictures","format":"mp4"}"#)
+                .unwrap();
+        assert_eq!(mp4.format, RecordingFormat::Mp4);
+    }
 
     #[test]
     fn parses_sender_volume_event_from_the_jsonl_contract() {
