@@ -147,6 +147,18 @@ export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
           <circle cx="12" cy="19.5" r="0.75" fill="currentColor" />
         </svg>
       );
+    case "pause":
+      return (
+        <svg {...p}>
+          <path d="M9 6v12M15 6v12" strokeWidth={2.25} />
+        </svg>
+      );
+    case "play":
+      return (
+        <svg {...p}>
+          <path d="M8 5.5v13l10-6.5z" fill="currentColor" />
+        </svg>
+      );
     case "help":
       return (
         <svg {...p}>

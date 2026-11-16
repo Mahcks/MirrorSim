@@ -154,6 +154,7 @@ export type ScreenshotSettings = {
 };
 
 export type RecordingFormat = "mp4" | "webm";
+export type RecordingCountdown = 0 | 3 | 5;
 
 export type RecordingSettings = {
   format: RecordingFormat;
@@ -164,12 +165,27 @@ export type RecordingSettings = {
   autoReveal: boolean;
   includeDeviceFrame: boolean;
   includeAudio: boolean;
+  /** Seconds of 3-2-1 countdown before recording starts; 0 starts at once. */
+  countdownSeconds: RecordingCountdown;
+  /** Evens out quiet and loud iPhone audio in recordings only. */
+  normalizeAudio: boolean;
+};
+
+/** Live recording state shared by the views that show recording controls. */
+export type RecordingControls = {
+  /** Seconds left before recording starts, or null when no countdown runs. */
+  countdown: number | null;
+  paused: boolean;
+  /** Bytes recorded so far. */
+  bytes: number;
+  onPauseToggle: () => void;
 };
 
 export type KeyboardShortcutAction =
   | "toggleAudio"
   | "takeScreenshot"
   | "toggleRecording"
+  | "togglePauseRecording"
   | "toggleView"
   | "toggleFullscreen"
   | "toggleMinimalChrome"
@@ -251,4 +267,6 @@ export type IconName =
   | "volume-off"
   | "sliders"
   | "wifi"
-  | "help";
+  | "help"
+  | "pause"
+  | "play";

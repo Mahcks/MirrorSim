@@ -48,6 +48,7 @@ import type {
   ContextMenuPos,
   DiagnosticsExport,
   Orientation,
+  RecordingControls,
   SessionCommand,
   SessionSnapshot,
   TrustedDevice,
@@ -208,6 +209,7 @@ export default function App() {
     primeAudio,
     ensureRecordingAudio,
     recordingAudioTrack,
+    setRecordingNormalization,
   } = usePreviewAudio({
     available: audioAvailable,
     isLive: session.status === "mirroring" || session.status === "recording",
@@ -263,6 +265,11 @@ export default function App() {
 
   const {
     recElapsed,
+    recCountdown,
+    recPaused,
+    recBytes,
+    cancelRecordingCountdown,
+    doRecordPauseToggle,
     localRecordingActive,
     finalizeInterruptedRecording,
     chooseScreenshotFolder,
@@ -289,7 +296,14 @@ export default function App() {
     orientation,
     recordingAudioTrack,
     ensureRecordingAudio,
+    setRecordingNormalization,
   });
+  const recordingControls: RecordingControls = {
+    countdown: recCountdown,
+    paused: recPaused,
+    bytes: recBytes,
+    onPauseToggle: doRecordPauseToggle,
+  };
 
   const localRecordingActiveRef = useRef(localRecordingActive);
   const finalizeInterruptedRecordingRef = useRef(finalizeInterruptedRecording);
@@ -866,7 +880,10 @@ export default function App() {
       const key = e.key.toLowerCase();
 
       if (key === "escape") {
-        if (contextMenu || settingsOpen) {
+        if (cancelRecordingCountdown()) {
+          e.preventDefault();
+          setCaptureNotice("Recording canceled");
+        } else if (contextMenu || settingsOpen) {
           e.preventDefault();
           setContextMenu(null);
           setSettingsOpen(false);
@@ -921,6 +938,13 @@ export default function App() {
       if (keyboardShortcutMatches(e, shortcuts.toggleRecording)) {
         e.preventDefault();
         void doRecordToggle();
+        return;
+      }
+
+      if (keyboardShortcutMatches(e, shortcuts.togglePauseRecording)) {
+        // Always swallow it so Ctrl+P never opens the print dialog.
+        e.preventDefault();
+        doRecordPauseToggle();
         return;
       }
 
@@ -1666,6 +1690,7 @@ export default function App() {
       isIdle={isIdle}
       isRec={recordingBusy}
       recElapsed={recElapsed}
+      recording={recordingControls}
       bonjourNeedsAttention={bonjourNeedsAttention}
       sessionHeadline={sessionHeadline}
       sessionSupportingText={sessionSupportingText}
@@ -1702,6 +1727,7 @@ export default function App() {
       isIdle={isIdle}
       isRec={recordingBusy}
       recElapsed={recElapsed}
+      recording={recordingControls}
       bonjourNeedsAttention={bonjourNeedsAttention}
       sessionHeadline={sessionHeadline}
       sessionSupportingText={sessionSupportingText}
@@ -1788,6 +1814,7 @@ export default function App() {
           primarySessionActionDisabled={primarySessionActionDisabled}
           primarySessionActionLabel={primarySessionActionLabel}
           recElapsed={recElapsed}
+          recording={recordingControls}
           reconnectBadge={renderReconnectBadge()}
           sessionHeadline={sessionHeadline}
           sessionSecondaryLabel={sessionSecondaryLabel}
@@ -1834,6 +1861,7 @@ export default function App() {
             onOpenInExplorer={() => void revealCaptureInExplorer(latestSavedCapture).catch((error) => setCommandError(fmtError(error)))}
             onOpenSettings={() => openSettings("capture")}
             onRecordToggle={() => void doRecordToggle()}
+            recording={recordingControls}
             onSaveToDocuments={() => void doCapture({ saveToDisk: true, copyToClipboard: false, saveLocation: "documents" })}
             onToggleChrome={() => setMinimalChromeHidden((value) => !value)}
             onZoomIn={() => adjustZoom(1)}
@@ -1856,6 +1884,7 @@ export default function App() {
         onGoConsole={() => void goConsole()}
         onOpenSettings={toggleSettings}
         onRecordToggle={() => void doRecordToggle()}
+        recording={recordingControls}
         onRotate={() => {
           setOrientation((value) => {
             const next = value === "portrait" ? "landscape" : "portrait";

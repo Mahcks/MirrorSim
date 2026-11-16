@@ -10,8 +10,34 @@ type AudioGraph = {
   context: AudioContext;
   playbackGain: GainNode;
   recordingGain: GainNode;
+  /** Compressor, makeup gain and limiter; only in the path when normalizing. */
+  recordingLeveler: { input: AudioNode; output: AudioNode };
+  recordingNormalized: boolean;
   recordingDestination: MediaStreamAudioDestinationNode;
 };
+
+// "Normalize volume" for recordings: a gentle compressor evens out quiet and
+// loud passages, makeup gain brings the result back up, and a fast limiter
+// keeps peaks from clipping. Playback is never affected.
+function createRecordingLeveler(context: AudioContext) {
+  const compressor = context.createDynamicsCompressor();
+  compressor.threshold.value = -26;
+  compressor.knee.value = 12;
+  compressor.ratio.value = 4;
+  compressor.attack.value = 0.01;
+  compressor.release.value = 0.3;
+  const makeup = context.createGain();
+  makeup.gain.value = 2.5; // about +8 dB
+  const limiter = context.createDynamicsCompressor();
+  limiter.threshold.value = -1.5;
+  limiter.knee.value = 0;
+  limiter.ratio.value = 20;
+  limiter.attack.value = 0.002;
+  limiter.release.value = 0.1;
+  compressor.connect(makeup);
+  makeup.connect(limiter);
+  return { input: compressor, output: limiter };
+}
 
 // Windows' AAC encoder (used for MP4 recordings) drops digitally silent input
 // instead of encoding it. The MP4 then has no gap where the silence was, so
@@ -94,13 +120,22 @@ export function usePreviewAudio({
     const playbackGain = context.createGain();
     const recordingGain = context.createGain();
     const recordingDestination = context.createMediaStreamDestination();
+    const recordingLeveler = createRecordingLeveler(context);
     playbackGain.connect(context.destination);
     recordingGain.connect(recordingDestination);
+    recordingLeveler.output.connect(recordingDestination);
     playbackGain.gain.value = initialPlaybackGainRef.current;
     recordingGain.gain.value = 1;
     connectRecordingNoiseFloor(context, recordingDestination);
 
-    const graph = { context, playbackGain, recordingGain, recordingDestination };
+    const graph: AudioGraph = {
+      context,
+      playbackGain,
+      recordingGain,
+      recordingLeveler,
+      recordingNormalized: false,
+      recordingDestination,
+    };
     graphRef.current = graph;
     setRecordingAudioTrack(recordingDestination.stream.getAudioTracks()[0] ?? null);
     setAudioState(context.state === "running" ? "ready" : "suspended");
@@ -250,6 +285,17 @@ export function usePreviewAudio({
     graphRef.current = null;
   }, [stopScheduledSources]);
 
+  /** Routes recorded audio through the leveler, or straight to the recorder. */
+  const setRecordingNormalization = useCallback((enabled: boolean) => {
+    const graph = ensureGraph();
+    if (graph.recordingNormalized === enabled) {
+      return;
+    }
+    graph.recordingGain.disconnect();
+    graph.recordingGain.connect(enabled ? graph.recordingLeveler.input : graph.recordingDestination);
+    graph.recordingNormalized = enabled;
+  }, [ensureGraph]);
+
   return {
     audioState,
     audioError,
@@ -259,5 +305,6 @@ export function usePreviewAudio({
     primeAudio,
     ensureRecordingAudio,
     recordingAudioTrack,
+    setRecordingNormalization,
   };
 }

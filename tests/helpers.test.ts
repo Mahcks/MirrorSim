@@ -5,6 +5,7 @@ import {
   buildRecordingFileName,
   buildScreenshotFileName,
   canCapturePreviewFrame,
+  fmtBytes,
   formatAppleDeviceModel,
   mergeStoredPreferences,
   selectFreshestStoredPreferences,
@@ -117,4 +118,26 @@ test("stored audio volume is clamped to a safe range", () => {
 test("Apple hardware identifiers are normalized", () => {
   expect(formatAppleDeviceModel("iPhone16,1")).toBe("iPhone 15 Pro");
   expect(formatAppleDeviceModel("FuturePhone1,1")).toBe("FuturePhone1,1");
+});
+
+describe("recording polish settings", () => {
+  test("default to a 3 second countdown without audio normalization", () => {
+    const merged = mergeStoredPreferences({});
+    expect(merged.recordings.countdownSeconds).toBe(3);
+    expect(merged.recordings.normalizeAudio).toBe(false);
+  });
+
+  test("keep a valid countdown and reject anything else", () => {
+    expect(mergeStoredPreferences({ recordings: { countdownSeconds: 0 } }).recordings.countdownSeconds).toBe(0);
+    expect(mergeStoredPreferences({ recordings: { countdownSeconds: 5 } }).recordings.countdownSeconds).toBe(5);
+    expect(mergeStoredPreferences({ recordings: { countdownSeconds: 7 as 5 } }).recordings.countdownSeconds).toBe(3);
+    expect(mergeStoredPreferences({ recordings: { countdownSeconds: "3" as unknown as 3 } }).recordings.countdownSeconds).toBe(3);
+  });
+});
+
+test("recording sizes read naturally", () => {
+  expect(fmtBytes(0)).toBe("0 KB");
+  expect(fmtBytes(512 * 1024)).toBe("512 KB");
+  expect(fmtBytes(4.25 * 1024 * 1024)).toBe("4.3 MB");
+  expect(fmtBytes(1.5 * 1024 * 1024 * 1024)).toBe("1.50 GB");
 });

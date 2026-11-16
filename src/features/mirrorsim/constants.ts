@@ -90,6 +90,8 @@ export const defaultRecordingSettings: RecordingSettings = {
   autoReveal: false,
   includeDeviceFrame: false,
   includeAudio: true,
+  countdownSeconds: 3,
+  normalizeAudio: false,
 };
 
 export const defaultAppPreferences: AppPreferences = {

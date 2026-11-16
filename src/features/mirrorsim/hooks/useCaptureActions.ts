@@ -49,6 +49,7 @@ type UseCaptureActionsArgs = {
   orientation: Orientation;
   recordingAudioTrack: MediaStreamTrack | null;
   ensureRecordingAudio: () => Promise<boolean>;
+  setRecordingNormalization: (enabled: boolean) => void;
 };
 
 type RecordingWriteSession = SavedCaptureFile & {
@@ -87,10 +88,20 @@ export function useCaptureActions({
   orientation,
   recordingAudioTrack,
   ensureRecordingAudio,
+  setRecordingNormalization,
 }: UseCaptureActionsArgs) {
   const [recElapsed, setRecElapsed] = useState(0);
   const [localRecordingActive, setLocalRecordingActive] = useState(false);
+  /** Seconds left before recording starts, or null when no countdown runs. */
+  const [recCountdown, setRecCountdown] = useState<number | null>(null);
+  const [recPaused, setRecPaused] = useState(false);
+  /** Bytes the recorder has produced so far. */
+  const [recBytes, setRecBytes] = useState(0);
   const recStartRef = useRef<number | null>(null);
+  const pausedAtRef = useRef<number | null>(null);
+  const pausedTotalMsRef = useRef(0);
+  const countdownTimerRef = useRef<number | null>(null);
+  const startRecordingNowRef = useRef<() => Promise<void>>(async () => {});
   const recordingStreamRef = useRef<MediaStream | null>(null);
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordingWriteSessionRef = useRef<RecordingWriteSession | null>(null);
@@ -110,6 +121,16 @@ export function useCaptureActions({
     void finalizeInterruptedRecording("the mirroring session ended");
   }, [isRec]);
 
+  /** Recorded time in whole seconds, excluding time spent paused. */
+  function currentElapsedSeconds() {
+    const startedAt = recStartRef.current;
+    if (startedAt === null) {
+      return recordingElapsedRef.current;
+    }
+    const now = pausedAtRef.current ?? Date.now();
+    return Math.max(0, Math.floor((now - startedAt - pausedTotalMsRef.current) / 1000));
+  }
+
   useEffect(() => {
     if (!isRec) {
       recStartRef.current = null;
@@ -123,10 +144,72 @@ export function useCaptureActions({
       recStartRef.current = Date.now();
     }
 
-    const startedAt = recStartRef.current;
-    const intervalId = window.setInterval(() => setRecElapsed(Math.floor((Date.now() - startedAt) / 1000)), 1000);
+    const intervalId = window.setInterval(() => setRecElapsed(currentElapsedSeconds()), 250);
     return () => window.clearInterval(intervalId);
   }, [isRec, localRecordingActive]);
+
+  // A countdown cannot finish once the iPhone video goes away.
+  useEffect(() => {
+    if (!canRecord) {
+      cancelRecordingCountdown();
+    }
+  }, [canRecord]);
+
+  useEffect(() => () => {
+    cancelRecordingCountdown();
+  }, []);
+
+  /** Stops a running countdown. Returns true when one was running. */
+  function cancelRecordingCountdown() {
+    if (countdownTimerRef.current === null) {
+      return false;
+    }
+    window.clearInterval(countdownTimerRef.current);
+    countdownTimerRef.current = null;
+    setRecCountdown(null);
+    return true;
+  }
+
+  function startRecordingCountdown(seconds: number) {
+    let remaining = seconds;
+    setRecCountdown(remaining);
+    setCaptureNotice(`Recording starts in ${remaining}...`);
+    countdownTimerRef.current = window.setInterval(() => {
+      remaining -= 1;
+      if (remaining > 0) {
+        setRecCountdown(remaining);
+        return;
+      }
+      cancelRecordingCountdown();
+      void startRecordingNowRef.current();
+    }, 1000);
+  }
+
+  function doRecordPauseToggle() {
+    const recorder = mediaRecorderRef.current;
+    if (!isRec || !recorder || recordingTransitionRef.current) {
+      return;
+    }
+    if (recorder.state === "recording") {
+      recorder.pause();
+      pausedAtRef.current = Date.now();
+      setRecPaused(true);
+      setRecElapsed(currentElapsedSeconds());
+      setCaptureNotice("Recording paused");
+    } else if (recorder.state === "paused") {
+      pausedTotalMsRef.current += Date.now() - (pausedAtRef.current ?? Date.now());
+      pausedAtRef.current = null;
+      recorder.resume();
+      setRecPaused(false);
+      setCaptureNotice("Recording resumed");
+    }
+  }
+
+  function resetRecordingClock() {
+    pausedAtRef.current = null;
+    pausedTotalMsRef.current = 0;
+    setRecPaused(false);
+  }
 
   async function captureVideoFrameBlob(includeDeviceFrame: boolean): Promise<Blob> {
     if (!videoEl) {
@@ -293,6 +376,7 @@ export function useCaptureActions({
       && recordingAudioTrack !== null
       && await ensureRecordingAudio();
     if (includeRecordingAudio) {
+      setRecordingNormalization(recordingSettings.normalizeAudio);
       previewCaptureStream.addTrack(recordingAudioTrack.clone());
     }
 
@@ -333,9 +417,12 @@ export function useCaptureActions({
     recordingWriteSessionRef.current = writeSession;
     recordingWriteChainRef.current = Promise.resolve();
     recordingWriteErrorRef.current = null;
+    resetRecordingClock();
+    setRecBytes(0);
     mediaRecorder.addEventListener("dataavailable", (event) => {
       if (event.data.size > 0) {
         const chunk = event.data;
+        setRecBytes((previous) => previous + chunk.size);
         recordingWriteChainRef.current = recordingWriteChainRef.current.then(async () => {
           const session = recordingWriteSessionRef.current;
           if (!session) {
@@ -427,6 +514,7 @@ export function useCaptureActions({
     mediaRecorderRef.current = null;
     recordingWriteSessionRef.current = null;
     recordingElapsedRef.current = 0;
+    resetRecordingClock();
     setLocalRecordingActive(false);
   }
 
@@ -471,9 +559,7 @@ export function useCaptureActions({
     recordingTransitionRef.current = true;
     setCommandPending(true);
     setCaptureNotice(`Saving recording because ${reason}...`);
-    const elapsed = recStartRef.current === null
-      ? Math.max(recElapsed, recordingElapsedRef.current)
-      : Math.max(recElapsed, recordingElapsedRef.current, Math.floor((Date.now() - recStartRef.current) / 1000));
+    const elapsed = Math.max(recElapsed, recordingElapsedRef.current, currentElapsedSeconds());
     recordingElapsedRef.current = elapsed;
 
     try {
@@ -609,74 +695,97 @@ export function useCaptureActions({
   }
 
   async function doRecordToggle() {
+    if (cancelRecordingCountdown()) {
+      setCaptureNotice("Recording canceled");
+      return;
+    }
     const hasRecordingToFinish = recordingWriteSessionRef.current !== null;
     if ((!canRecord && !hasRecordingToFinish) || recordingTransitionRef.current) {
+      return;
+    }
+
+    if (!isRec && !hasRecordingToFinish) {
+      if (recordingSettings.saveLocation === "custom" && !recordingSettings.customSavePath.trim()) {
+        const message = "Choose a recording folder before saving to a custom location.";
+        setCaptureNotice(`Recording failed: ${message}`);
+        setCommandError(message);
+        return;
+      }
+      setCommandError(null);
+      if (recordingSettings.countdownSeconds > 0) {
+        startRecordingCountdown(recordingSettings.countdownSeconds);
+        return;
+      }
+      await startRecordingNow();
       return;
     }
 
     recordingTransitionRef.current = true;
     setCommandPending(true);
     setCommandError(null);
-    setCaptureNotice(isRec || hasRecordingToFinish ? "Stopping and saving recording..." : "Starting recording...");
+    setCaptureNotice("Stopping and saving recording...");
 
-    if (isRec || hasRecordingToFinish) {
-      const elapsed = isRec
-        ? Math.max(recElapsed, recordingElapsedRef.current)
-        : recordingElapsedRef.current;
-      recordingElapsedRef.current = elapsed;
-
-      try {
-        if (isRec) {
-          // Keep the local recorder running when the backend refuses to leave
-          // recording mode. The user can safely retry instead of losing data.
-          setSession(await invoke<SessionSnapshot>("stop_recording"));
-        }
-        const savedRecording = await stopLocalRecording();
-        console.info("[MirrorSim capture] recording save result", savedRecording);
-
-        addSavedRecording(savedRecording, elapsed);
-        setCaptureNotice(`Saved recording to ${savedRecording.filePath}`);
-
-        if (recordingSettings.autoReveal || appPreferences.autoRevealSavedCaptures) {
-          try {
-            await revealItemInDir(savedRecording.filePath);
-          } catch (error) {
-            setCommandError(`Recording was saved, but File Explorer could not open it: ${fmtError(error)}`);
-          }
-        }
-      } catch (error) {
-        // Never abort an established recording here. `finish_recording_save`
-        // intentionally retains its temporary file on failure, and keeping the
-        // refs allows another Stop/Save attempt when the backend still owns it.
-        if (mediaRecorderRef.current?.state === "inactive") {
-          recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
-          recordingStreamRef.current = null;
-        }
-        const message = fmtError(error);
-        console.error("[MirrorSim capture] recording stop/save failed", {
-          message,
-          settings: recordingSettings,
-          error,
-        });
-        if (error instanceof EmptyRecordingError) {
-          setCaptureNotice(`Recording failed: ${message}`);
-          setCommandError(message);
-        } else {
-          setCaptureNotice(`Recording could not be saved yet: ${message}`);
-          setCommandError(`${message} Retry saving the recording. Its temporary file was not deleted.`);
-        }
-      } finally {
-        recordingTransitionRef.current = false;
-        setCommandPending(false);
-      }
-      return;
-    }
+    const elapsed = isRec
+      ? Math.max(recElapsed, recordingElapsedRef.current, currentElapsedSeconds())
+      : recordingElapsedRef.current;
+    recordingElapsedRef.current = elapsed;
 
     try {
-      if (recordingSettings.saveLocation === "custom" && !recordingSettings.customSavePath.trim()) {
-        throw new Error("Choose a recording folder before saving to a custom location.");
+      if (isRec) {
+        // Keep the local recorder running when the backend refuses to leave
+        // recording mode. The user can safely retry instead of losing data.
+        setSession(await invoke<SessionSnapshot>("stop_recording"));
       }
+      const savedRecording = await stopLocalRecording();
+      console.info("[MirrorSim capture] recording save result", savedRecording);
 
+      addSavedRecording(savedRecording, elapsed);
+      setCaptureNotice(`Saved recording to ${savedRecording.filePath}`);
+
+      if (recordingSettings.autoReveal || appPreferences.autoRevealSavedCaptures) {
+        try {
+          await revealItemInDir(savedRecording.filePath);
+        } catch (error) {
+          setCommandError(`Recording was saved, but File Explorer could not open it: ${fmtError(error)}`);
+        }
+      }
+    } catch (error) {
+      // Never abort an established recording here. `finish_recording_save`
+      // intentionally retains its temporary file on failure, and keeping the
+      // refs allows another Stop/Save attempt when the backend still owns it.
+      if (mediaRecorderRef.current?.state === "inactive") {
+        recordingStreamRef.current?.getTracks().forEach((track) => track.stop());
+        recordingStreamRef.current = null;
+      }
+      const message = fmtError(error);
+      console.error("[MirrorSim capture] recording stop/save failed", {
+        message,
+        settings: recordingSettings,
+        error,
+      });
+      if (error instanceof EmptyRecordingError) {
+        setCaptureNotice(`Recording failed: ${message}`);
+        setCommandError(message);
+      } else {
+        setCaptureNotice(`Recording could not be saved yet: ${message}`);
+        setCommandError(`${message} Retry saving the recording. Its temporary file was not deleted.`);
+      }
+    } finally {
+      recordingTransitionRef.current = false;
+      setCommandPending(false);
+    }
+  }
+
+  async function startRecordingNow() {
+    if (!canRecord || recordingTransitionRef.current || recordingWriteSessionRef.current !== null) {
+      return;
+    }
+    recordingTransitionRef.current = true;
+    setCommandPending(true);
+    setCommandError(null);
+    setCaptureNotice("Starting recording...");
+
+    try {
       console.info("[MirrorSim capture] starting recording", {
         saveLocation: recordingSettings.saveLocation,
         customSavePath: recordingSettings.customSavePath,
@@ -730,9 +839,15 @@ export function useCaptureActions({
       setCommandPending(false);
     }
   }
+  startRecordingNowRef.current = startRecordingNow;
 
   return {
     recElapsed,
+    recCountdown,
+    recPaused,
+    recBytes,
+    cancelRecordingCountdown,
+    doRecordPauseToggle,
     localRecordingActive,
     finalizeInterruptedRecording,
     chooseScreenshotFolder,

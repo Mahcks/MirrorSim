@@ -2,9 +2,9 @@ import { useLayoutEffect, useRef, useState, type MouseEvent, type ReactNode } fr
 
 import { cn } from "@/lib/utils";
 import type { ZoomLevel } from "@/features/mirrorsim/constants";
-import { fmtDuration } from "@/features/mirrorsim/helpers";
+import { fmtBytes, fmtDuration } from "@/features/mirrorsim/helpers";
 import { formatKeyboardShortcuts, keyboardShortcutsToAria } from "@/features/mirrorsim/keyboardShortcuts";
-import type { Capture, KeyboardShortcutMap, Orientation } from "@/features/mirrorsim/types";
+import type { Capture, KeyboardShortcutMap, Orientation, RecordingControls } from "@/features/mirrorsim/types";
 import type { BonjourStatusSnapshot } from "@/receiverContract";
 
 import { Icon } from "./Icon";
@@ -60,6 +60,7 @@ type ConsoleViewProps = {
   primarySessionActionDisabled: boolean;
   primarySessionActionLabel: string;
   recElapsed: number;
+  recording: RecordingControls;
   reconnectBadge: ReactNode;
   sessionHeadline: string;
   sessionSecondaryLabel: string;
@@ -125,6 +126,7 @@ export function ConsoleView({
   primarySessionActionDisabled,
   primarySessionActionLabel,
   recElapsed,
+  recording,
   reconnectBadge,
   sessionHeadline,
   sessionSecondaryLabel,
@@ -154,7 +156,9 @@ export function ConsoleView({
   const screenshotTooltip = canCapture
     ? `Screenshot (${shortcutLabel("takeScreenshot")})`
     : "Screenshot available when iPhone video is ready";
-  const recordingTooltip = isRec
+  const recordingTooltip = recording.countdown !== null
+    ? "Cancel countdown"
+    : isRec
     ? `Stop recording (${shortcutLabel("toggleRecording")})`
     : canRecord
       ? `Start recording (${shortcutLabel("toggleRecording")})`
@@ -207,8 +211,16 @@ export function ConsoleView({
         <div className="flex items-center justify-end">
           <div className="flex cursor-default items-center gap-1.5" onMouseDown={(event) => event.stopPropagation()}>
           {isRec && (
-            <span className="inline-flex items-center gap-1 whitespace-nowrap rounded-full border border-red-500/25 bg-red-500/15 px-2 py-0.5 text-[11px] font-medium tracking-[-0.01em] text-red-300">
-              ● REC {fmtDuration(recElapsed)}
+            <span
+              className={cn(
+                "inline-flex items-center gap-1 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11px] font-medium tracking-[-0.01em] tabular-nums",
+                recording.paused
+                  ? "border-amber-400/25 bg-amber-400/10 text-amber-200"
+                  : "border-red-500/25 bg-red-500/15 text-red-300",
+              )}
+            >
+              {recording.paused ? "❚❚ PAUSED" : "● REC"} {fmtDuration(recElapsed)}
+              {recording.bytes > 0 && <span className="text-white/45">· {fmtBytes(recording.bytes)}</span>}
             </span>
           )}
           {isLive && !isRec && (
@@ -450,16 +462,30 @@ export function ConsoleView({
         <div className="flex items-center gap-px">
           <button
             type="button"
-            className={cn(controlButtonClass, isRec && "bg-red-500/15 text-red-300")}
+            className={cn(controlButtonClass, (isRec || recording.countdown !== null) && "bg-red-500/15 text-red-300")}
             onClick={onRecordToggle}
-            disabled={!canRecord || commandPending}
+            disabled={(!canRecord && recording.countdown === null) || commandPending}
             data-tooltip={recordingTooltip}
             data-tooltip-side="top"
-            aria-label={isRec ? "Stop recording" : "Start recording"}
+            aria-label={recording.countdown !== null ? "Cancel recording countdown" : isRec ? "Stop recording" : "Start recording"}
             aria-keyshortcuts={shortcutAria("toggleRecording")}
           >
             <Icon name="record" size={15} />
           </button>
+          {isRec && (
+            <button
+              type="button"
+              className={cn(controlButtonClass, recording.paused && "bg-amber-400/12 text-amber-200")}
+              onClick={recording.onPauseToggle}
+              disabled={commandPending}
+              data-tooltip={`${recording.paused ? "Resume" : "Pause"} recording (${shortcutLabel("togglePauseRecording")})`}
+              data-tooltip-side="top"
+              aria-label={recording.paused ? "Resume recording" : "Pause recording"}
+              aria-keyshortcuts={shortcutAria("togglePauseRecording")}
+            >
+              <Icon name={recording.paused ? "play" : "pause"} size={15} />
+            </button>
+          )}
           <button
             type="button"
             className={controlButtonClass}

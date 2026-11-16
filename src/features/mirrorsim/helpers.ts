@@ -102,6 +102,16 @@ export function readBufferedEnd(video: HTMLVideoElement) {
   }
 }
 
+export function fmtBytes(bytes: number): string {
+  if (bytes < 1024 * 1024) {
+    return `${Math.max(0, Math.round(bytes / 1024))} KB`;
+  }
+  if (bytes < 1024 * 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+  }
+  return `${(bytes / (1024 * 1024 * 1024)).toFixed(2)} GB`;
+}
+
 export function fmtDuration(seconds: number): string {
   const hours = Math.floor(seconds / 3600);
   const minutes = Math.floor((seconds % 3600) / 60);
@@ -181,6 +191,9 @@ export function mergeStoredPreferences(stored: StoredPreferences | null) {
       autoReveal: booleanOr(recordings?.autoReveal, defaultRecordingSettings.autoReveal),
       includeDeviceFrame: booleanOr(recordings?.includeDeviceFrame, defaultRecordingSettings.includeDeviceFrame),
       includeAudio: booleanOr(recordings?.includeAudio, defaultRecordingSettings.includeAudio),
+      countdownSeconds: ([0, 3, 5] as const).find((value) => value === recordings?.countdownSeconds)
+        ?? defaultRecordingSettings.countdownSeconds,
+      normalizeAudio: booleanOr(recordings?.normalizeAudio, defaultRecordingSettings.normalizeAudio),
     },
     app: {
       launchMode: enumOr(app?.launchMode, ["console", "minimal"], defaultAppPreferences.launchMode),

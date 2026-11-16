@@ -1,7 +1,7 @@
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useEffect, useRef } from "react";
 
-import type { Capture, ContextMenuPos } from "@/features/mirrorsim/types";
+import type { Capture, ContextMenuPos, RecordingControls } from "@/features/mirrorsim/types";
 
 type MinimalContextMenuProps = {
   canCapture: boolean;
@@ -17,6 +17,7 @@ type MinimalContextMenuProps = {
   onOpenInExplorer: () => void;
   onOpenSettings: () => void;
   onRecordToggle: () => void;
+  recording: RecordingControls;
   onSaveToDocuments: () => void;
   onToggleChrome: () => void;
   onZoomIn: () => void;
@@ -40,6 +41,7 @@ export function MinimalContextMenu({
   onOpenInExplorer,
   onOpenSettings,
   onRecordToggle,
+  recording,
   onSaveToDocuments,
   onToggleChrome,
   onZoomIn,
@@ -124,10 +126,22 @@ export function MinimalContextMenu({
           onRecordToggle();
           onClose();
         }}
-        disabled={!canRecord}
+        disabled={!canRecord && recording.countdown === null}
       >
-        {isRec ? "Stop Recording" : "Start Recording"}
+        {recording.countdown !== null ? "Cancel Countdown" : isRec ? "Stop Recording" : "Start Recording"}
       </button>
+      {isRec && (
+        <button
+          type="button"
+          className="flex w-full items-center rounded-[5px] px-2.5 py-1.5 text-left text-xs tracking-[-0.01em] text-white transition hover:bg-white/8 disabled:cursor-default disabled:text-white/25"
+          onClick={() => {
+            recording.onPauseToggle();
+            onClose();
+          }}
+        >
+          {recording.paused ? "Resume Recording" : "Pause Recording"}
+        </button>
+      )}
       <div className="my-1 h-px bg-white/7" />
       <button
         type="button"

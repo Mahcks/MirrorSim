@@ -1,7 +1,7 @@
 import type { MouseEvent, ReactNode, RefObject } from "react";
 
 import { cn } from "@/lib/utils";
-import type { KeyboardShortcutMap, Orientation } from "@/features/mirrorsim/types";
+import type { KeyboardShortcutMap, Orientation, RecordingControls } from "@/features/mirrorsim/types";
 import { MINIMAL_TITLEBAR_HEIGHT, MINIMAL_WINDOW_SIZE, type ZoomLevel } from "@/features/mirrorsim/constants";
 import { formatKeyboardShortcuts, keyboardShortcutsToAria } from "@/features/mirrorsim/keyboardShortcuts";
 
@@ -29,6 +29,7 @@ type MinimalViewProps = {
   onGoConsole: () => void;
   onOpenSettings: () => void;
   onRecordToggle: () => void;
+  recording: RecordingControls;
   onRotate: () => void;
   onStartWindowDrag: (event: MouseEvent<HTMLElement>) => void | Promise<void>;
   orientation: Orientation;
@@ -64,6 +65,7 @@ export function MinimalView({
   onGoConsole,
   onOpenSettings,
   onRecordToggle,
+  recording,
   onRotate,
   onStartWindowDrag,
   reconnectBadge,
@@ -131,15 +133,28 @@ export function MinimalView({
               </button>
               <button
                 type="button"
-                className={`${minimalFloatingButtonClass}${isRec ? " bg-red-500/15 text-red-300 hover:bg-red-500/20" : ""}`}
+                className={`${minimalFloatingButtonClass}${isRec || recording.countdown !== null ? " bg-red-500/15 text-red-300 hover:bg-red-500/20" : ""}`}
                 onClick={onRecordToggle}
-                disabled={!canRecord || commandPending}
-                data-tooltip={isRec ? `Stop recording (${shortcutLabel("toggleRecording")})` : canRecord ? `Start recording (${shortcutLabel("toggleRecording")})` : "Recording available when iPhone video is ready"}
-                aria-label={isRec ? "Stop recording" : "Start recording"}
+                disabled={(!canRecord && recording.countdown === null) || commandPending}
+                data-tooltip={recording.countdown !== null ? "Cancel countdown" : isRec ? `Stop recording (${shortcutLabel("toggleRecording")})` : canRecord ? `Start recording (${shortcutLabel("toggleRecording")})` : "Recording available when iPhone video is ready"}
+                aria-label={recording.countdown !== null ? "Cancel recording countdown" : isRec ? "Stop recording" : "Start recording"}
                 aria-keyshortcuts={shortcutAria("toggleRecording")}
               >
                 <Icon name="record" size={14} />
               </button>
+              {isRec && (
+                <button
+                  type="button"
+                  className={`${minimalFloatingButtonClass}${recording.paused ? " bg-amber-400/12 text-amber-200 hover:bg-amber-400/18" : ""}`}
+                  onClick={recording.onPauseToggle}
+                  disabled={commandPending}
+                  data-tooltip={`${recording.paused ? "Resume" : "Pause"} recording (${shortcutLabel("togglePauseRecording")})`}
+                  aria-label={recording.paused ? "Resume recording" : "Pause recording"}
+                  aria-keyshortcuts={shortcutAria("togglePauseRecording")}
+                >
+                  <Icon name={recording.paused ? "play" : "pause"} size={14} />
+                </button>
+              )}
               <button
                 type="button"
                 className={minimalFloatingButtonClass}

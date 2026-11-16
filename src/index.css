@@ -162,7 +162,27 @@ button[data-tooltip]:disabled > svg {
 	animation: ms-dot-pulse 1.6s ease-out infinite;
 }
 
+/* Recording countdown: each number pops in. */
+@keyframes ms-countdown {
+	0% {
+		transform: scale(1.35);
+		opacity: 0;
+	}
+	100% {
+		transform: scale(1);
+		opacity: 1;
+	}
+}
+
+.ms-countdown {
+	animation: ms-countdown 0.35s cubic-bezier(0.2, 0.7, 0.3, 1) both;
+}
+
 @media (prefers-reduced-motion: reduce) {
+	.ms-countdown {
+		animation: none;
+	}
+
 	.ms-ripple,
 	.ms-dot-pulse {
 		animation: none;

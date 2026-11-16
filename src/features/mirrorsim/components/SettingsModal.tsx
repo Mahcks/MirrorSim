@@ -10,6 +10,7 @@ import type {
   KeyboardShortcutAction,
   PreviewQualityPreset,
   ReceiverAccessMode,
+  RecordingCountdown,
   RecordingFormat,
   RecordingSettings,
   ScreenshotSaveLocation,
@@ -652,6 +653,20 @@ export function SettingsModal({
                 disabled={!audioAvailable}
               />
             </div>
+            <div className="flex items-start justify-between gap-4 py-3">
+              <div>
+                <div className="text-[13px] font-medium text-white/88">Normalize volume</div>
+                <div className="mt-0.5 text-[11px] leading-4 text-white/45">
+                  Lifts quiet sound and tames loud peaks so recordings play at a steady level.
+                </div>
+              </div>
+              <Toggle
+                label="Normalize recorded audio volume"
+                checked={recordingSettings.normalizeAudio}
+                onChange={(value) => setRecordingSetting("normalizeAudio", value)}
+                disabled={!audioAvailable || !recordingSettings.includeAudio}
+              />
+            </div>
           </div>
           <p className={cardNote}>Playback mute, phone volume, and master volume do not reduce recorded audio.</p>
           </>}
@@ -759,6 +774,20 @@ export function SettingsModal({
                 <option value="webm">WebM (VP9): smaller files, fewer apps open it</option>
               </select>
               <p className={fieldNote}>If MP4 is not available on this PC, MirrorSim records WebM instead and tells you.</p>
+            </div>
+            <div className="py-3">
+              <div className={fieldLabel}>Countdown</div>
+              <select
+                aria-label="Recording countdown"
+                className={`${fieldInput} ms-select`}
+                value={recordingSettings.countdownSeconds}
+                onChange={(event) => setRecordingSetting("countdownSeconds", Number(event.target.value) as RecordingCountdown)}
+              >
+                <option value={3}>3 seconds</option>
+                <option value={5}>5 seconds</option>
+                <option value={0}>Off: start immediately</option>
+              </select>
+              <p className={fieldNote}>Gives you time to get your iPhone ready. Press Record again or Esc to cancel.</p>
             </div>
             <div className="py-3">
               <div className={fieldLabel}>Save to</div>

@@ -1,8 +1,8 @@
 import type { CSSProperties, MouseEventHandler, ReactNode, WheelEventHandler } from "react";
 
 import { cn } from "@/lib/utils";
-import { fmtDuration } from "@/features/mirrorsim/helpers";
-import type { AppMode, Orientation, SessionState } from "@/features/mirrorsim/types";
+import { fmtBytes, fmtDuration } from "@/features/mirrorsim/helpers";
+import type { AppMode, Orientation, RecordingControls, SessionState } from "@/features/mirrorsim/types";
 import type { MockPreviewStreamStatus } from "@/mockPreviewStream";
 import type { VideoAvailabilityNotice } from "@/features/mirrorsim/protectedVideo";
 
@@ -20,6 +20,7 @@ type DeviceFrameProps = {
   isIdle: boolean;
   isRec: boolean;
   recElapsed: number;
+  recording: RecordingControls;
   bonjourNeedsAttention: boolean;
   sessionHeadline: string;
   sessionSupportingText: string;
@@ -58,6 +59,7 @@ export function DeviceFrame({
   isIdle,
   isRec,
   recElapsed,
+  recording,
   bonjourNeedsAttention,
   sessionHeadline,
   sessionSupportingText,
@@ -209,6 +211,26 @@ export function DeviceFrame({
               </div>
             </div>
           )}
+          {recording.countdown !== null && (
+            <div
+              className="absolute inset-0 z-40 flex flex-col items-center justify-center bg-black/50 text-center backdrop-blur-[2px]"
+              aria-live="assertive"
+            >
+              <span
+                key={recording.countdown}
+                className={cn(
+                  "ms-countdown font-semibold leading-none tracking-[-0.04em] text-white tabular-nums",
+                  portrait ? "text-[96px]" : "text-[64px]",
+                )}
+              >
+                {recording.countdown}
+              </span>
+              <span className={cn("text-[12px] font-medium text-white/70", portrait ? "mt-5" : "mt-3")}>
+                Recording starts soon
+              </span>
+              <span className="mt-1 text-[11px] text-white/40">Press Record or Esc to cancel</span>
+            </div>
+          )}
           {!isLive && (
             <div
               className={cn(
@@ -321,9 +343,15 @@ export function DeviceFrame({
         </div>
       </div>
       {isRec && (
-        <div className="absolute right-3.5 top-3 z-30 inline-flex items-center gap-1.5 rounded-full border border-red-500/30 bg-black/75 px-2.5 py-1 text-[11px] font-semibold tracking-[0.02em] text-red-300">
-          <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-red-500" />
-          REC {fmtDuration(recElapsed)}
+        <div
+          className={cn(
+            "absolute right-3.5 top-3 z-30 inline-flex items-center gap-1.5 rounded-full border bg-black/75 px-2.5 py-1 text-[11px] font-semibold tracking-[0.02em] tabular-nums",
+            recording.paused ? "border-amber-400/30 text-amber-200" : "border-red-500/30 text-red-300",
+          )}
+        >
+          <span className={cn("h-1.5 w-1.5 rounded-full", recording.paused ? "bg-amber-400" : "animate-pulse bg-red-500")} />
+          {recording.paused ? "PAUSED" : "REC"} {fmtDuration(recElapsed)}
+          {recording.bytes > 0 && <span className="font-medium text-white/50">· {fmtBytes(recording.bytes)}</span>}
         </div>
       )}
     </div>
