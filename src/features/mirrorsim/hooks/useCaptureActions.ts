@@ -229,7 +229,7 @@ export function useCaptureActions({
       sourceWidth,
       sourceHeight,
       orientation,
-      includeDeviceFrame,
+      { includeDeviceFrame, style: appPreferences.captureStyle, allowTransparency: true },
     );
     draw();
 
@@ -341,13 +341,18 @@ export function useCaptureActions({
     let previewCaptureStream: MediaStream | null = null;
     let recordedWidth = sourceWidth;
     let recordedHeight = sourceHeight;
-    if (recordingSettings.includeDeviceFrame) {
+    if (recordingSettings.includeDeviceFrame || appPreferences.captureStyle.background !== "none") {
       const { canvas, draw } = createCaptureSurface(
         previewSource,
         sourceWidth,
         sourceHeight,
         orientation,
-        true,
+        {
+          includeDeviceFrame: recordingSettings.includeDeviceFrame,
+          style: appPreferences.captureStyle,
+          allowTransparency: false,
+          evenDimensions: true,
+        },
       );
       const framedCanvas = canvas as HTMLCanvasElement & { captureStream?: (frameRate?: number) => MediaStream };
       previewCaptureStream = framedCanvas.captureStream?.(30) ?? null;

@@ -215,6 +215,14 @@ export function mergeStoredPreferences(stored: StoredPreferences | null) {
       audioChannelMode: enumOr(app?.audioChannelMode, ["stereo", "mono"], defaultAppPreferences.audioChannelMode),
       keyboardShortcuts: sanitizeKeyboardShortcuts(app?.keyboardShortcuts),
       receiverDisplayName: stringOr(app?.receiverDisplayName, defaultAppPreferences.receiverDisplayName),
+      captureStyle: {
+        frameColor: enumOr(app?.captureStyle?.frameColor, ["black", "silver", "gold", "blue"], defaultAppPreferences.captureStyle.frameColor),
+        background: enumOr(app?.captureStyle?.background, ["none", "color", "gradient"], defaultAppPreferences.captureStyle.background),
+        backgroundColor: typeof app?.captureStyle?.backgroundColor === "string" && /^#[0-9a-f]{6}$/i.test(app.captureStyle.backgroundColor)
+          ? app.captureStyle.backgroundColor
+          : defaultAppPreferences.captureStyle.backgroundColor,
+        gradient: enumOr(app?.captureStyle?.gradient, ["sunset", "ocean", "aurora", "blush", "graphite"], defaultAppPreferences.captureStyle.gradient),
+      },
       lastMode: enumOr(app?.lastMode, ["console", "minimal"], defaultAppPreferences.lastMode),
       lastOrientation: enumOr(app?.lastOrientation, ["portrait", "landscape"], defaultAppPreferences.lastOrientation),
     },

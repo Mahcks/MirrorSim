@@ -141,3 +141,32 @@ test("recording sizes read naturally", () => {
   expect(fmtBytes(4.25 * 1024 * 1024)).toBe("4.3 MB");
   expect(fmtBytes(1.5 * 1024 * 1024 * 1024)).toBe("1.50 GB");
 });
+
+describe("capture style preferences", () => {
+  test("default to a black frame with no background", () => {
+    expect(mergeStoredPreferences({}).app.captureStyle).toEqual({
+      frameColor: "black",
+      background: "none",
+      backgroundColor: "#f2f2f7",
+      gradient: "ocean",
+    });
+  });
+
+  test("keep valid choices and repair invalid ones", () => {
+    const merged = mergeStoredPreferences({
+      app: {
+        captureStyle: { frameColor: "gold", background: "color", backgroundColor: "#12AB34", gradient: "neon" as "ocean" },
+      },
+    });
+    expect(merged.app.captureStyle).toEqual({
+      frameColor: "gold",
+      background: "color",
+      backgroundColor: "#12AB34",
+      gradient: "ocean",
+    });
+    const broken = mergeStoredPreferences({
+      app: { captureStyle: { backgroundColor: "red; drop" } as unknown as never },
+    });
+    expect(broken.app.captureStyle.backgroundColor).toBe("#f2f2f7");
+  });
+});

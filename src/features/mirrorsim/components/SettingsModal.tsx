@@ -10,6 +10,10 @@ import type {
   KeyboardShortcutAction,
   PreviewQualityPreset,
   ReceiverAccessMode,
+  CaptureBackground,
+  CaptureGradient,
+  CaptureStyle,
+  DeviceFrameColor,
   RecordingCountdown,
   RecordingFormat,
   RecordingSettings,
@@ -20,6 +24,9 @@ import type {
 } from "@/features/mirrorsim/types";
 import { formatAirPlayVolume } from "@/features/mirrorsim/audioVolume";
 import { Icon } from "@/features/mirrorsim/components/Icon";
+import { CaptureStylePreview } from "@/features/mirrorsim/components/CaptureStylePreview";
+import { cn } from "@/lib/utils";
+import { CAPTURE_BACKGROUND_LABELS, CAPTURE_GRADIENTS, DEVICE_FRAME_COLORS } from "@/features/mirrorsim/captureSurface";
 import {
   cloneDefaultKeyboardShortcuts,
   findKeyboardShortcutConflict,
@@ -132,6 +139,10 @@ const btnDestructive = "rounded-lg border border-red-400/25 bg-red-500/12 px-3 p
 const sectionHeader = "px-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-white/38";
 const cardNote = "mt-2 px-1 text-[11px] leading-4 text-white/42";
 const infoLabel = "shrink-0 text-white/40";
+const swatch = (selected: boolean) => cn(
+  "h-7 w-7 rounded-full border border-white/15 transition hover:scale-105 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60",
+  selected && "ring-2 ring-blue-400 ring-offset-2 ring-offset-[#17181b]",
+);
 const infoBox = "rounded-2xl border border-white/6 bg-white/[0.035] p-3.5 text-[12px] leading-5 text-white/60";
 
 export function SettingsModal({
@@ -392,6 +403,8 @@ export function SettingsModal({
     setShortcutError(null);
   }
 
+  const setCaptureStyle = (changes: Partial<CaptureStyle>) =>
+    setAppPreference("captureStyle", { ...appPreferences.captureStyle, ...changes });
   return (
     <div
       className={embedded
@@ -672,6 +685,87 @@ export function SettingsModal({
           </>}
 
           {activeSection === "capture" && <>
+          {/* ── Frame & background ── */}
+          <div className={`${sectionHeader} mt-6 pb-2`}>Frame &amp; Background</div>
+          <div className={groupCard}>
+            <div className="flex items-start gap-4 py-3.5">
+              <CaptureStylePreview style={appPreferences.captureStyle} />
+              <div className="min-w-0 flex-1 space-y-3.5">
+                <div>
+                  <div className={fieldLabel}>Frame color</div>
+                  <div className="flex flex-wrap gap-2">
+                    {(Object.keys(DEVICE_FRAME_COLORS) as DeviceFrameColor[]).map((color) => (
+                      <button
+                        key={color}
+                        type="button"
+                        className={swatch(appPreferences.captureStyle.frameColor === color)}
+                        style={{ background: `linear-gradient(160deg, ${DEVICE_FRAME_COLORS[color].stops[0]}, ${DEVICE_FRAME_COLORS[color].stops[2]})` }}
+                        onClick={() => setCaptureStyle({ frameColor: color })}
+                        aria-label={`${DEVICE_FRAME_COLORS[color].label} frame`}
+                        aria-pressed={appPreferences.captureStyle.frameColor === color}
+                        data-tooltip={DEVICE_FRAME_COLORS[color].label}
+                      />
+                    ))}
+                  </div>
+                </div>
+                <div>
+                  <div className={fieldLabel}>Background</div>
+                  <div className="grid grid-cols-3 rounded-lg border border-white/8 bg-black/25 p-0.5" role="radiogroup" aria-label="Capture background">
+                    {(Object.keys(CAPTURE_BACKGROUND_LABELS) as CaptureBackground[]).map((background) => (
+                      <button
+                        key={background}
+                        type="button"
+                        role="radio"
+                        aria-checked={appPreferences.captureStyle.background === background}
+                        className={cn(
+                          "h-7 rounded-md px-1 text-[12px] font-medium transition",
+                          appPreferences.captureStyle.background === background
+                            ? "bg-white/12 text-white"
+                            : "text-white/55 hover:text-white/85",
+                        )}
+                        onClick={() => setCaptureStyle({ background })}
+                      >
+                        {CAPTURE_BACKGROUND_LABELS[background]}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {appPreferences.captureStyle.background === "color" && (
+                  <label className="flex items-center gap-2.5">
+                    <input
+                      type="color"
+                      aria-label="Background color"
+                      className="h-7 w-9 cursor-pointer rounded-md border border-white/10 bg-transparent p-0.5"
+                      value={appPreferences.captureStyle.backgroundColor}
+                      onChange={(event) => setCaptureStyle({ backgroundColor: event.target.value })}
+                    />
+                    <span className="font-mono text-[12px] uppercase text-white/60">{appPreferences.captureStyle.backgroundColor}</span>
+                  </label>
+                )}
+                {appPreferences.captureStyle.background === "gradient" && (
+                  <div className="flex flex-wrap gap-2">
+                    {(Object.keys(CAPTURE_GRADIENTS) as CaptureGradient[]).map((gradient) => (
+                      <button
+                        key={gradient}
+                        type="button"
+                        className={swatch(appPreferences.captureStyle.gradient === gradient)}
+                        style={{ background: `linear-gradient(135deg, ${CAPTURE_GRADIENTS[gradient].from}, ${CAPTURE_GRADIENTS[gradient].to})` }}
+                        onClick={() => setCaptureStyle({ gradient })}
+                        aria-label={`${CAPTURE_GRADIENTS[gradient].label} gradient`}
+                        aria-pressed={appPreferences.captureStyle.gradient === gradient}
+                        data-tooltip={CAPTURE_GRADIENTS[gradient].label}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+          <p className={cardNote}>
+            The frame color applies when a capture includes the device frame. A background goes behind every capture.
+            Videos can't be see-through, so with no background they get black corners.
+          </p>
+
           {/* ── Screenshots ── */}
           <div className={`${sectionHeader} mt-6 pb-2`}>Screenshots</div>
           <div className={groupCard}>

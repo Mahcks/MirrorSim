@@ -143,6 +143,19 @@ export type Capture = {
 export type ContextMenuPos = { x: number; y: number };
 export type ScreenshotSaveLocation = "pictures" | "documents" | "downloads" | "custom";
 
+export type DeviceFrameColor = "black" | "silver" | "gold" | "blue";
+export type CaptureBackground = "none" | "color" | "gradient";
+export type CaptureGradient = "sunset" | "ocean" | "aurora" | "blush" | "graphite";
+
+/** How framed screenshots and recordings look. Shared by both. */
+export type CaptureStyle = {
+  frameColor: DeviceFrameColor;
+  background: CaptureBackground;
+  /** Hex color, e.g. "#f2f2f7", used when background is "color". */
+  backgroundColor: string;
+  gradient: CaptureGradient;
+};
+
 export type ScreenshotSettings = {
   saveToDisk: boolean;
   copyToClipboard: boolean;
@@ -214,6 +227,7 @@ export type AppPreferences = {
   audioChannelMode: AudioChannelMode;
   keyboardShortcuts: KeyboardShortcutMap;
   receiverDisplayName: string;
+  captureStyle: CaptureStyle;
   lastMode: AppMode;
   lastOrientation: Orientation;
 };

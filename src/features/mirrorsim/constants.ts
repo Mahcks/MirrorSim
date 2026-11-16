@@ -114,6 +114,12 @@ export const defaultAppPreferences: AppPreferences = {
   audioChannelMode: "stereo",
   keyboardShortcuts: cloneDefaultKeyboardShortcuts(),
   receiverDisplayName: "MirrorSim",
+  captureStyle: {
+    frameColor: "black",
+    background: "none",
+    backgroundColor: "#f2f2f7",
+    gradient: "ocean",
+  },
   lastMode: "minimal",
   lastOrientation: "portrait",
 };
