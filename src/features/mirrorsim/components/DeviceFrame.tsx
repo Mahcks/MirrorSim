@@ -26,6 +26,8 @@ type DeviceFrameProps = {
   compactIdlePresentation?: boolean;
   showPhoneSteps: boolean;
   phoneSteps: [string, string, string];
+  /** Short availability label shown while listening, e.g. "Available as MirrorSim". */
+  statusLabel?: string;
   primarySessionActionLabel: string;
   primarySessionActionDisabled: boolean;
   onPrimary: () => void;
@@ -62,6 +64,7 @@ export function DeviceFrame({
   compactIdlePresentation = false,
   showPhoneSteps,
   phoneSteps,
+  statusLabel,
   primarySessionActionLabel,
   primarySessionActionDisabled,
   onPrimary,
@@ -79,6 +82,11 @@ export function DeviceFrame({
   onWheel,
   setVideoHost,
 }: DeviceFrameProps) {
+  const portrait = orientation === "portrait";
+  const listening = sessionState === "discovering" || sessionState === "connecting";
+  // The idle call to action gets the prominent button; stop/cancel actions stay quiet.
+  const primaryIsStart = isIdle && !bonjourNeedsAttention;
+
   return (
     <div
       className={cn(
@@ -209,63 +217,81 @@ export function DeviceFrame({
               )}
               aria-live="polite"
             >
+              {listening && (
+                <div
+                  aria-hidden="true"
+                  className="pointer-events-none absolute inset-0 bg-[radial-gradient(circle_at_50%_36%,rgba(59,130,246,0.09),transparent_50%)]"
+                />
+              )}
               <div
                 className={cn(
-                  "relative flex items-center justify-center rounded-full border",
-                  orientation === "portrait" ? "mb-5 h-14 w-14" : "mb-3 h-10 w-10",
-                  (sessionState === "discovering" || sessionState === "connecting")
-                    ? "border-cyan-300/15 bg-cyan-300/[0.045] shadow-[0_0_28px_rgba(103,232,249,0.06)]"
-                    : "border-white/[0.06] bg-white/[0.025]",
+                  "relative flex shrink-0 items-center justify-center",
+                  portrait ? "mb-6 h-16 w-16" : "mb-3 h-11 w-11",
                 )}
               >
-                {(sessionState === "discovering" || sessionState === "connecting") ? (
+                {listening ? (
                   <>
-                    <span className="absolute inset-1 animate-ping rounded-full border border-cyan-200/15" />
-                    <span className="absolute inset-2 rounded-full border border-cyan-100/8 bg-cyan-100/[0.025]" />
-                    <span className="relative text-cyan-100/55">
-                      <Icon name="phone" size={17} />
+                    {[0, 1, 2].map((ring) => (
+                      <span
+                        key={ring}
+                        aria-hidden="true"
+                        className="ms-ripple absolute inset-0 rounded-full border border-blue-400/40"
+                        style={{ animationDelay: `${ring * 0.9}s` }}
+                      />
+                    ))}
+                    <span className="relative flex h-full w-full items-center justify-center rounded-full border border-blue-300/30 bg-blue-500/15 text-blue-100 shadow-[0_0_28px_rgba(59,130,246,0.18)]">
+                      <Icon name="phone" size={portrait ? 24 : 17} />
                     </span>
                   </>
                 ) : (
-                  <span className="text-white/24">
-                    <Icon name="phone" size={21} />
+                  <span className="flex h-full w-full items-center justify-center rounded-full border border-white/10 bg-white/[0.04] text-white/55">
+                    <Icon name="phone" size={portrait ? 24 : 17} />
                   </span>
                 )}
               </div>
               <h3 className={cn(
-                "font-semibold leading-tight tracking-[-0.025em] text-white/90",
-                compactIdlePresentation ? "text-xl" : "text-[15px]",
+                "relative font-semibold leading-tight tracking-[-0.025em] text-white",
+                compactIdlePresentation ? "text-xl" : portrait ? "text-[19px]" : "text-[15px]",
               )}>
                 {sessionHeadline}
               </h3>
-              {!compactIdlePresentation && (
-                <p className="mt-2 max-w-56 text-[11px] leading-[1.65] text-white/48">
+              {listening && statusLabel && !compactIdlePresentation && (
+                <span className="relative mt-3 inline-flex items-center gap-1.5 rounded-full bg-white/[0.06] px-2.5 py-1 text-[11px] font-medium text-white/70">
+                  <span className="relative flex h-1.5 w-1.5">
+                    <span className="ms-dot-pulse absolute inset-0 rounded-full bg-blue-400" />
+                    <span className="relative h-1.5 w-1.5 rounded-full bg-blue-400" />
+                  </span>
+                  {statusLabel}
+                </span>
+              )}
+              {!compactIdlePresentation && !showPhoneSteps && (
+                <p className="relative mt-2 max-w-60 text-[12px] leading-[1.6] text-white/50">
                   {sessionSupportingText}
                 </p>
               )}
               {showPhoneSteps && (
                 <div
                   className={cn(
-                    "w-full rounded-xl border border-white/[0.075] bg-white/[0.025] text-left shadow-[inset_0_1px_0_rgba(255,255,255,0.025)]",
-                    orientation === "portrait" ? "mt-5 max-w-55 px-3.5 py-3" : "mt-3 max-w-130 px-3 py-2",
+                    "relative w-full rounded-2xl border border-white/7 bg-white/[0.03] text-left",
+                    portrait ? "mt-6 max-w-64 px-4 py-3" : "mt-3 max-w-130 px-3 py-2",
                   )}
                 >
-                  <p className="text-[8px] font-semibold uppercase tracking-[0.14em] text-white/28">On your iPhone</p>
-                  <ol className={cn("mt-1.5", orientation === "landscape" && "grid grid-cols-3")}>
+                  <p className="text-[10px] font-semibold uppercase tracking-[0.1em] text-white/40">On your iPhone</p>
+                  <ol className={cn("mt-1", !portrait && "grid grid-cols-3")}>
                     {phoneSteps.map((step, i) => (
                       <li
                         key={i}
                         className={cn(
-                          "flex items-center gap-2.5 py-1.5",
-                          orientation === "portrait"
-                            ? "min-h-8.5 border-b border-white/[0.055] last:border-b-0"
-                            : "min-h-7 border-r border-white/[0.055] px-3 first:pl-0 last:border-r-0 last:pr-0",
+                          "flex items-center gap-3",
+                          portrait
+                            ? "min-h-10 border-b border-white/6 py-2 last:border-b-0"
+                            : "min-h-7 border-r border-white/6 px-3 py-1.5 first:pl-0 last:border-r-0 last:pr-0",
                         )}
                       >
-                        <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-cyan-200/15 bg-cyan-300/[0.065] text-[9px] font-semibold tabular-nums text-cyan-100/68">
+                        <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-blue-500/15 text-[11px] font-semibold tabular-nums text-blue-200">
                           {i + 1}
                         </span>
-                        <span className="text-[11px] font-medium text-white/68">{step}</span>
+                        <span className="text-[13px] font-medium text-white/85">{step}</span>
                       </li>
                     ))}
                   </ol>
@@ -275,17 +301,20 @@ export function DeviceFrame({
                 <button
                   type="button"
                   className={cn(
-                    "h-8.5 rounded-lg border px-4 text-[11px] font-semibold tracking-[-0.01em] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-cyan-300/55 disabled:cursor-default disabled:opacity-35",
-                    orientation === "portrait" ? "mt-5" : "mt-3",
-                    isIdle && !bonjourNeedsAttention
-                      ? "border-cyan-200/18 bg-cyan-300/10 text-cyan-50/82 hover:border-cyan-100/28 hover:bg-cyan-300/15 hover:text-white"
-                      : "border-white/10 bg-white/5 text-white/58 hover:border-white/16 hover:bg-white/8 hover:text-white/82",
+                    "relative inline-flex items-center justify-center gap-2 font-semibold tracking-[-0.01em] transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60 disabled:cursor-default disabled:opacity-40",
+                    portrait ? "mt-6" : "mt-3",
+                    primaryIsStart
+                      ? "h-9 rounded-full bg-blue-500 px-5 text-[13px] text-white hover:bg-blue-400 active:bg-blue-600"
+                      : "h-8 rounded-lg px-3 text-[12px] text-white/50 hover:bg-white/6 hover:text-white/85",
                   )}
                   onClick={onPrimary}
                   disabled={primarySessionActionDisabled}
                 >
                   {primarySessionActionLabel}
                 </button>
+              )}
+              {primaryIsStart && !compactIdlePresentation && portrait && (
+                <p className="relative mt-4 text-[11px] text-white/30">iPhone and PC must share a Wi-Fi network.</p>
               )}
             </div>
           )}

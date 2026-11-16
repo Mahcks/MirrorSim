@@ -148,7 +148,7 @@ export function getConnectionPresentation({
     tone = "warning";
   } else {
     headline = "Mirror your iPhone";
-    supportingText = `Start listening, then select ${receiverDisplayName} from Screen Mirroring on your iPhone.`;
+    supportingText = `Start listening, then choose ${receiverDisplayName} in Screen Mirroring on your iPhone.`;
     secondaryLabel = "Not listening";
     titlebarLabel = "Stopped";
     tone = "idle";

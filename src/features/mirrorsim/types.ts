@@ -248,4 +248,7 @@ export type IconName =
   | "compress"
   | "console"
   | "volume"
-  | "volume-off";
+  | "volume-off"
+  | "sliders"
+  | "wifi"
+  | "help";

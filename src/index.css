@@ -115,3 +115,57 @@ button[data-tooltip]:disabled > svg {
 		transition-duration: 0.01ms !important;
 	}
 }
+
+/* Settings dropdowns: custom chevron with room from the edge. */
+.ms-select {
+	appearance: none;
+	padding-right: 2rem;
+	background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23ffffff' stroke-opacity='0.55' stroke-width='2.25' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+	background-repeat: no-repeat;
+	background-position: right 0.75rem center;
+}
+
+.ms-select option {
+	background: #1b1d21;
+	color: #e6e7e9;
+}
+
+/* Listening state: AirPlay-style waves expanding from the phone icon. */
+@keyframes ms-ripple {
+	0% {
+		transform: scale(1);
+		opacity: 0.7;
+	}
+	100% {
+		transform: scale(2.6);
+		opacity: 0;
+	}
+}
+
+.ms-ripple {
+	animation: ms-ripple 2.7s cubic-bezier(0.2, 0.6, 0.35, 1) infinite;
+	opacity: 0;
+}
+
+@keyframes ms-dot-pulse {
+	0% {
+		transform: scale(1);
+		opacity: 0.75;
+	}
+	100% {
+		transform: scale(3);
+		opacity: 0;
+	}
+}
+
+.ms-dot-pulse {
+	animation: ms-dot-pulse 1.6s ease-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.ms-ripple,
+	.ms-dot-pulse {
+		animation: none;
+		opacity: 0;
+	}
+}

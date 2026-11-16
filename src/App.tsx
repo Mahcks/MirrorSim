@@ -406,7 +406,7 @@ export default function App() {
       : connectionPresentation.tone === "warning"
         ? "bg-red-400"
         : connectionPresentation.tone === "active"
-          ? "bg-cyan-300"
+          ? "bg-blue-400"
           : "bg-white/35",
   );
   const primarySessionActionLabel = localRecordingActive && !isRec
@@ -1707,6 +1707,7 @@ export default function App() {
       sessionSupportingText={sessionSupportingText}
       showPhoneSteps={connectionPresentation.showPhoneSteps}
       phoneSteps={connectionPresentation.phoneSteps}
+      statusLabel={connectionPresentation.secondaryLabel}
       primarySessionActionLabel={primarySessionActionLabel}
       primarySessionActionDisabled={primarySessionActionDisabled}
       onPrimary={doPrimary}

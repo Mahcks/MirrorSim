@@ -132,5 +132,28 @@ export function Icon({ name, size = 16 }: { name: IconName; size?: number }) {
           <path d="M5 9v6h4l5 4V5L9 9H5zM18 9l4 4m0-4-4 4" />
         </svg>
       );
+    case "sliders":
+      return (
+        <svg {...p}>
+          <path d="M4 7h9M17 7h3M4 17h3M11 17h9" />
+          <circle cx="15" cy="7" r="2" />
+          <circle cx="9" cy="17" r="2" />
+        </svg>
+      );
+    case "wifi":
+      return (
+        <svg {...p}>
+          <path d="M2.5 9a14 14 0 0 1 19 0M5.5 12.5a9.5 9.5 0 0 1 13 0M8.5 16a5 5 0 0 1 7 0" />
+          <circle cx="12" cy="19.5" r="0.75" fill="currentColor" />
+        </svg>
+      );
+    case "help":
+      return (
+        <svg {...p}>
+          <circle cx="12" cy="12" r="9" />
+          <path d="M9.5 9.5a2.5 2.5 0 0 1 4.9.7c0 1.7-2.4 2.2-2.4 3.8" />
+          <circle cx="12" cy="17" r="0.75" fill="currentColor" />
+        </svg>
+      );
   }
 }

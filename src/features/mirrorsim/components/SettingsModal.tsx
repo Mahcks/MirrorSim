@@ -6,6 +6,7 @@ import type {
   AppPreferences,
   ConnectionHistoryEntry,
   DiagnosticsExport,
+  IconName,
   KeyboardShortcutAction,
   PreviewQualityPreset,
   ReceiverAccessMode,
@@ -17,6 +18,7 @@ import type {
   TrustedDevice,
 } from "@/features/mirrorsim/types";
 import { formatAirPlayVolume } from "@/features/mirrorsim/audioVolume";
+import { Icon } from "@/features/mirrorsim/components/Icon";
 import {
   cloneDefaultKeyboardShortcuts,
   findKeyboardShortcutConflict,
@@ -76,13 +78,13 @@ type SettingsModalProps = {
 
 export type SettingsSection = "general" | "audio" | "capture" | "connection" | "devices" | "support";
 
-const settingsSections: Array<{ id: SettingsSection; label: string }> = [
-  { id: "general", label: "General" },
-  { id: "audio", label: "Audio" },
-  { id: "capture", label: "Capture" },
-  { id: "connection", label: "Connection" },
-  { id: "devices", label: "Devices" },
-  { id: "support", label: "Support" },
+const settingsSections: Array<{ id: SettingsSection; label: string; tabLabel: string; icon: IconName }> = [
+  { id: "general", label: "General", tabLabel: "General", icon: "sliders" },
+  { id: "audio", label: "Audio", tabLabel: "Audio", icon: "volume" },
+  { id: "capture", label: "Capture", tabLabel: "Capture", icon: "camera" },
+  { id: "connection", label: "Connection", tabLabel: "Network", icon: "wifi" },
+  { id: "devices", label: "Devices", tabLabel: "Devices", icon: "phone" },
+  { id: "support", label: "Support", tabLabel: "Support", icon: "help" },
 ];
 
 function Toggle({
@@ -105,7 +107,7 @@ function Toggle({
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={`relative inline-flex h-6 w-11 shrink-0 cursor-pointer rounded-full p-0.5 transition-colors duration-150 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-400 disabled:cursor-default disabled:opacity-40 ${
-        checked ? "bg-blue-500" : "bg-white/20"
+        checked ? "bg-blue-500" : "bg-white/15"
       }`}
     >
       <span
@@ -117,14 +119,19 @@ function Toggle({
   );
 }
 
-const fieldLabel = "mb-1.5 text-[11px] text-white/58";
-const fieldInput = "w-full rounded-xl border border-white/8 bg-[#111315] px-3 py-2 text-sm text-white/85 outline-none placeholder:text-white/22 focus-visible:border-blue-400/60 focus-visible:ring-2 focus-visible:ring-blue-400/30 disabled:cursor-not-allowed disabled:opacity-45";
-const fieldNote = "mt-1.5 text-[11px] leading-4 text-white/50";
-const btn = "rounded-xl border border-white/8 bg-white/5 px-3 py-1.5 text-[11px] font-medium text-white/75 transition hover:border-white/14 hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-40";
-const btnSm = "rounded-xl border border-white/8 bg-white/5 px-2.5 py-1 text-[10px] font-medium text-white/65 transition hover:border-white/14 hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-40";
-const btnDestructive = "rounded-xl border border-red-400/20 bg-red-500/10 px-3 py-1.5 text-[11px] font-medium text-red-300 transition hover:bg-red-500/15 disabled:cursor-default disabled:opacity-40";
-const sectionHeader = "text-[10px] font-semibold uppercase tracking-[0.08em] text-white/45";
-const infoBox = "rounded-xl border border-white/7 bg-[#111315] p-3 text-[11px] leading-5 text-white/55";
+// Grouped "inset list" styling, like iOS Settings: section labels sit above
+// rounded cards, and each card's rows are separated by hairlines.
+const groupCard = "overflow-hidden rounded-2xl border border-white/6 bg-white/[0.035] divide-y divide-white/6 [&>*]:px-3.5";
+const fieldLabel = "mb-1.5 text-[12px] font-medium text-white/72";
+const fieldInput = "h-9 w-full rounded-lg border border-white/8 bg-black/25 px-3 text-[13px] text-white/88 outline-none transition placeholder:text-white/25 hover:border-white/14 focus-visible:border-blue-400/60 focus-visible:ring-2 focus-visible:ring-blue-400/25 disabled:cursor-not-allowed disabled:opacity-45";
+const fieldNote = "mt-1.5 text-[11px] leading-4 text-white/42";
+const btn = "rounded-lg border border-white/8 bg-white/6 px-3 py-1.5 text-[12px] font-medium text-white/80 transition hover:border-white/14 hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-40";
+const btnSm = "rounded-lg border border-white/8 bg-white/6 px-2.5 py-1 text-[11px] font-medium text-white/72 transition hover:border-white/14 hover:bg-white/10 hover:text-white disabled:cursor-default disabled:opacity-40";
+const btnDestructive = "rounded-lg border border-red-400/25 bg-red-500/12 px-3 py-1.5 text-[12px] font-medium text-red-300 transition hover:bg-red-500/20 disabled:cursor-default disabled:opacity-40";
+const sectionHeader = "px-1 text-[11px] font-semibold uppercase tracking-[0.06em] text-white/38";
+const cardNote = "mt-2 px-1 text-[11px] leading-4 text-white/42";
+const infoLabel = "shrink-0 text-white/40";
+const infoBox = "rounded-2xl border border-white/6 bg-white/[0.035] p-3.5 text-[12px] leading-5 text-white/60";
 
 export function SettingsModal({
   open,
@@ -398,41 +405,51 @@ export function SettingsModal({
         aria-modal="true"
         aria-labelledby="mirrorsim-settings-title"
         className={embedded
-          ? "flex h-full w-full flex-col overflow-hidden rounded-[22px] border border-white/10 bg-[#17191d] shadow-[0_24px_72px_rgba(0,0,0,0.52)]"
-          : "flex max-h-[calc(100dvh-2rem)] w-full max-w-115 flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[#17191d] shadow-[0_24px_72px_rgba(0,0,0,0.52)]"
+          ? "flex h-full w-full flex-col overflow-hidden rounded-[22px] border border-white/10 bg-[#141518]/97 shadow-[0_24px_72px_rgba(0,0,0,0.55)]"
+          : "flex max-h-[calc(100dvh-2rem)] w-full max-w-115 flex-col overflow-hidden rounded-[28px] border border-white/10 bg-[#141518]/97 shadow-[0_24px_72px_rgba(0,0,0,0.55)]"
         }
         onMouseDown={(event) => event.stopPropagation()}
       >
         {/* Header */}
-        <div className={embedded ? "flex shrink-0 items-center justify-between gap-3 border-b border-white/7 px-4 py-3" : "flex shrink-0 items-center justify-between gap-4 border-b border-white/7 px-5 py-4"}>
-          <h2 id="mirrorsim-settings-title" className="text-[15px] font-semibold tracking-tight text-white">Preferences</h2>
-          <button ref={closeButtonRef} type="button" className={btn} onClick={onClose}>
-            Close
+        <div className={embedded ? "flex shrink-0 items-center justify-between gap-3 px-4 pb-1 pt-3.5" : "flex shrink-0 items-center justify-between gap-4 px-5 pb-1 pt-4"}>
+          <h2 id="mirrorsim-settings-title" className="text-[17px] font-semibold tracking-tight text-white">Preferences</h2>
+          <button
+            ref={closeButtonRef}
+            type="button"
+            aria-label="Close preferences"
+            title="Close"
+            className="grid h-7 w-7 place-items-center rounded-full bg-white/8 text-white/60 transition hover:bg-white/14 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60"
+            onClick={onClose}
+          >
+            <Icon name="close" size={13} />
           </button>
         </div>
 
         <nav
-          className={embedded
-            ? "grid shrink-0 grid-cols-3 gap-1 border-b border-white/7 p-2.5"
-            : "flex shrink-0 gap-1 overflow-x-auto border-b border-white/7 px-3 py-2"
-          }
+          className={`grid shrink-0 grid-cols-6 gap-1 border-b border-white/6 ${embedded ? "px-2.5 pb-2.5 pt-2" : "px-4 pb-3 pt-2"}`}
           aria-label="Preference sections"
         >
-          {settingsSections.map((section) => (
-            <button
-              key={section.id}
-              type="button"
-              className={`${embedded ? "w-full px-2" : "shrink-0 px-3"} rounded-lg py-1.5 text-[11px] font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60 ${
-                activeSection === section.id
-                  ? "bg-white/10 text-white"
-                  : "text-white/58 hover:bg-white/5 hover:text-white/80"
-              }`}
-              aria-current={activeSection === section.id ? "page" : undefined}
-              onClick={() => setActiveSection(section.id)}
-            >
-              {section.label}
-            </button>
-          ))}
+          {settingsSections.map((section) => {
+            const active = activeSection === section.id;
+            return (
+              <button
+                key={section.id}
+                type="button"
+                title={section.label}
+                aria-label={section.label}
+                className={`flex min-w-0 flex-col items-center gap-1 rounded-xl px-0.5 py-2 text-[10px] font-medium transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-400/60 ${
+                  active
+                    ? "bg-blue-500/14 text-blue-200"
+                    : "text-white/50 hover:bg-white/6 hover:text-white/85"
+                }`}
+                aria-current={active ? "page" : undefined}
+                onClick={() => setActiveSection(section.id)}
+              >
+                <Icon name={section.icon} size={17} />
+                <span className="max-w-full truncate">{section.tabLabel}</span>
+              </button>
+            );
+          })}
         </nav>
 
         {/* Scrollable content */}
@@ -441,12 +458,12 @@ export function SettingsModal({
           {activeSection === "general" && <>
           {/* ── General ── */}
           <div className={`${sectionHeader} pt-5 pb-2`}>General</div>
-          <div className="divide-y divide-white/7">
+          <div className={groupCard}>
             <div className="py-3">
               <div className={fieldLabel}>Default view</div>
               <select
                 aria-label="Default view"
-                className={fieldInput}
+                className={`${fieldInput} ms-select`}
                 value={appPreferences.launchMode}
                 onChange={(event) => setAppPreference("launchMode", event.target.value as AppMode)}
               >
@@ -458,7 +475,7 @@ export function SettingsModal({
               <div className={fieldLabel}>Preview quality</div>
               <select
                 aria-label="Preview quality"
-                className={fieldInput}
+                className={`${fieldInput} ms-select`}
                 value={appPreferences.previewQualityPreset}
                 onChange={(event) => setAppPreference("previewQualityPreset", event.target.value as PreviewQualityPreset)}
               >
@@ -490,8 +507,8 @@ export function SettingsModal({
             </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
-                <div className="text-sm text-white/80">Solid window background</div>
-                <div className="mt-0.5 text-[11px] text-white/38">Opaque dark background instead of transparent glass.</div>
+                <div className="text-[13px] font-medium text-white/88">Solid window background</div>
+                <div className="mt-0.5 text-[11px] leading-4 text-white/45">Opaque dark background instead of transparent glass.</div>
               </div>
               <Toggle
                 label="Solid window background"
@@ -500,17 +517,17 @@ export function SettingsModal({
               />
             </div>
             <div className="flex items-center justify-between gap-4 py-3">
-              <span className="text-sm text-white/80">Remember last view mode</span>
+              <span className="text-[13px] font-medium text-white/88">Remember last view mode</span>
               <Toggle label="Remember last view mode" checked={appPreferences.rememberLastMode} onChange={(value) => setAppPreference("rememberLastMode", value)} />
             </div>
             <div className="flex items-center justify-between gap-4 py-3">
-              <span className="text-sm text-white/80">Remember last orientation</span>
+              <span className="text-[13px] font-medium text-white/88">Remember last orientation</span>
               <Toggle label="Remember last orientation" checked={appPreferences.rememberLastOrientation} onChange={(value) => setAppPreference("rememberLastOrientation", value)} />
             </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
-                <div className="text-sm text-white/80">Follow iPhone orientation</div>
-                <div className="mt-0.5 text-[11px] text-white/38">Uses the receiver's source-screen shape, not a video's playback surface. Manual Rotate remains available.</div>
+                <div className="text-[13px] font-medium text-white/88">Follow iPhone orientation</div>
+                <div className="mt-0.5 text-[11px] leading-4 text-white/45">Uses the receiver's source-screen shape, not a video's playback surface. Manual Rotate remains available.</div>
               </div>
               <Toggle
                 label="Follow iPhone orientation"
@@ -520,7 +537,7 @@ export function SettingsModal({
               />
             </div>
             <div className="flex items-center justify-between gap-4 py-3">
-              <span className="text-sm text-white/80">Keep Minimal window always on top</span>
+              <span className="text-[13px] font-medium text-white/88">Keep Minimal window always on top</span>
               <Toggle label="Keep Minimal window always on top" checked={appPreferences.keepMinimalOnTop} onChange={(value) => setAppPreference("keepMinimalOnTop", value)} />
             </div>
           </div>
@@ -537,28 +554,28 @@ export function SettingsModal({
           <div className={`${sectionHeader} pt-5 pb-2`}>Playback</div>
           <div className={infoBox}>
             <div className="flex items-center justify-between gap-4">
-              <span className="text-white/38">Status</span>
+              <span className={infoLabel}>Status</span>
               <span className="text-right text-white/72">
                 {audioAvailable ? audioStatus : "Requires an audio-capable AirPlay runtime."}
               </span>
             </div>
             <div className="mt-2 flex items-center justify-between gap-4">
-              <span className="text-white/38">iPhone level</span>
+              <span className={infoLabel}>iPhone level</span>
               <span className="text-right text-white/72">
                 {senderVolumeSupported ? formatAirPlayVolume(senderVolumeDb) : "Not supported by this runtime"}
               </span>
             </div>
             <div className="mt-2 flex items-center justify-between gap-4">
-              <span className="text-white/38">Effective playback</span>
+              <span className={infoLabel}>Effective playback</span>
               <strong className="font-medium text-white/82">{Math.round(effectiveAudioVolume * 100)}%</strong>
             </div>
           </div>
 
-          <div className="mt-3 divide-y divide-white/7">
+          <div className={`mt-3 ${groupCard}`}>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
-                <div className="text-sm text-white/80">Play iPhone audio</div>
-                <div className="mt-0.5 text-[11px] text-white/38">Controls playback inside MirrorSim only.</div>
+                <div className="text-[13px] font-medium text-white/88">Play iPhone audio</div>
+                <div className="mt-0.5 text-[11px] leading-4 text-white/45">Controls playback inside MirrorSim only.</div>
               </div>
               <Toggle
                 label="Play iPhone audio"
@@ -569,8 +586,8 @@ export function SettingsModal({
             </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
-                <div className="text-sm text-white/80">Follow iPhone volume</div>
-                <div className="mt-0.5 text-[11px] leading-4 text-white/38">
+                <div className="text-[13px] font-medium text-white/88">Follow iPhone volume</div>
+                <div className="mt-0.5 text-[11px] leading-4 text-white/45">
                   The iPhone volume buttons adjust stream playback without changing Windows system volume.
                 </div>
               </div>
@@ -582,11 +599,16 @@ export function SettingsModal({
               />
             </div>
             <div className="py-3">
-              <label className="block text-[11px] text-white/45">
-                MirrorSim master volume — {Math.round(appPreferences.audioVolume * 100)}%
+              <label className="block">
+                <span className="flex items-center justify-between gap-3">
+                  <span className="text-[13px] font-medium text-white/88">Master volume</span>
+                  <span className="rounded-md bg-white/8 px-1.5 py-0.5 text-[11px] font-medium tabular-nums text-white/75">
+                    {Math.round(appPreferences.audioVolume * 100)}%
+                  </span>
+                </span>
                 <input
                   aria-label="MirrorSim master volume"
-                  className="mt-2 w-full accent-blue-500 disabled:opacity-40"
+                  className="mt-3 w-full accent-blue-500 disabled:opacity-40"
                   type="range"
                   min="0"
                   max="1"
@@ -602,7 +624,7 @@ export function SettingsModal({
               <div className={fieldLabel}>Channel output</div>
               <select
                 aria-label="Audio channel output"
-                className={fieldInput}
+                className={`${fieldInput} ms-select`}
                 value={appPreferences.audioChannelMode}
                 disabled={!audioAvailable}
                 onChange={(event) => setAppPreference("audioChannelMode", event.target.value as AudioChannelMode)}
@@ -615,11 +637,11 @@ export function SettingsModal({
           </div>
 
           <div className={`${sectionHeader} mt-6 pb-2`}>Recording</div>
-          <div className="divide-y divide-white/7">
+          <div className={groupCard}>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
-                <div className="text-sm text-white/80">Include iPhone audio</div>
-                <div className="mt-0.5 text-[11px] leading-4 text-white/38">
+                <div className="text-[13px] font-medium text-white/88">Include iPhone audio</div>
+                <div className="mt-0.5 text-[11px] leading-4 text-white/45">
                   Adds the incoming audio track to new recordings at its original level.
                 </div>
               </div>
@@ -631,52 +653,52 @@ export function SettingsModal({
               />
             </div>
           </div>
-          <p className={fieldNote}>Playback mute, phone volume, and master volume do not reduce recorded audio.</p>
+          <p className={cardNote}>Playback mute, phone volume, and master volume do not reduce recorded audio.</p>
           </>}
 
           {activeSection === "capture" && <>
           {/* ── Screenshots ── */}
           <div className={`${sectionHeader} mt-6 pb-2`}>Screenshots</div>
-          <div className="divide-y divide-white/7">
+          <div className={groupCard}>
             <div className="flex items-center justify-between gap-4 py-3">
-              <span className="text-sm text-white/80">Save to disk</span>
+              <span className="text-[13px] font-medium text-white/88">Save to disk</span>
               <Toggle label="Save screenshots to disk" checked={screenshotSettings.saveToDisk} onChange={(value) => setScreenshotSetting("saveToDisk", value)} />
             </div>
             <div className="flex items-center justify-between gap-4 py-3">
-              <span className="text-sm text-white/80">Copy to clipboard</span>
+              <span className="text-[13px] font-medium text-white/88">Copy to clipboard</span>
               <Toggle label="Copy screenshots to clipboard" checked={screenshotSettings.copyToClipboard} onChange={(value) => setScreenshotSetting("copyToClipboard", value)} />
             </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
-                <div className="text-sm text-white/80">Include device frame</div>
-                <div className="mt-0.5 text-[11px] text-white/38">Exports the screenshot inside MirrorSim's presentation-ready phone shell.</div>
+                <div className="text-[13px] font-medium text-white/88">Include device frame</div>
+                <div className="mt-0.5 text-[11px] leading-4 text-white/45">Exports the screenshot inside MirrorSim's presentation-ready phone shell.</div>
               </div>
               <Toggle label="Include device frame in screenshots" checked={screenshotSettings.includeDeviceFrame} onChange={(value) => setScreenshotSetting("includeDeviceFrame", value)} />
             </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
-                <div className="text-sm text-white/80">Open in Explorer after saving</div>
-                <div className="mt-0.5 text-[11px] text-white/38">Reveals the file in File Explorer each time.</div>
+                <div className="text-[13px] font-medium text-white/88">Open in Explorer after saving</div>
+                <div className="mt-0.5 text-[11px] leading-4 text-white/45">Reveals the file in File Explorer each time.</div>
               </div>
               <Toggle label="Open saved screenshots in Explorer" checked={appPreferences.autoRevealSavedCaptures} onChange={(value) => setAppPreference("autoRevealSavedCaptures", value)} />
             </div>
             <div className="flex items-center justify-between gap-4 py-3">
-              <span className="text-sm text-white/80">Show capture flash</span>
+              <span className="text-[13px] font-medium text-white/88">Show capture flash</span>
               <Toggle label="Show screenshot capture flash" checked={appPreferences.screenshotFlashEnabled} onChange={(value) => setAppPreference("screenshotFlashEnabled", value)} />
             </div>
           </div>
           {!screenshotSettings.saveToDisk && !screenshotSettings.copyToClipboard && (
-            <p className="mt-2 text-[11px] text-amber-300/80">Enable at least one action, or screenshots won't go anywhere.</p>
+            <p className="mt-2 px-1 text-[11px] text-amber-300/80">Enable at least one action, or screenshots won't go anywhere.</p>
           )}
 
           {/* ── Screenshot Folder ── */}
           <div className={`${sectionHeader} mt-6 pb-2`}>Screenshot Folder</div>
-          <div className="divide-y divide-white/7">
+          <div className={groupCard}>
             <div className="py-3">
               <div className={fieldLabel}>Save to</div>
               <select
                 aria-label="Screenshot save location"
-                className={fieldInput}
+                className={`${fieldInput} ms-select`}
                 value={screenshotSettings.saveLocation}
                 onChange={(event) => setScreenshotSetting("saveLocation", event.target.value as ScreenshotSaveLocation)}
               >
@@ -717,19 +739,19 @@ export function SettingsModal({
               />
             </div>
             <div className="flex items-center justify-between gap-4 py-3">
-              <span className="text-sm text-white/80">Append timestamp to filename</span>
+              <span className="text-[13px] font-medium text-white/88">Append timestamp to filename</span>
               <Toggle label="Append timestamp to screenshot filename" checked={screenshotSettings.includeTimestamp} onChange={(value) => setScreenshotSetting("includeTimestamp", value)} />
             </div>
           </div>
 
           {/* ── Recordings ── */}
           <div className={`${sectionHeader} mt-6 pb-2`}>Recordings</div>
-          <div className="divide-y divide-white/7">
+          <div className={groupCard}>
             <div className="py-3">
               <div className={fieldLabel}>Format</div>
               <select
                 aria-label="Recording format"
-                className={fieldInput}
+                className={`${fieldInput} ms-select`}
                 value={recordingSettings.format}
                 onChange={(event) => setRecordingSetting("format", event.target.value as RecordingFormat)}
               >
@@ -742,7 +764,7 @@ export function SettingsModal({
               <div className={fieldLabel}>Save to</div>
               <select
                 aria-label="Recording save location"
-                className={fieldInput}
+                className={`${fieldInput} ms-select`}
                 value={recordingSettings.saveLocation}
                 onChange={(event) => setRecordingSetting("saveLocation", event.target.value as ScreenshotSaveLocation)}
               >
@@ -783,42 +805,42 @@ export function SettingsModal({
               />
             </div>
             <div className="flex items-center justify-between gap-4 py-3">
-              <span className="text-sm text-white/80">Append timestamp to filename</span>
+              <span className="text-[13px] font-medium text-white/88">Append timestamp to filename</span>
               <Toggle label="Append timestamp to recording filename" checked={recordingSettings.includeTimestamp} onChange={(value) => setRecordingSetting("includeTimestamp", value)} />
             </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
-                <div className="text-sm text-white/80">Open in Explorer after saving</div>
-                <div className="mt-0.5 text-[11px] text-white/38">Reveals the file in File Explorer when recording finishes.</div>
+                <div className="text-[13px] font-medium text-white/88">Open in Explorer after saving</div>
+                <div className="mt-0.5 text-[11px] leading-4 text-white/45">Reveals the file in File Explorer when recording finishes.</div>
               </div>
               <Toggle label="Open saved recordings in Explorer" checked={recordingSettings.autoReveal} onChange={(value) => setRecordingSetting("autoReveal", value)} />
             </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
-                <div className="text-sm text-white/80">Include device frame</div>
-                <div className="mt-0.5 text-[11px] text-white/38">Records the live screen inside a clean phone shell.</div>
+                <div className="text-[13px] font-medium text-white/88">Include device frame</div>
+                <div className="mt-0.5 text-[11px] leading-4 text-white/45">Records the live screen inside a clean phone shell.</div>
               </div>
               <Toggle label="Include device frame in recordings" checked={recordingSettings.includeDeviceFrame} onChange={(value) => setRecordingSetting("includeDeviceFrame", value)} />
             </div>
           </div>
-          <p className="mt-2 text-[11px] leading-4 text-white/38">Recording quality follows your Preview Quality setting. Screenshot exports use the full source frame.</p>
+          <p className={cardNote}>Recording quality follows your Preview Quality setting. Screenshot exports use the full source frame.</p>
           </>}
 
           {activeSection === "connection" && <>
           {/* ── Connection ── */}
           <div className={`${sectionHeader} mt-6 pb-2`}>Connection</div>
-          <div className="divide-y divide-white/7">
+          <div className={groupCard}>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
-                <div className="text-sm text-white/80">Listen automatically on launch</div>
-                <div className="mt-0.5 text-[11px] text-white/38">Automatically make MirrorSim available in Screen Mirroring when the app opens.</div>
+                <div className="text-[13px] font-medium text-white/88">Listen automatically on launch</div>
+                <div className="mt-0.5 text-[11px] leading-4 text-white/45">Automatically make MirrorSim available in Screen Mirroring when the app opens.</div>
               </div>
               <Toggle label="Listen automatically when MirrorSim opens" checked={appPreferences.autoStartDiscovery} onChange={(value) => setAppPreference("autoStartDiscovery", value)} />
             </div>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
-                <div className="text-sm text-white/80">Auto-reconnect after drops</div>
-                <div className="mt-0.5 text-[11px] text-white/38">Reconnect automatically if the connection is lost unexpectedly.</div>
+                <div className="text-[13px] font-medium text-white/88">Auto-reconnect after drops</div>
+                <div className="mt-0.5 text-[11px] leading-4 text-white/45">Reconnect automatically if the connection is lost unexpectedly.</div>
               </div>
               <Toggle label="Reconnect automatically after a drop" checked={appPreferences.autoReconnectOnDrop} onChange={(value) => setAppPreference("autoReconnectOnDrop", value)} />
             </div>
@@ -833,9 +855,9 @@ export function SettingsModal({
             </span>
           </div>
           <div className={infoBox}>
-            <div><span className="text-white/30">Discovery</span> — {bonjourStatus.detail}</div>
-            <div className="mt-1"><span className="text-white/30">Receiver</span> — {receiverReady ? "Listening for devices" : receiverRuntime.lastError ?? "Starting up"}</div>
-            <div className="mt-1"><span className="text-white/30">Visible to iPhone as</span> — {receiverDisplayName}</div>
+            <div><span className="text-white/40">Discovery</span> — {bonjourStatus.detail}</div>
+            <div className="mt-1"><span className="text-white/40">Receiver</span> — {receiverReady ? "Listening for devices" : receiverRuntime.lastError ?? "Starting up"}</div>
+            <div className="mt-1"><span className="text-white/40">Visible to iPhone as</span> — {receiverDisplayName}</div>
           </div>
           <div className="mt-2 flex flex-wrap gap-1.5">
             <button
@@ -849,11 +871,21 @@ export function SettingsModal({
             </button>
             <button type="button" className={btn} onClick={onOpenWindowsFirewall}>Windows Firewall</button>
           </div>
-          <ol className="mt-3 space-y-1 text-[11px] leading-5 text-white/38">
-            <li>1. Keep MirrorSim open and running.</li>
-            <li>2. On your iPhone, open Control Center and tap Screen Mirroring.</li>
-            <li>3. Look for <span className="text-white/65">{receiverDisplayName}</span> on the same Wi-Fi network.</li>
-            <li>4. Not showing up? Refresh discovery and confirm the Windows Private-network firewall isn't blocking MirrorSim.</li>
+          <div className={`${sectionHeader} mt-6 pb-2`}>How to Connect</div>
+          <ol className={groupCard}>
+            {[
+              <>Keep MirrorSim open and running.</>,
+              <>On your iPhone, open Control Center and tap Screen Mirroring.</>,
+              <>Pick <span className="font-medium text-white/85">{receiverDisplayName}</span>. Both devices must be on the same Wi-Fi.</>,
+              <>Not showing up? Refresh discovery and check that Windows Firewall allows MirrorSim on private networks.</>,
+            ].map((step, index) => (
+              <li key={index} className="flex items-start gap-3 py-2.5 text-[12px] leading-5 text-white/65">
+                <span className="mt-px grid h-5 w-5 shrink-0 place-items-center rounded-full bg-blue-500/15 text-[11px] font-semibold text-blue-200">
+                  {index + 1}
+                </span>
+                <span>{step}</span>
+              </li>
+            ))}
           </ol>
           </>}
 
@@ -872,12 +904,12 @@ export function SettingsModal({
               </button>
             )}
           </div>
-          <div className="divide-y divide-white/7">
+          <div className={groupCard}>
             <div className="py-3">
               <div className={fieldLabel}>When a new iPhone connects</div>
               <select
                 aria-label="New iPhone access policy"
-                className={fieldInput}
+                className={`${fieldInput} ms-select`}
                 value={appPreferences.receiverAccessMode}
                 onChange={(event) => setAppPreference("receiverAccessMode", event.target.value as ReceiverAccessMode)}
                 disabled={sessionActive}
@@ -941,13 +973,13 @@ export function SettingsModal({
               </div>
             </div>
           ) : (
-            <p className="mt-2 text-[11px] text-white/35">No iPhone connected. Once you approve one it will appear here.</p>
+            <p className={cardNote}>No iPhone connected. Once you approve one it will appear here.</p>
           )}
 
           {hasTrustedDevices && (
             <div className="mt-3 space-y-2">
               {trustedDevices.map((device) => (
-                <div key={device.key} className="rounded-xl border border-white/7 bg-[#111315] px-3 py-3">
+                <div key={device.key} className="rounded-2xl border border-white/6 bg-white/[0.035] px-3 py-3">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="flex flex-wrap items-center gap-2">
@@ -988,7 +1020,7 @@ export function SettingsModal({
                     <input
                       aria-label={`Nickname for ${device.displayName}`}
                       type="text"
-                      className="min-w-0 flex-1 rounded-xl border border-white/8 bg-[#0d0e10] px-3 py-1.5 text-[11px] text-white/85 outline-none placeholder:text-white/22 focus-visible:border-blue-400/60 focus-visible:ring-2 focus-visible:ring-blue-400/30"
+                      className="min-w-0 flex-1 rounded-lg border border-white/8 bg-black/25 px-3 py-1.5 text-[11px] text-white/85 outline-none placeholder:text-white/22 focus-visible:border-blue-400/60 focus-visible:ring-2 focus-visible:ring-blue-400/30"
                       value={nicknameDrafts[device.key] ?? ""}
                       onChange={(event) => setNicknameDrafts((previous) => ({ ...previous, [device.key]: event.target.value }))}
                       placeholder="Nickname"
@@ -1007,7 +1039,7 @@ export function SettingsModal({
                     <input
                       aria-label={`Block reason for ${device.displayName}`}
                       type="text"
-                      className="min-w-0 flex-1 rounded-xl border border-white/8 bg-[#0d0e10] px-3 py-1.5 text-[11px] text-white/85 outline-none placeholder:text-white/22 focus-visible:border-blue-400/60 focus-visible:ring-2 focus-visible:ring-blue-400/30"
+                      className="min-w-0 flex-1 rounded-lg border border-white/8 bg-black/25 px-3 py-1.5 text-[11px] text-white/85 outline-none placeholder:text-white/22 focus-visible:border-blue-400/60 focus-visible:ring-2 focus-visible:ring-blue-400/30"
                       value={blockReasonDrafts[device.key] ?? ""}
                       onChange={(event) => setBlockReasonDrafts((previous) => ({ ...previous, [device.key]: event.target.value }))}
                       placeholder="Block reason (optional)"
@@ -1034,7 +1066,7 @@ export function SettingsModal({
             </div>
           )}
           {!hasTrustedDevices && (
-            <p className="mt-2 text-[11px] text-white/30">No remembered devices. Connect and approve an iPhone to add it here.</p>
+            <p className={cardNote}>No remembered devices. Connect and approve an iPhone to add it here.</p>
           )}
           </>}
 
@@ -1053,14 +1085,14 @@ export function SettingsModal({
               Reset defaults
             </button>
           </div>
-          <div className={`${infoBox} divide-y divide-white/7 p-0`}>
+          <div className={groupCard}>
             {keyboardShortcutActions.map(({ id, label, description }) => {
               const capturing = capturingShortcutAction === id;
               return (
-                <div className="flex items-center justify-between gap-3 px-3 py-2.5" key={id}>
+                <div className="flex items-center justify-between gap-3 py-2.5" key={id}>
                   <div className="min-w-0">
-                    <div className="text-[11px] font-medium text-white/72">{label}</div>
-                    <div className="mt-0.5 text-[10px] leading-4 text-white/38">{description}</div>
+                    <div className="text-[13px] font-medium text-white/88">{label}</div>
+                    <div className="mt-0.5 text-[11px] leading-4 text-white/45">{description}</div>
                   </div>
                   <button
                     type="button"
@@ -1082,7 +1114,7 @@ export function SettingsModal({
             })}
           </div>
           {shortcutError && <p role="alert" className="mt-2 text-[10px] leading-4 text-amber-200/75">{shortcutError}</p>}
-          <p className="mt-2 text-[10px] leading-4 text-white/35">Shortcuts work while MirrorSim is focused. Select a shortcut, then press the replacement. Press Esc to cancel. Esc always closes menus or exits fullscreen.</p>
+          <p className={cardNote}>Shortcuts work while MirrorSim is focused. Select a shortcut, then press the replacement. Press Esc to cancel. Esc always closes menus or exits fullscreen.</p>
 
           {/* ── Diagnostics ── */}
           <div className="mt-6 flex items-center justify-between pb-2">
@@ -1095,17 +1127,17 @@ export function SettingsModal({
             </button>
           </div>
           {lastDiagnosticsExport && (
-            <p className="mb-2 text-[11px] leading-4 text-white/38">
+            <p className="mb-2 px-1 text-[11px] leading-4 text-white/42">
               Last export: {lastDiagnosticsExport.fileName} — {lastDiagnosticsExport.entryCount} entries at {formatTimestamp(lastDiagnosticsExport.exportedAt)}.
             </p>
           )}
-          {diagnosticIncidentNotice && <p role="status" className="mb-2 text-[11px] leading-4 text-white/60">{diagnosticIncidentNotice}</p>}
-          <p className="mb-2 text-[11px] leading-4 text-white/38">Session history and detected interruptions are saved locally. If the preview slows down, mark the problem, then export after about 30 seconds to include what happened afterward.</p>
-          <p className="mb-3 text-[10px] leading-4 text-white/32">Exported diagnostics redact device IDs, trust keys, session IDs, and pairing challenge IDs by default. Review the file before sharing it.</p>
+          {diagnosticIncidentNotice && <p role="status" className="mb-2 px-1 text-[11px] leading-4 text-white/65">{diagnosticIncidentNotice}</p>}
+          <p className="mb-2 px-1 text-[11px] leading-4 text-white/42">Session history and detected interruptions are saved locally. If the preview slows down, mark the problem, then export after about 30 seconds to include what happened afterward.</p>
+          <p className="mb-3 px-1 text-[11px] leading-4 text-white/35">Exported diagnostics redact device IDs, trust keys, session IDs, and pairing challenge IDs by default. Review the file before sharing it.</p>
           {historyPreview.length > 0 ? (
             <div className="space-y-1.5">
               {historyPreview.map((entry, index) => (
-                <div key={`${entry.id}-${index}`} className="rounded-xl border border-white/7 bg-[#111315] px-3 py-2.5">
+                <div key={`${entry.id}-${index}`} className="rounded-2xl border border-white/6 bg-white/[0.035] px-3 py-2.5">
                   <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0 flex-1">
                       <div className="truncate text-[11px] font-medium text-white/80">{entry.message}</div>
@@ -1125,16 +1157,16 @@ export function SettingsModal({
               ))}
             </div>
           ) : (
-            <p className="text-[11px] text-white/30">No connection history yet.</p>
+            <p className="px-1 text-[11px] text-white/42">No connection history yet.</p>
           )}
 
           {/* ── Advanced ── */}
           <div className={`${sectionHeader} mt-6 pb-2`}>Advanced</div>
-          <div className="divide-y divide-white/7">
+          <div className={groupCard}>
             <div className="flex items-start justify-between gap-4 py-3">
               <div>
-                <div className="text-sm text-white/80">Auto-open diagnostics on errors</div>
-                <div className="mt-0.5 text-[11px] text-white/38">Opens the diagnostics panel automatically when receiver or preview errors occur.</div>
+                <div className="text-[13px] font-medium text-white/88">Auto-open diagnostics on errors</div>
+                <div className="mt-0.5 text-[11px] leading-4 text-white/45">Opens the diagnostics panel automatically when receiver or preview errors occur.</div>
               </div>
               <Toggle
                 label="Open diagnostics automatically on errors"
@@ -1147,11 +1179,11 @@ export function SettingsModal({
           <div className={`${sectionHeader} mt-6 pb-2`}>About &amp; Support</div>
           <div className={infoBox}>
             <div className="flex items-center justify-between gap-4">
-              <span className="text-white/38">MirrorSim version</span>
+              <span className={infoLabel}>MirrorSim version</span>
               <strong className="font-medium text-white/82">{appVersion}</strong>
             </div>
             <div className="mt-2 flex items-center justify-between gap-4">
-              <span className="text-white/38">Updates</span>
+              <span className={infoLabel}>Updates</span>
               <span className="text-right text-white/72">{updateStatus}</span>
             </div>
             {updateError && <p className="mt-2 wrap-break-word text-amber-200/75">{updateError}</p>}
