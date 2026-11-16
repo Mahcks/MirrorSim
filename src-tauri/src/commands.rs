@@ -7,9 +7,11 @@ use crate::models::{
     AppUpdateInfo, BeginRecordingRequest, BonjourStatusSnapshot, CommandResult,
     ConnectionHistoryEntry, DiagnosticsExport, PairingEntryMode, PairingPhase, PairingSnapshot,
     PreviewAudioFramePayload, PreviewDiagnosticsSnapshot, PreviewStreamDescriptor,
-    PreviewTelemetry, ReceiverRuntimeSnapshot, RecordingWriteSession, RemuxBlueprintSnapshot,
-    SaveScreenshotRequest, SavedScreenshot, SessionSnapshot, SessionStatus, TrustedDevice,
+    PreviewTelemetry, ReceiverRuntimeSnapshot, RecordingFormat, RecordingWriteSession,
+    RemuxBlueprintSnapshot, SaveScreenshotRequest, SavedScreenshot, SessionSnapshot, SessionStatus,
+    TrustedDevice,
 };
+use crate::mp4_faststart;
 use crate::runtime::{
     emit_pairing_status, emit_preview_diagnostics, emit_receiver_runtime, emit_runtime_error,
     emit_session_status, emit_state_updates, ensure_sidecar_runtime, resolve_capture_directory,
@@ -29,6 +31,7 @@ use crate::trust::{
     set_trusted_device_blocked as set_trusted_device_blocked_in_registry, trust_device,
 };
 use crate::updater_config::{updater_is_configured, UPDATER_ENDPOINT};
+use crate::webm_cues;
 use base64::prelude::{Engine as _, BASE64_STANDARD};
 use serde_json::{json, Value};
 use std::fs::{self, OpenOptions};
@@ -325,6 +328,36 @@ fn create_unique_recording_temp_file(
     Err(String::from(
         "could not allocate a unique recording workspace after 10,000 attempts",
     ))
+}
+
+/// MediaRecorder streams files without a duration or seek index, so many
+/// players show no timeline. Rewrite them in place with a full index; on
+/// failure keep the original, which still plays.
+fn make_recording_seekable(temporary_path: &Path, format: RecordingFormat) {
+    let needs_rewrite = match format {
+        RecordingFormat::Mp4 => mp4_faststart::is_fragmented(temporary_path),
+        RecordingFormat::Webm => webm_cues::needs_index(temporary_path),
+    };
+    match needs_rewrite {
+        Ok(true) => {}
+        Ok(false) => return,
+        Err(error) => {
+            eprintln!("[MirrorSim recording] could not inspect the recording for seeking: {error}");
+            return;
+        }
+    }
+    let mut rewritten = temporary_path.as_os_str().to_owned();
+    rewritten.push(".seekable");
+    let rewritten = PathBuf::from(rewritten);
+    let result = match format {
+        RecordingFormat::Mp4 => mp4_faststart::rewrite_fragmented(temporary_path, &rewritten),
+        RecordingFormat::Webm => webm_cues::rewrite_with_index(temporary_path, &rewritten),
+    }
+    .and_then(|()| fs::rename(&rewritten, temporary_path).map_err(|error| error.to_string()));
+    if let Err(error) = result {
+        eprintln!("[MirrorSim recording] keeping the original recording; seekable rewrite failed: {error}");
+        let _ = fs::remove_file(&rewritten);
+    }
 }
 
 fn persist_recording_without_overwrite(
@@ -1267,7 +1300,8 @@ pub(crate) fn append_recording_chunk(
     Ok(())
 }
 
-#[tauri::command]
+// Runs off the main thread: making a long MP4 seekable copies the whole file.
+#[tauri::command(async)]
 pub(crate) fn finish_recording_save(
     state: State<'_, AppState>,
     recording_id: u64,
@@ -1306,6 +1340,7 @@ pub(crate) fn finish_recording_save(
         format,
     } = recording;
     drop(file);
+    make_recording_seekable(&temporary_path, format);
     let final_path = match persist_recording_without_overwrite(&temporary_path, &final_path) {
         Ok(final_path) => final_path,
         Err(persist_error) => match OpenOptions::new().append(true).open(&temporary_path) {

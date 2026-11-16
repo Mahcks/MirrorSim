@@ -3,6 +3,7 @@ mod diagnostics;
 mod discovery;
 mod history;
 mod models;
+mod mp4_faststart;
 mod persistence;
 mod preview_fragments;
 mod remux;
@@ -11,6 +12,7 @@ mod sidecar;
 mod state;
 mod trust;
 mod updater_config;
+mod webm_cues;
 
 use crate::commands::{
     abort_recording_save, append_recording_chunk, begin_recording_save, cancel_pairing,
