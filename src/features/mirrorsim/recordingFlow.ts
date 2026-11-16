@@ -1,4 +1,4 @@
-import type { RecordingFormat } from "./types";
+import type { RecordingFormat, VideoRecordingFormat } from "./types";
 
 export type RecordingFailureStage = "starting" | "stopping-backend" | "finalizing";
 
@@ -13,7 +13,7 @@ export function getRecordingFailureRecovery(
   };
 }
 
-const MIME_CANDIDATES: Record<RecordingFormat, { withAudio: string[]; videoOnly: string[] }> = {
+const MIME_CANDIDATES: Record<VideoRecordingFormat, { withAudio: string[]; videoOnly: string[] }> = {
   // avc1.640034 is H.264 High 5.2, which covers framed captures wider than 1080p.
   mp4: {
     withAudio: [
@@ -37,15 +37,16 @@ export type ResolvedRecordingFormat = {
 };
 
 /**
- * Picks the first container/codec combination the recorder supports, trying the
- * preferred format before the other one. Returns null when neither works.
+ * Picks the first container/codec combination MediaRecorder supports, trying
+ * the preferred format before the other one. Returns null when neither works.
+ * GIFs never reach this: MirrorSim encodes them itself.
  */
 export function resolveRecordingFormat(
-  preferred: RecordingFormat,
+  preferred: VideoRecordingFormat,
   hasAudio: boolean,
   isTypeSupported: (mimeType: string) => boolean,
 ): ResolvedRecordingFormat | null {
-  const order: RecordingFormat[] = preferred === "mp4" ? ["mp4", "webm"] : ["webm", "mp4"];
+  const order: VideoRecordingFormat[] = preferred === "mp4" ? ["mp4", "webm"] : ["webm", "mp4"];
   for (const format of order) {
     const candidates = hasAudio ? MIME_CANDIDATES[format].withAudio : MIME_CANDIDATES[format].videoOnly;
     const mimeType = candidates.find((candidate) => isTypeSupported(candidate));

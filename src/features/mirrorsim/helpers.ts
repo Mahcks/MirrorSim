@@ -183,7 +183,7 @@ export function mergeStoredPreferences(stored: StoredPreferences | null) {
       includeDeviceFrame: booleanOr(screenshots?.includeDeviceFrame, defaultScreenshotSettings.includeDeviceFrame),
     },
     recordings: {
-      format: enumOr(recordings?.format, ["mp4", "webm"], defaultRecordingSettings.format),
+      format: enumOr(recordings?.format, ["mp4", "webm", "gif"], defaultRecordingSettings.format),
       saveLocation: enumOr(recordings?.saveLocation, ["pictures", "documents", "downloads", "custom"], defaultRecordingSettings.saveLocation),
       customSavePath: stringOr(recordings?.customSavePath, defaultRecordingSettings.customSavePath),
       fileNamePrefix: stringOr(recordings?.fileNamePrefix, defaultRecordingSettings.fileNamePrefix),

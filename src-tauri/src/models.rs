@@ -405,6 +405,7 @@ pub(crate) enum RecordingFormat {
     #[default]
     Webm,
     Mp4,
+    Gif,
 }
 
 impl RecordingFormat {
@@ -412,15 +413,17 @@ impl RecordingFormat {
         match self {
             Self::Webm => "webm",
             Self::Mp4 => "mp4",
+            Self::Gif => "gif",
         }
     }
 
     /// Whether `bytes` begin the way this container's first chunk must:
-    /// an EBML header for WebM, an `ftyp` box for MP4.
+    /// an EBML header for WebM, an `ftyp` box for MP4, a signature for GIF.
     pub(crate) fn has_container_header(self, bytes: &[u8]) -> bool {
         match self {
             Self::Webm => bytes.starts_with(&[0x1A, 0x45, 0xDF, 0xA3]),
             Self::Mp4 => bytes.get(4..8) == Some(b"ftyp".as_slice()),
+            Self::Gif => bytes.starts_with(b"GIF87a") || bytes.starts_with(b"GIF89a"),
         }
     }
 }
@@ -458,6 +461,8 @@ mod tests {
         assert!(RecordingFormat::Mp4.has_container_header(&mp4));
         assert!(!RecordingFormat::Mp4.has_container_header(&webm));
         assert!(!RecordingFormat::Mp4.has_container_header(&[0x00, 0x00]));
+        assert!(RecordingFormat::Gif.has_container_header(b"GIF89a "));
+        assert!(!RecordingFormat::Gif.has_container_header(&mp4));
     }
 
     #[test]
@@ -469,6 +474,11 @@ mod tests {
             serde_json::from_str(r#"{"fileName":"a.mp4","location":"pictures","format":"mp4"}"#)
                 .unwrap();
         assert_eq!(mp4.format, RecordingFormat::Mp4);
+        let gif: BeginRecordingRequest =
+            serde_json::from_str(r#"{"fileName":"a.gif","location":"pictures","format":"gif"}"#)
+                .unwrap();
+        assert_eq!(gif.format, RecordingFormat::Gif);
+        assert_eq!(gif.format.extension(), "gif");
     }
 
     #[test]

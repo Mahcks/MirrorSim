@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
+import { gifFrameSize } from "../src/features/mirrorsim/gifRecorder";
 import {
   getRecordingFailureRecovery,
   recordingVideoBitsPerSecond,
@@ -62,5 +63,19 @@ describe("recording bitrate", () => {
 
   test("scales with the captured size in between", () => {
     expect(recordingVideoBitsPerSecond(1080, 1920)).toBe(12_441_600);
+  });
+});
+
+describe("GIF frame size", () => {
+  test("fits a framed portrait capture within 480 x 960", () => {
+    expect(gifFrameSize(1220, 2596)).toEqual({ width: 451, height: 960 });
+  });
+
+  test("fits landscape the same way, sideways", () => {
+    expect(gifFrameSize(2596, 1220)).toEqual({ width: 960, height: 451 });
+  });
+
+  test("never upscales a small source", () => {
+    expect(gifFrameSize(300, 200)).toEqual({ width: 300, height: 200 });
   });
 });

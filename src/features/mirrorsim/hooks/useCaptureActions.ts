@@ -28,6 +28,7 @@ import {
   type ResolvedRecordingFormat,
 } from "@/features/mirrorsim/recordingFlow";
 import { createCaptureSurface } from "@/features/mirrorsim/captureSurface";
+import { GifRecorder, type CaptureRecorder, type GifDataEvent, type GifProgressEvent } from "@/features/mirrorsim/gifRecorder";
 import { getRetainedPreviewFrame } from "@/mockPreviewStream";
 
 type UseCaptureActionsArgs = {
@@ -103,7 +104,7 @@ export function useCaptureActions({
   const countdownTimerRef = useRef<number | null>(null);
   const startRecordingNowRef = useRef<() => Promise<void>>(async () => {});
   const recordingStreamRef = useRef<MediaStream | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const mediaRecorderRef = useRef<CaptureRecorder | null>(null);
   const recordingWriteSessionRef = useRef<RecordingWriteSession | null>(null);
   const recordingWriteChainRef = useRef<Promise<void>>(Promise.resolve());
   const recordingWriteErrorRef = useRef<unknown>(null);
@@ -330,15 +331,15 @@ export function useCaptureActions({
       throw new Error("Live preview is not ready for recording yet.");
     }
 
-    if (typeof MediaRecorder === "undefined") {
-      throw new Error("Recording is not available in this environment.");
-    }
-
+    const preferredFormat = recordingSettings.format;
+    const isGif = preferredFormat === "gif";
     const previewVideo = videoEl as HTMLVideoElement & { captureStream?: (frameRate?: number) => MediaStream };
     const previewCanvas = retainedFrame?.canvas as (HTMLCanvasElement & {
       captureStream?: (frameRate?: number) => MediaStream;
     }) | undefined;
     let previewCaptureStream: MediaStream | null = null;
+    // What a GIF samples: the framed canvas when there is one, else the preview.
+    let recordedSource: CanvasImageSource = previewSource;
     let recordedWidth = sourceWidth;
     let recordedHeight = sourceHeight;
     if (recordingSettings.includeDeviceFrame || appPreferences.captureStyle.background !== "none") {
@@ -355,7 +356,10 @@ export function useCaptureActions({
         },
       );
       const framedCanvas = canvas as HTMLCanvasElement & { captureStream?: (frameRate?: number) => MediaStream };
-      previewCaptureStream = framedCanvas.captureStream?.(30) ?? null;
+      if (!isGif) {
+        previewCaptureStream = framedCanvas.captureStream?.(30) ?? null;
+      }
+      recordedSource = canvas;
       recordedWidth = canvas.width;
       recordedHeight = canvas.height;
       let animationFrameId = 0;
@@ -365,41 +369,66 @@ export function useCaptureActions({
       };
       renderFrame();
       recordingRenderCleanupRef.current = () => window.cancelAnimationFrame(animationFrameId);
-    } else {
+    } else if (!isGif) {
       previewCaptureStream = typeof previewCanvas?.captureStream === "function"
         ? previewCanvas.captureStream(30)
         : typeof previewVideo.captureStream === "function"
           ? previewVideo.captureStream()
           : null;
     }
-    if (!previewCaptureStream) {
+    const releaseCapture = () => {
+      previewCaptureStream?.getTracks().forEach((track) => track.stop());
       recordingRenderCleanupRef.current?.();
       recordingRenderCleanupRef.current = null;
-      throw new Error("The preview surface cannot be captured for recording here.");
-    }
-    const includeRecordingAudio = recordingSettings.includeAudio
-      && recordingAudioTrack !== null
-      && await ensureRecordingAudio();
-    if (includeRecordingAudio) {
-      setRecordingNormalization(recordingSettings.normalizeAudio);
-      previewCaptureStream.addTrack(recordingAudioTrack.clone());
-    }
+    };
 
-    const resolved = resolveRecordingFormat(
-      recordingSettings.format,
-      includeRecordingAudio,
-      (mimeType) => MediaRecorder.isTypeSupported(mimeType),
-    );
-    if (!resolved) {
-      previewCaptureStream.getTracks().forEach((track) => track.stop());
-      recordingRenderCleanupRef.current?.();
-      recordingRenderCleanupRef.current = null;
-      throw new Error("This system cannot encode MP4 or WebM recordings.");
+    let recorder: CaptureRecorder;
+    let resolved: ResolvedRecordingFormat;
+    let onData: (listener: (chunk: Blob) => void) => void;
+    if (isGif) {
+      // GIFs carry no sound, so the audio track is left out.
+      const gifRecorder = new GifRecorder(recordedSource, recordedWidth, recordedHeight);
+      gifRecorder.addEventListener("progress", (event) => setRecBytes((event as GifProgressEvent).bytes));
+      onData = (listener) => gifRecorder.addEventListener("dataavailable", (event) => listener((event as GifDataEvent).data));
+      recorder = gifRecorder;
+      resolved = { format: "gif", mimeType: gifRecorder.mimeType, fellBack: false };
+    } else {
+      if (typeof MediaRecorder === "undefined") {
+        releaseCapture();
+        throw new Error("Recording is not available in this environment.");
+      }
+      if (!previewCaptureStream) {
+        releaseCapture();
+        throw new Error("The preview surface cannot be captured for recording here.");
+      }
+      const includeRecordingAudio = recordingSettings.includeAudio
+        && recordingAudioTrack !== null
+        && await ensureRecordingAudio();
+      if (includeRecordingAudio) {
+        setRecordingNormalization(recordingSettings.normalizeAudio);
+        previewCaptureStream.addTrack(recordingAudioTrack.clone());
+      }
+
+      const videoFormat = resolveRecordingFormat(
+        preferredFormat,
+        includeRecordingAudio,
+        (mimeType) => MediaRecorder.isTypeSupported(mimeType),
+      );
+      if (!videoFormat) {
+        releaseCapture();
+        throw new Error("This system cannot encode MP4 or WebM recordings.");
+      }
+      const mediaRecorder = new MediaRecorder(previewCaptureStream, {
+        mimeType: videoFormat.mimeType,
+        videoBitsPerSecond: recordingVideoBitsPerSecond(recordedWidth, recordedHeight),
+      });
+      onData = (listener) => mediaRecorder.addEventListener("dataavailable", (event) => {
+        listener(event.data);
+        setRecBytes((previous) => previous + event.data.size);
+      });
+      recorder = mediaRecorder;
+      resolved = videoFormat;
     }
-    const mediaRecorder = new MediaRecorder(previewCaptureStream, {
-      mimeType: resolved.mimeType,
-      videoBitsPerSecond: recordingVideoBitsPerSecond(recordedWidth, recordedHeight),
-    });
     const fileName = buildRecordingFileName(recordingSettings, startedAt, resolved.format);
 
     let writeSession: RecordingWriteSession;
@@ -414,9 +443,7 @@ export function useCaptureActions({
         },
       });
     } catch (error) {
-      previewCaptureStream.getTracks().forEach((track) => track.stop());
-      recordingRenderCleanupRef.current?.();
-      recordingRenderCleanupRef.current = null;
+      releaseCapture();
       throw error;
     }
     recordingWriteSessionRef.current = writeSession;
@@ -424,30 +451,29 @@ export function useCaptureActions({
     recordingWriteErrorRef.current = null;
     resetRecordingClock();
     setRecBytes(0);
-    mediaRecorder.addEventListener("dataavailable", (event) => {
-      if (event.data.size > 0) {
-        const chunk = event.data;
-        setRecBytes((previous) => previous + chunk.size);
-        recordingWriteChainRef.current = recordingWriteChainRef.current.then(async () => {
-          const session = recordingWriteSessionRef.current;
-          if (!session) {
-            throw new Error("Recording file session ended before its final chunk was written.");
-          }
-          const bytes = new Uint8Array(await chunk.arrayBuffer());
-          await invoke("append_recording_chunk", {
-            recordingId: session.recordingId,
-            chunkBase64: uint8ArrayToBase64(bytes),
-          });
-        }).catch((error) => {
-          console.error("[MirrorSim capture] recording chunk write failed", { size: chunk.size, error });
-          // Keep the first failure: later chunks fail as a consequence of it.
-          recordingWriteErrorRef.current ??= error;
-        });
+    onData((chunk) => {
+      if (chunk.size === 0) {
+        return;
       }
+      recordingWriteChainRef.current = recordingWriteChainRef.current.then(async () => {
+        const session = recordingWriteSessionRef.current;
+        if (!session) {
+          throw new Error("Recording file session ended before its final chunk was written.");
+        }
+        const bytes = new Uint8Array(await chunk.arrayBuffer());
+        await invoke("append_recording_chunk", {
+          recordingId: session.recordingId,
+          chunkBase64: uint8ArrayToBase64(bytes),
+        });
+      }).catch((error) => {
+        console.error("[MirrorSim capture] recording chunk write failed", { size: chunk.size, error });
+        // Keep the first failure: later chunks fail as a consequence of it.
+        recordingWriteErrorRef.current ??= error;
+      });
     });
 
-    mediaRecorder.start(1000);
-    mediaRecorderRef.current = mediaRecorder;
+    recorder.start(1000);
+    mediaRecorderRef.current = recorder;
     recordingStreamRef.current = previewCaptureStream;
     setLocalRecordingActive(true);
     return resolved;

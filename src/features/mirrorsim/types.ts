@@ -166,7 +166,8 @@ export type ScreenshotSettings = {
   includeDeviceFrame: boolean;
 };
 
-export type RecordingFormat = "mp4" | "webm";
+export type RecordingFormat = "mp4" | "webm" | "gif";
+export type VideoRecordingFormat = Exclude<RecordingFormat, "gif">;
 export type RecordingCountdown = 0 | 3 | 5;
 
 export type RecordingSettings = {

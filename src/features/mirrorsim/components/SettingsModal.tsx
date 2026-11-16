@@ -866,8 +866,13 @@ export function SettingsModal({
               >
                 <option value="mp4">MP4 (H.264): plays in editors, phones, and social apps</option>
                 <option value="webm">WebM (VP9): smaller files, fewer apps open it</option>
+                <option value="gif">GIF (no sound): loops in chats, docs, and READMEs</option>
               </select>
-              <p className={fieldNote}>If MP4 is not available on this PC, MirrorSim records WebM instead and tells you.</p>
+              <p className={fieldNote}>
+                {recordingSettings.format === "gif"
+                  ? "GIFs record at 15 fps and up to 960 px, without sound. Keep clips short: 30 seconds can reach 20 MB or more."
+                  : "If MP4 is not available on this PC, MirrorSim records WebM instead and tells you."}
+              </p>
             </div>
             <div className="py-3">
               <div className={fieldLabel}>Countdown</div>

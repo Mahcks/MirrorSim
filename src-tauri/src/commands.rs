@@ -337,6 +337,8 @@ fn make_recording_seekable(temporary_path: &Path, format: RecordingFormat) {
     let needs_rewrite = match format {
         RecordingFormat::Mp4 => mp4_faststart::is_fragmented(temporary_path),
         RecordingFormat::Webm => webm_cues::needs_index(temporary_path),
+        // GIFs are written whole by MirrorSim's own encoder.
+        RecordingFormat::Gif => Ok(false),
     };
     match needs_rewrite {
         Ok(true) => {}
@@ -352,6 +354,7 @@ fn make_recording_seekable(temporary_path: &Path, format: RecordingFormat) {
     let result = match format {
         RecordingFormat::Mp4 => mp4_faststart::rewrite_fragmented(temporary_path, &rewritten),
         RecordingFormat::Webm => webm_cues::rewrite_with_index(temporary_path, &rewritten),
+        RecordingFormat::Gif => return,
     }
     .and_then(|()| fs::rename(&rewritten, temporary_path).map_err(|error| error.to_string()));
     if let Err(error) = result {
