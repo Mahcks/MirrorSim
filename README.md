@@ -11,7 +11,7 @@ MirrorSim mirrors your iPhone screen **with live audio** over AirPlay into a cle
 **Audio playback and recording are supported. Bonjour for Windows is not required:** MirrorSim includes its own AirPlay receiver and network discovery.
 
 <p align="center">
-  <img src="docs/images/demo.gif" alt="MirrorSim starting its AirPlay receiver and mirroring an iPhone in Minimal mode" width="360">
+  <img src="docs/images/demo.gif" alt="An iPhone mirrored live by MirrorSim, scrolling the MirrorSim GitHub page, recorded with MirrorSim's own GIF export" width="360">
 </p>
 
 <p align="center">
@@ -21,17 +21,19 @@ MirrorSim mirrors your iPhone screen **with live audio** over AirPlay into a cle
 
 > MirrorSim includes a bundled AirPlay receiver runtime built from a fork of [AirPlayServer by xenos1337](https://github.com/xenos1337/AirPlayServer). MirrorSim provides the desktop app, UI, capture tools, diagnostics, and release packaging around that receiver layer.
 
-<details>
-  <summary>Screenshots</summary>
+<p align="center">
+  <img src="docs/images/minimal-portrait.png" alt="Minimal mode: a floating iPhone frame mirroring the Weather app" width="260">
+  &nbsp;
+  <img src="docs/images/preferences.png" alt="The Preferences panel open inside Minimal mode" width="260">
+</p>
 
-  <p align="center">
-    <img src="docs/images/map-console-preview.png" alt="MirrorSim Console mode with live iPhone preview and controls" width="720">
-  </p>
+<p align="center">
+  <img src="docs/images/minimal-landscape.png" alt="Minimal mode in landscape, mirroring Apple Maps" width="560">
+</p>
 
-  <p align="center">
-    <img src="docs/images/map-minimal-landscape.png" alt="MirrorSim Minimal mode mirroring Apple Maps in landscape orientation" width="560">
-  </p>
-</details>
+<p align="center">
+  <img src="docs/images/console.png" alt="Console mode with the live iPhone preview, session panel, and stream stats" width="820">
+</p>
 
 ---
 
