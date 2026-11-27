@@ -1,25 +1,37 @@
-# v0.2.1
+# v0.3.0
 
-v0.2.1 fixes a receiver startup failure on some Windows PCs, removes a misaligned camera cutout from the preview and captures, and resolves security advisories in MirrorSim's dependencies.
+v0.3.0 adds GIF export, device frame colors and backgrounds, and a more capable recorder with a countdown, pause and live file size. Recordings now save as MP4 by default and open with a working timeline in every player. Preferences and the connect screens have a new look.
+
+## New
+
+- **GIF export.** Choose GIF as the recording format to get a looping clip for chats, docs and READMEs. GIFs record at 15 fps, up to 960 px tall, without sound. The demo at the top of the README was made this way.
+- **Frame colors and backgrounds.** Screenshots and recordings can use a black, silver, gold or blue phone frame and sit on a solid color or gradient background with a soft shadow. **Preferences > Capture** shows a live preview. Framed screenshots without a background keep transparent corners.
+- **Recording countdown.** A 3-2-1 countdown (3 s, 5 s or off) before recording starts. Press Record again or Esc to cancel it.
+- **Pause and resume.** Pause a recording from the toolbar, the right-click menu or Ctrl+P. Paused time is left out of the file and the timer.
+- **Live file size.** The REC badge shows how big the recording is as it grows.
+- **Normalize volume.** An optional setting in **Preferences > Audio** evens out loud and quiet iPhone audio in recordings. It does not change what you hear live.
+- **MP4 by default.** Recordings save as MP4 (H.264/AAC), which opens almost everywhere. WebM is still available in **Preferences > Capture**, and MirrorSim switches to the other format and tells you if your PC cannot encode the one you picked.
+
+## Improved
+
+- **Preferences** use grouped cards, an icon tab bar and compact controls. The "How to Connect" steps and keyboard shortcuts use the same card style.
+- **Connect screens.** The stopped and listening screens have a new phone icon, AirPlay-style ripples while listening (turned off when Windows asks for reduced motion) and larger steps.
 
 ## Fixes
 
-- **Receiver startup on Windows (#5).** If Windows blocks the receiver's usual network ports (socket error 10013 or a port already in use), MirrorSim now starts on a free port and advertises that port to your iPhone instead of failing with "fgServerStart returned null". Startup errors now name the port and Windows error.
-- **Dynamic Island alignment (#10).** MirrorSim no longer draws its own fixed-size island over the mirrored screen or framed screenshots and recordings. The island you see is the one iOS sends, so it always lines up. iOS hides the island when it has nothing to show and in landscape apps, so it can fade in and out, just like on Apple's own AirPlay receivers.
-- **Video recovery.** When the video stream loses continuity, the preview now waits for the next full frame and resumes on its own instead of asking you to reconnect Screen Mirroring.
-
-## Diagnostics
-
-- Adds a bounded diagnostics history that records receiver and stream health (not video or audio) and is included in **Preferences > Support** exports. See [PRIVACY.md](https://github.com/Mahcks/MirrorSim/blob/main/PRIVACY.md) for exactly what is kept and how to delete it.
+- **Seekable recordings.** Saved MP4 and WebM files now include a duration and seek index, so Windows Media Player, Photos and editors show a timeline you can scrub. Video and audio are copied as-is, not re-encoded.
+- **Recordings that saved empty or got stuck.** MirrorSim makes sure audio is running before recording starts, discards zero-byte recordings, and reports the first write failure instead of hanging.
+- **MP4 audio cut short.** Windows' AAC encoder dropped silent audio, which shifted later sound early and cut the audio track short when the iPhone went quiet. Recordings now keep audio in sync through silence.
+- **Saving long recordings** no longer freezes the window.
 
 ## Security and dependencies
 
-- Updates Vite, rustls, rustls-webpki, webpki-root-certs, tokio and the Tauri updater (which moves Tauri to 2.12 and the build toolchain to Rust 1.90) to resolve published security advisories. Frontend and Rust audits are clean.
-- Pins the AirPlayServer v0.5.1 runtime and its published SHA-256 checksum.
+- Updates the bundled AirPlayServer runtime to v0.5.2, which syncs upstream receiver fixes, and pins its published SHA-256 checksum.
+- Updates `cookie`, `form_urlencoded`, `url` and `serde_json`. Frontend and Rust audits are clean.
 
 ## Compatibility
 
-The receiver keeps adapter protocol `0.8.0`; the free-port fallback is an optional capability that MirrorSim turns on. Trusted devices and settings are preserved when updating from v0.2.0.
+Trusted devices and settings are preserved when updating from v0.2.x. New settings start with sensible defaults: MP4, a 3-second countdown, normalize volume off, and a black frame with no background.
 
 ## Install
 
