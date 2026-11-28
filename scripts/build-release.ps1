@@ -159,7 +159,13 @@ function Invoke-PortableBuild {
     Copy-Item (Join-Path $receiverBundle '*') (Join-Path $portableFolder 'receivers\AirPlayServer') -Recurse -Force
   }
 
-  Compress-Archive -Path (Join-Path $portableFolder '*') -DestinationPath $portableZip -Force
+  # Zip with .NET directly, like the runtime fetch: the Archive module's cmdlets break
+  # on some GitHub runner images. The folder's contents go at the zip root.
+  if (Test-Path $portableZip) {
+    Remove-Item $portableZip -Force
+  }
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [System.IO.Compression.ZipFile]::CreateFromDirectory($portableFolder, $portableZip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
 
   Write-Host "Portable package created: $portableZip"
 }

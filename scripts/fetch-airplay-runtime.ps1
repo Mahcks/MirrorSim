@@ -82,7 +82,10 @@ try {
     throw "Runtime archive checksum mismatch. Expected $expectedSha256 but got $actualSha256"
   }
 
-  Expand-Archive -Path $archivePath -DestinationPath $extractRoot -Force
+  # Unzip with .NET directly: Expand-Archive breaks on some GitHub runner images
+  # ("Cannot find an overload for ExtractToDirectory"). $extractRoot is new and empty.
+  Add-Type -AssemblyName System.IO.Compression.FileSystem
+  [System.IO.Compression.ZipFile]::ExtractToDirectory($archivePath, $extractRoot)
 
   $rootEntries = Get-ChildItem -Path $extractRoot
   $sourceRoot = $extractRoot
